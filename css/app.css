@@ -48,6 +48,8 @@ html.fs-large { --fs-chat: 17.5px; }
 
 * { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
 
+[v-cloak] { display: none; }
+
 html, body {
   height: 100%;
   overflow: hidden;
