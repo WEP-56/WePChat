@@ -68,7 +68,8 @@ const Store = {
       providerId: '',
       model: '',
       messages: [],
-      files: {}        // name -> {content, mime, size, mtime, dataUrl?}
+      files: {},       // name -> {content, mime, size, mtime, dataUrl?}
+      services: []     // {id,name,entry,status,createdAt,updatedAt,lastStartedAt?}
     };
   },
 

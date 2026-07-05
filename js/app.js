@@ -16,6 +16,7 @@
     sess = sess || Store.newSession();
     sess.messages = Array.isArray(sess.messages) ? sess.messages : [];
     sess.files = sess.files || {};
+    sess.services = Array.isArray(sess.services) ? sess.services : [];
     sess.createdAt = sess.createdAt || U.now();
     sess.updatedAt = sess.updatedAt || U.now();
     sess.title = sess.title || '';
@@ -98,6 +99,18 @@
     return String(s || '').replace(/<\/script/gi, '<\\/script');
   }
 
+  function isExternalRef(ref) {
+    return /^(?:[a-z]+:|\/\/|#)/i.test(String(ref || '').trim());
+  }
+
+  function normalizeRef(ref) {
+    return String(ref || '').trim().replace(/^\.?\//, '').replace(/\\/g, '/');
+  }
+
+  function htmlAttr(s) {
+    return U.escapeHtml(String(s || ''));
+  }
+
   createApp({
     data() {
       const settings = Store.loadSettings();
@@ -149,7 +162,9 @@
           js: '',
           doc: '',
           tab: 'view',
-          logs: []
+          logs: [],
+          serviceId: '',
+          mode: 'html'
         },
 
         dlg: null,
@@ -174,6 +189,15 @@
       },
       fileCount() {
         return Object.keys(this.session.files || {}).length;
+      },
+      serviceCount() {
+        return (this.session.services || []).length;
+      },
+      runningServiceCount() {
+        return (this.session.services || []).filter(s => s.status === 'running').length;
+      },
+      previewService() {
+        return this.preview.serviceId ? ((this.session.services || []).find(s => s.id === this.preview.serviceId) || null) : null;
       },
       canSend() {
         return !this.generating && (!!this.input.trim() || this.attachments.length > 0);
@@ -527,6 +551,10 @@
           read_file: '读取文件',
           write_file: '写入文件',
           list_files: '列出文件',
+          create_workspace: '创建工作区',
+          run_service: '启动服务',
+          stop_service: '停止服务',
+          list_services: '列出服务',
           web_fetch: '抓取网页'
         };
         return map[name] || name || '工具';
@@ -539,6 +567,20 @@
         } catch (e) {
           return String(v);
         }
+      },
+      isDiffResult(text) {
+        return /(^|\n)--- .+\n\+\+\+ .+\n@@/.test(String(text || ''));
+      },
+      renderDiff(text) {
+        const lines = String(text || '').split('\n');
+        const html = lines.map(line => {
+          let cls = 'ctx';
+          if (/^--- |^\+\+\+ |^@@/.test(line)) cls = 'meta';
+          else if (line.startsWith('+')) cls = 'add';
+          else if (line.startsWith('-')) cls = 'del';
+          return '<div class="df-line ' + cls + '">' + U.escapeHtml(line || ' ') + '</div>';
+        }).join('');
+        return '<div class="diff-view">' + html + '</div>';
       },
       async copyMsg(m) {
         const ok = await U.copyText(m.content || '');
@@ -699,7 +741,8 @@
                 session: this.session,
                 webFetchMode: this.settings.webFetch,
                 confirm: msg => this.confirm(msg, '工具授权'),
-                openPreview: payload => this.openPreview(payload)
+                openPreview: payload => this.openPreview(payload),
+                openService: serviceId => this.openServicePreview(serviceId)
               });
               t.result = out;
               t.status = String(out).startsWith('错误：') ? 'error' : 'done';
@@ -831,6 +874,93 @@
         this.closePage();
       },
 
+      serviceById(id) {
+        return (this.session.services || []).find(s => s.id === id) || null;
+      },
+      startService(svc) {
+        if (!svc) return;
+        if (!this.session.files[svc.entry]) {
+          U.toast('入口文件不存在：' + svc.entry);
+          return;
+        }
+        svc.status = 'running';
+        svc.updatedAt = U.now();
+        svc.lastStartedAt = U.now();
+        this.persistSession();
+        if (this.preview.serviceId === svc.id) this.runPreview();
+        U.toast('服务已启动');
+      },
+      stopService(svc) {
+        if (!svc) return;
+        svc.status = 'stopped';
+        svc.updatedAt = U.now();
+        this.persistSession();
+        if (this.preview.serviceId === svc.id) {
+          const frame = this.$refs.pvFrame;
+          if (frame) frame.srcdoc = '';
+          this.preview.logs = [];
+        }
+        U.toast('服务已停止');
+      },
+      async deleteService(svc) {
+        if (!svc) return;
+        const ok = await this.confirm('删除服务：' + svc.name + '\n不会删除工作区文件。', '删除服务');
+        if (!ok) return;
+        this.session.services = (this.session.services || []).filter(s => s.id !== svc.id);
+        this.persistSession();
+      },
+      openServicePreview(serviceId) {
+        const svc = this.serviceById(serviceId);
+        if (!svc) {
+          U.toast('服务不存在');
+          return;
+        }
+        if (!this.session.files[svc.entry]) {
+          U.toast('入口文件不存在：' + svc.entry);
+          return;
+        }
+        if (svc.status !== 'running') this.startService(svc);
+        this.preview.title = svc.name || '工作区服务';
+        this.preview.html = '';
+        this.preview.css = '';
+        this.preview.js = '';
+        this.preview.tab = 'view';
+        this.preview.logs = [];
+        this.preview.serviceId = svc.id;
+        this.preview.mode = 'service';
+        this.preview.doc = this.buildServiceDoc(svc);
+        this.pushPage('preview');
+        nextTick(() => this.runPreview());
+      },
+      buildServiceDoc(svc) {
+        const f = this.session.files[svc.entry];
+        let html = f && f.content || '';
+        const files = this.session.files || {};
+        html = html.replace(/<link\b([^>]*?)href=["']([^"']+)["']([^>]*)>/gi, (m, a, href) => {
+          if (isExternalRef(href)) return m;
+          const name = normalizeRef(href);
+          const dep = files[name];
+          if (!dep || dep.dataUrl) return '<!-- missing stylesheet: ' + htmlAttr(name) + ' -->';
+          return '<style data-wepchat-file="' + htmlAttr(name) + '">\n' + (dep.content || '') + '\n</style>';
+        });
+        html = html.replace(/<script\b([^>]*?)src=["']([^"']+)["']([^>]*)>\s*<\/script>/gi, (m, a, src) => {
+          if (isExternalRef(src)) return m;
+          const name = normalizeRef(src);
+          const dep = files[name];
+          if (!dep || dep.dataUrl) return '<script>console.error("missing script: ' + escapeScriptEnd(name) + '")<\/script>';
+          return '<script data-wepchat-file="' + htmlAttr(name) + '">\n' + escapeScriptEnd(dep.content || '') + '\n<\/script>';
+        });
+        html = html.replace(/(<img\b[^>]*?\bsrc=["'])([^"']+)(["'][^>]*>)/gi, (m, pre, src, post) => {
+          if (isExternalRef(src)) return m;
+          const dep = files[normalizeRef(src)];
+          return dep && dep.dataUrl ? pre + dep.dataUrl + post : m;
+        });
+        this.preview.html = html;
+        this.preview.css = '';
+        this.preview.js = '';
+        return this.wrapPreviewDoc(html, '', '');
+      },
+
       openPreview(payload) {
         this.preview.title = payload.title || 'HTML 预览';
         this.preview.html = payload.html || '';
@@ -838,11 +968,13 @@
         this.preview.js = payload.js || '';
         this.preview.tab = 'view';
         this.preview.logs = [];
+        this.preview.serviceId = '';
+        this.preview.mode = 'html';
         this.preview.doc = this.buildPreviewDoc();
         this.pushPage('preview');
         nextTick(() => this.runPreview());
       },
-      buildPreviewDoc() {
+      previewBridge() {
         const bridge = `
 <script>
 (function () {
@@ -857,21 +989,30 @@
   window.onerror = function (msg, src, line, col) { send('error', [msg + ' @ ' + line + ':' + col]); };
 })();
 <\/script>`;
-        const css = this.preview.css ? '<style>\n' + this.preview.css + '\n</style>' : '';
-        const js = this.preview.js ? '<script>\n' + escapeScriptEnd(this.preview.js) + '\n<\/script>' : '';
-        let html = this.preview.html || '';
+        return bridge;
+      },
+      wrapPreviewDoc(sourceHtml, sourceCss, sourceJs) {
+        const bridge = this.previewBridge();
+        const css = sourceCss ? '<style>\n' + sourceCss + '\n</style>' : '';
+        const js = sourceJs ? '<script>\n' + escapeScriptEnd(sourceJs) + '\n<\/script>' : '';
+        let html = sourceHtml || '';
         if (!/<html[\s>]/i.test(html)) {
           return '<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">' +
             css + '</head><body>' + html + bridge + js + '</body></html>';
         }
         if (css) html = /<\/head>/i.test(html) ? html.replace(/<\/head>/i, css + '</head>') : css + html;
-        const inject = bridge + js;
-        html = /<\/body>/i.test(html) ? html.replace(/<\/body>/i, inject + '</body>') : html + inject;
+        if (/<head(\s[^>]*)?>/i.test(html)) html = html.replace(/<head(\s[^>]*)?>/i, m => m + bridge);
+        else html = bridge + html;
+        if (js) html = /<\/body>/i.test(html) ? html.replace(/<\/body>/i, js + '</body>') : html + js;
         return html;
+      },
+      buildPreviewDoc() {
+        return this.wrapPreviewDoc(this.preview.html || '', this.preview.css || '', this.preview.js || '');
       },
       runPreview() {
         this.preview.logs = [];
-        this.preview.doc = this.buildPreviewDoc();
+        const svc = this.preview.serviceId && this.serviceById(this.preview.serviceId);
+        this.preview.doc = svc ? this.buildServiceDoc(svc) : this.buildPreviewDoc();
         nextTick(() => {
           const frame = this.$refs.pvFrame;
           if (frame) frame.srcdoc = this.preview.doc;

@@ -27,7 +27,7 @@
         </span>
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M8 10l4 4 4-4"/></svg>
       </button>
-      <button class="icon-btn" @click="sheet = 'files'" aria-label="会话文件" v-if="fileCount">
+      <button class="icon-btn" @click="sheet = 'files'" aria-label="会话工作区" v-if="fileCount || serviceCount">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M13 3H6a1.5 1.5 0 0 0-1.5 1.5v15A1.5 1.5 0 0 0 6 21h12a1.5 1.5 0 0 0 1.5-1.5V9.5L13 3z"/><path d="M13 3v6.5h6.5"/></svg>
       </button>
       <button class="icon-btn" @click="newSession()" aria-label="新会话">
@@ -99,7 +99,8 @@
                   <div class="tool-pre">{{ prettyJson(t.arguments) }}</div>
                   <template v-if="t.result != null">
                     <div class="tool-sec">结果</div>
-                    <div class="tool-pre">{{ t.result }}</div>
+                    <div v-if="isDiffResult(t.result)" v-html="renderDiff(t.result)"></div>
+                    <div v-else class="tool-pre">{{ t.result }}</div>
                   </template>
                 </div>
               </div>
@@ -243,19 +244,37 @@
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M13 3H6a1.5 1.5 0 0 0-1.5 1.5v15A1.5 1.5 0 0 0 6 21h12a1.5 1.5 0 0 0 1.5-1.5V9.5L13 3z"/><path d="M13 3v6.5h6.5"/></svg>文本文件
           </button>
           <button class="act-item" @click="sheet = 'files'">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z"/></svg>会话文件（{{ fileCount }}）
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z"/></svg>工作区（{{ fileCount }} 文件 / {{ serviceCount }} 服务）
           </button>
         </div>
       </template>
 
       <!-- 会话文件 -->
       <template v-else-if="sheet === 'files'">
-        <div class="sheet-title">会话文件
+        <div class="sheet-title">会话工作区
           <button class="page-act" @click="uploadToWorkspace()">上传</button>
         </div>
         <div class="sheet-body">
-          <div class="model-none" v-if="!fileCount">工作区为空<br>AI 写入的文件和你上传的文件会出现在这里</div>
-          <div class="card" v-else>
+          <div class="model-none" v-if="!fileCount && !serviceCount">工作区为空<br>AI 写入的文件、启动的服务和你上传的文件会出现在这里</div>
+          <template v-if="serviceCount">
+            <div class="sec-label">服务</div>
+            <div class="card svc-card">
+              <div class="svc-row" v-for="svc in session.services" :key="svc.id">
+                <button class="svc-main" @click="openServicePreview(svc.id)">
+                  <span class="svc-dot" :class="{on: svc.status === 'running'}"></span>
+                  <span class="svc-info">
+                    <span class="svc-name">{{ svc.name }}</span>
+                    <span class="svc-meta">{{ svc.status === 'running' ? '运行中' : '已停止' }} · {{ svc.entry }}</span>
+                  </span>
+                </button>
+                <button class="svc-act" v-if="svc.status === 'running'" @click="stopService(svc)">停止</button>
+                <button class="svc-act" v-else @click="startService(svc)">启动</button>
+                <button class="svc-act" @click="deleteService(svc)">删除</button>
+              </div>
+            </div>
+          </template>
+          <div class="sec-label" v-if="fileCount">文件</div>
+          <div class="card" v-if="fileCount">
             <button class="file-row" v-for="(f, name) in session.files" :key="name" @click="viewFile(name)">
               <span class="file-ic">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M13 3H6a1.5 1.5 0 0 0-1.5 1.5v15A1.5 1.5 0 0 0 6 21h12a1.5 1.5 0 0 0 1.5-1.5V9.5L13 3z"/><path d="M13 3v6.5h6.5"/></svg>
@@ -404,6 +423,9 @@
     <div class="page-head">
       <button class="icon-btn" @click="closePage()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
       <div class="page-title">{{ preview.title }}</div>
+      <button class="page-act" v-if="previewService" @click="previewService.status === 'running' ? stopService(previewService) : startService(previewService)">
+        {{ previewService.status === 'running' ? '停止' : '启动' }}
+      </button>
       <button class="icon-btn small" @click="runPreview()" aria-label="重新运行"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><path d="M20 12a8 8 0 1 1-2.3-5.6M20 3v4h-4"/></svg></button>
       <button class="icon-btn small" @click="savePreviewToWorkspace()" aria-label="保存"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><path d="M17 21v-8H7v8M7 3v5h8"/></svg></button>
       <button class="icon-btn small" @click="exportPreview()" aria-label="导出"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><path d="M12 3v12M7 10l5 5 5-5M4 21h16"/></svg></button>

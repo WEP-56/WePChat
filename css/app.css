@@ -193,6 +193,17 @@ a { color: var(--link); text-decoration: none; }
   font-size: 12px; white-space: pre-wrap; word-break: break-all;
   max-height: 200px; overflow-y: auto; user-select: text; -webkit-user-select: text;
 }
+.diff-view {
+  background: var(--code-bg); border-radius: 8px; overflow: auto;
+  max-height: 260px; border: 1px solid var(--border);
+  font-family: ui-monospace, "Cascadia Mono", Menlo, Consolas, monospace;
+  font-size: 12px; user-select: text; -webkit-user-select: text;
+}
+.df-line { padding: 2px 10px; white-space: pre; min-height: 20px; }
+.df-line.meta { color: var(--text3); background: var(--code-head); font-weight: 600; }
+.df-line.add { color: #16783a; background: rgba(52, 199, 89, 0.12); }
+.df-line.del { color: var(--danger); background: rgba(224, 52, 43, 0.1); }
+html.dark .df-line.add { color: #7ee09d; background: rgba(52, 199, 89, 0.14); }
 
 /* 加载指示 */
 .typing-dot {
@@ -438,6 +449,24 @@ a { color: var(--link); text-decoration: none; }
 .file-info { flex: 1; min-width: 0; }
 .file-name { font-size: 14.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .file-meta { color: var(--text3); font-size: 12px; margin-top: 1px; }
+.svc-card { margin-bottom: 8px; }
+.svc-row { display: flex; align-items: center; gap: 4px; padding: 8px 8px 8px 12px; }
+.svc-row + .svc-row { border-top: 1px solid var(--border); }
+.svc-main {
+  flex: 1; min-width: 0; display: flex; align-items: center; gap: 10px;
+  text-align: left; padding: 6px 4px; border-radius: 10px;
+}
+.svc-main:active { background: var(--surface); opacity: 1; }
+.svc-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--text3); flex: none; }
+.svc-dot.on { background: #34c759; box-shadow: 0 0 0 4px rgba(52,199,89,0.12); }
+.svc-info { min-width: 0; flex: 1; display: flex; flex-direction: column; }
+.svc-name { font-size: 14.5px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.svc-meta { color: var(--text3); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.svc-act {
+  flex: none; padding: 7px 8px; border-radius: 9px; font-size: 12.5px;
+  color: var(--text2); font-weight: 600;
+}
+.svc-act:active { background: var(--surface); opacity: 1; color: var(--text); }
 
 /* ============ HTML 预览 ============ */
 .preview-page { background: var(--bg); }
