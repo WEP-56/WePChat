@@ -1,0 +1,448 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#ffffff">
+<title>WepChat</title>
+<link rel="stylesheet" href="css/app.css">
+<script src="libs/vue.global.prod.js"></script>
+<script src="libs/marked.min.js"></script>
+<script src="libs/purify.min.js"></script>
+<script src="libs/highlight.min.js"></script>
+</head>
+<body>
+<div id="app" v-cloak>
+
+  <!-- ================= 主界面 ================= -->
+  <div class="shell">
+    <div class="topbar">
+      <button class="icon-btn" @click="drawerOpen = true" aria-label="菜单">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 7h16M4 12h10"/></svg>
+      </button>
+      <button class="model-pill" @click="sheet = 'model'">
+        <span class="mp-col">
+          <span class="mp-name">{{ currentModelLabel }}</span>
+          <span class="mp-sub" v-if="currentProvider">{{ currentProvider.name }}</span>
+        </span>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M8 10l4 4 4-4"/></svg>
+      </button>
+      <button class="icon-btn" @click="sheet = 'files'" aria-label="会话文件" v-if="fileCount">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M13 3H6a1.5 1.5 0 0 0-1.5 1.5v15A1.5 1.5 0 0 0 6 21h12a1.5 1.5 0 0 0 1.5-1.5V9.5L13 3z"/><path d="M13 3v6.5h6.5"/></svg>
+      </button>
+      <button class="icon-btn" @click="newSession()" aria-label="新会话">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3H6a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2h13a2 2 0 0 0 2-2v-6"/><path d="M18.4 2.6a2.1 2.1 0 0 1 3 3L13 14l-4 1 1-4 8.4-8.4z"/></svg>
+      </button>
+    </div>
+
+    <div class="chat-body">
+      <!-- 空状态 -->
+      <div class="empty-state" v-if="!session.messages.length">
+        <div class="empty-logo">W</div>
+        <div class="empty-title">有问题，尽管问</div>
+        <div class="empty-sub" v-if="!providers.length">先在设置里添加一个模型提供商</div>
+        <div class="empty-sub" v-else>{{ currentModelLabel }}</div>
+        <div class="sugg-list" v-if="!providers.length">
+          <button class="sugg" @click="openSettings()"><b>添加提供商</b>配置 API 地址与密钥，开始对话</button>
+        </div>
+        <div class="sugg-list" v-else>
+          <button class="sugg" v-for="s in suggestions" @click="input = s.q; sendMessage()"><b>{{ s.t }}</b>{{ s.q }}</button>
+        </div>
+      </div>
+
+      <!-- 消息列表 -->
+      <div class="chat-scroll" ref="scroller" v-else @scroll.passive="onScroll" @click="onContentClick">
+        <div class="chat-inner">
+          <div v-for="(m, mi) in session.messages" :key="m.id" class="msg" :class="'msg-' + m.role">
+
+            <template v-if="m.role === 'user'">
+              <div class="msg-attach" v-if="m.attachments && m.attachments.length">
+                <template v-for="a in m.attachments">
+                  <img v-if="a.kind === 'image'" class="att-img" :src="a.dataUrl">
+                  <span v-else class="att-chip">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M13 3H6a1.5 1.5 0 0 0-1.5 1.5v15A1.5 1.5 0 0 0 6 21h12a1.5 1.5 0 0 0 1.5-1.5V9.5L13 3z"/><path d="M13 3v6.5h6.5"/></svg>
+                    <span class="an">{{ a.name }}</span>
+                  </span>
+                </template>
+              </div>
+              <div class="bubble">{{ m.content }}</div>
+              <div class="msg-actions">
+                <button class="ma-btn" @click="copyMsg(m)" aria-label="复制"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg></button>
+                <button class="ma-btn" @click="editMsg(mi)" aria-label="编辑"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M17.4 3.6a2 2 0 0 1 3 3L8 19l-4 1 1-4L17.4 3.6z"/></svg></button>
+                <button class="ma-btn" @click="deleteMsg(mi)" aria-label="删除"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg></button>
+              </div>
+            </template>
+
+            <template v-else-if="m.role === 'assistant'">
+              <!-- 思考过程 -->
+              <div v-if="m.reasoning">
+                <button class="reasoning-toggle" :class="{open: m._showReasoning}" @click="m._showReasoning = !m._showReasoning">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M9 6l6 6-6 6"/></svg>
+                  {{ m.status === 'streaming' && !m.content ? '思考中…' : '思考过程' }}
+                </button>
+                <div class="reasoning" v-if="m._showReasoning"><div class="reasoning-body">{{ m.reasoning }}</div></div>
+              </div>
+
+              <!-- 工具调用 -->
+              <div v-for="t in (m.toolCalls || [])" :key="t.id" class="tool-card">
+                <button class="tool-head" @click="t._open = !t._open">
+                  <span class="tool-ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M14.7 6.3a4.5 4.5 0 0 0-6 6L3 18l3 3 5.7-5.7a4.5 4.5 0 0 0 6-6L14 13l-3-3 3.7-3.7z"/></svg></span>
+                  <span class="tool-name">{{ toolLabel(t.name) }}</span>
+                  <span class="tool-status">
+                    <span class="spinner" v-if="t.status === 'running'"></span>
+                    <template v-else-if="t.status === 'done'">完成</template>
+                    <template v-else-if="t.status === 'error'">出错</template>
+                  </span>
+                </button>
+                <div class="tool-body" v-if="t._open">
+                  <div class="tool-sec">参数</div>
+                  <div class="tool-pre">{{ prettyJson(t.arguments) }}</div>
+                  <template v-if="t.result != null">
+                    <div class="tool-sec">结果</div>
+                    <div class="tool-pre">{{ t.result }}</div>
+                  </template>
+                </div>
+              </div>
+
+              <!-- 正文 -->
+              <div class="md" v-if="m.content" v-html="renderMd(m)"></div>
+              <span class="typing-dot" v-else-if="m.status === 'streaming' && !m.reasoning && !(m.toolCalls && m.toolCalls.length)"></span>
+
+              <div class="err-box" v-if="m.error">{{ m.error }}<button class="err-retry" @click="regenerate(mi)">重试</button></div>
+
+              <div class="msg-actions" v-if="m.status !== 'streaming'">
+                <button class="ma-btn" @click="copyMsg(m)" aria-label="复制"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg></button>
+                <button class="ma-btn" @click="regenerate(mi)" aria-label="重新生成"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M20 12a8 8 0 1 1-2.3-5.6M20 3v4h-4"/></svg></button>
+                <button class="ma-btn" @click="deleteMsg(mi)" aria-label="删除"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg></button>
+                <span class="msg-model-tag" v-if="m.model">{{ m.model }}</span>
+              </div>
+            </template>
+          </div>
+        </div>
+      </div>
+
+      <transition name="fade">
+        <button class="scroll-down" v-if="showScrollDown" @click="scrollToBottom(true)">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M6 10l6 6 6-6"/></svg>
+        </button>
+      </transition>
+    </div>
+
+    <!-- 输入区 -->
+    <div class="composer-wrap">
+      <div class="composer">
+        <div class="comp-attach" v-if="attachments.length">
+          <span class="att-chip" v-for="(a, i) in attachments" :key="i">
+            <img v-if="a.kind === 'image'" :src="a.dataUrl" style="width:22px;height:22px;border-radius:6px;object-fit:cover">
+            <svg v-else viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M13 3H6a1.5 1.5 0 0 0-1.5 1.5v15A1.5 1.5 0 0 0 6 21h12a1.5 1.5 0 0 0 1.5-1.5V9.5L13 3z"/><path d="M13 3v6.5h6.5"/></svg>
+            <span class="an">{{ a.name }}</span>
+            <button class="att-x" @click="attachments.splice(i, 1)">×</button>
+          </span>
+        </div>
+        <div class="comp-row">
+          <button class="plus-btn" @click="sheet = 'attach'" aria-label="添加附件">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
+          </button>
+          <textarea class="comp-input" ref="inputEl" v-model="input" rows="1" placeholder="有问题，尽管问"
+            @input="growInput" enterkeyhint="send"></textarea>
+          <button class="send-btn" v-if="generating" @click="stopGenerate()" aria-label="停止">
+            <svg viewBox="0 0 24 24"><rect x="7" y="7" width="10" height="10" rx="2" fill="currentColor"/></svg>
+          </button>
+          <button class="send-btn" v-else :disabled="!canSend" @click="sendMessage()" aria-label="发送">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M6 11l6-6 6 6"/></svg>
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ================= 抽屉 ================= -->
+  <div class="drawer-mask" :class="{on: drawerOpen}" @click="drawerOpen = false"></div>
+  <div class="drawer" :class="{on: drawerOpen}">
+    <div class="dr-search">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
+      <input v-model="searchQ" placeholder="搜索会话">
+    </div>
+    <button class="dr-new" @click="newSession(); drawerOpen = false">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3H6a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2h13a2 2 0 0 0 2-2v-6"/><path d="M18.4 2.6a2.1 2.1 0 0 1 3 3L13 14l-4 1 1-4 8.4-8.4z"/></svg>
+      新聊天
+    </button>
+    <div class="dr-list">
+      <div class="dr-empty" v-if="!groupedIndex.length">{{ searchQ ? '没有匹配的会话' : '还没有会话' }}</div>
+      <template v-for="g in groupedIndex">
+        <div class="dr-group">{{ g.name }}</div>
+        <div class="dr-item" v-for="it in g.items" :key="it.id" :class="{cur: it.id === session.id}">
+          <button class="dr-item-main" @click="openSession(it.id); drawerOpen = false">
+            <span class="t">{{ it.pinned ? '📌 ' : '' }}{{ it.title || '新聊天' }}</span>
+          </button>
+          <button class="dr-item-more" @click="sessionMenuFor = it; sheet = 'sessionMenu'">
+            <svg viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="19" cy="12" r="1.7"/></svg>
+          </button>
+        </div>
+      </template>
+    </div>
+    <div class="dr-foot">
+      <button class="dr-foot-btn" @click="openSettings(); drawerOpen = false">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.9 2.9l-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.2a1.7 1.7 0 0 0-1-1.5 1.7 1.7 0 0 0-1.9.3l-.1.1a2 2 0 1 1-2.9-2.9l.1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.2a1.7 1.7 0 0 0 1.5-1 1.7 1.7 0 0 0-.3-1.9l-.1-.1a2 2 0 1 1 2.9-2.9l.1.1a1.7 1.7 0 0 0 1.9.3h.1a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.2a1.7 1.7 0 0 0 1 1.5h.1a1.7 1.7 0 0 0 1.9-.3l.1-.1a2 2 0 1 1 2.9 2.9l-.1.1a1.7 1.7 0 0 0-.3 1.9v.1a1.7 1.7 0 0 0 1.5 1h.2a2 2 0 1 1 0 4h-.2a1.7 1.7 0 0 0-1.5 1z"/></svg>
+        设置
+      </button>
+    </div>
+  </div>
+
+  <!-- ================= 底部弹层 ================= -->
+  <div class="sheet-mask" v-if="sheet" @click.self="sheet = ''">
+    <div class="sheet">
+      <div class="sheet-grip"></div>
+
+      <!-- 模型选择 -->
+      <template v-if="sheet === 'model'">
+        <div class="sheet-title">选择模型</div>
+        <div class="sheet-body">
+          <div class="model-none" v-if="!providers.length">
+            还没有配置提供商<br>
+            <button class="big-btn" style="margin-top:14px" @click="sheet=''; openSettings()">去添加</button>
+          </div>
+          <div class="prov-group" v-for="p in providers" :key="p.id">
+            <div class="prov-group-name">{{ p.name }}</div>
+            <button class="model-item" v-for="md in (p.models.length ? p.models : [''])" :key="md"
+              @click="pickModel(p, md)">
+              {{ md || '(默认模型，请在提供商里配置)' }}
+              <svg class="check" v-if="p.id === settings.activeProviderId && md === settings.activeModel" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12.5l5 5L20 6.5"/></svg>
+            </button>
+          </div>
+        </div>
+      </template>
+
+      <!-- 会话菜单 -->
+      <template v-else-if="sheet === 'sessionMenu' && sessionMenuFor">
+        <div class="sheet-title">{{ sessionMenuFor.title || '新聊天' }}</div>
+        <div class="sheet-body">
+          <button class="act-item" @click="renameSession(sessionMenuFor)">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M17.4 3.6a2 2 0 0 1 3 3L8 19l-4 1 1-4L17.4 3.6z"/></svg>重命名
+          </button>
+          <button class="act-item" @click="togglePin(sessionMenuFor)">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M12 17v5M6 9l1-5h10l1 5-3 3v3H9v-3L6 9z"/></svg>{{ sessionMenuFor.pinned ? '取消置顶' : '置顶' }}
+          </button>
+          <button class="act-item" @click="exportSession(sessionMenuFor)">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M12 3v12M7 10l5 5 5-5M4 21h16"/></svg>导出此会话
+          </button>
+          <button class="act-item danger" @click="deleteSessionAsk(sessionMenuFor)">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg>删除会话
+          </button>
+        </div>
+      </template>
+
+      <!-- 附件菜单 -->
+      <template v-else-if="sheet === 'attach'">
+        <div class="sheet-title">添加内容</div>
+        <div class="sheet-body">
+          <button class="act-item" @click="attachImage()">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="18" height="18" rx="3"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5-11 11"/></svg>图片
+          </button>
+          <button class="act-item" @click="attachFile()">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M13 3H6a1.5 1.5 0 0 0-1.5 1.5v15A1.5 1.5 0 0 0 6 21h12a1.5 1.5 0 0 0 1.5-1.5V9.5L13 3z"/><path d="M13 3v6.5h6.5"/></svg>文本文件
+          </button>
+          <button class="act-item" @click="sheet = 'files'">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z"/></svg>会话文件（{{ fileCount }}）
+          </button>
+        </div>
+      </template>
+
+      <!-- 会话文件 -->
+      <template v-else-if="sheet === 'files'">
+        <div class="sheet-title">会话文件
+          <button class="page-act" @click="uploadToWorkspace()">上传</button>
+        </div>
+        <div class="sheet-body">
+          <div class="model-none" v-if="!fileCount">工作区为空<br>AI 写入的文件和你上传的文件会出现在这里</div>
+          <div class="card" v-else>
+            <button class="file-row" v-for="(f, name) in session.files" :key="name" @click="viewFile(name)">
+              <span class="file-ic">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M13 3H6a1.5 1.5 0 0 0-1.5 1.5v15A1.5 1.5 0 0 0 6 21h12a1.5 1.5 0 0 0 1.5-1.5V9.5L13 3z"/><path d="M13 3v6.5h6.5"/></svg>
+              </span>
+              <span class="file-info">
+                <span class="file-name">{{ name }}</span>
+                <span class="file-meta" style="display:block">{{ U.fmtSize(f.size) }} · {{ U.fmtFull(f.mtime) }}</span>
+              </span>
+              <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 6l6 6-6 6"/></svg>
+            </button>
+          </div>
+        </div>
+      </template>
+    </div>
+  </div>
+
+  <!-- ================= 设置页 ================= -->
+  <div class="page" v-if="pageIs('settings')">
+    <div class="page-head">
+      <button class="icon-btn" @click="closePage()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M15 5l-7 7 7 7"/></svg></button>
+      <div class="page-title">设置</div>
+    </div>
+    <div class="page-body">
+      <div class="sec-label">模型提供商</div>
+      <div class="card">
+        <button class="row" v-for="p in providers" :key="p.id" @click="editProvider(p)">
+          <span class="row-label">{{ p.name }}<span class="rl-sub">{{ apiTypeLabel(p.api) }} · {{ p.models.length }} 个模型</span></span>
+          <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 6l6 6-6 6"/></svg>
+        </button>
+        <button class="row" @click="addProvider()">
+          <span class="row-label" style="color:var(--link)">＋ 添加提供商</span>
+        </button>
+      </div>
+
+      <div class="sec-label">Agent 工具</div>
+      <div class="card">
+        <div class="row static">
+          <span class="row-label">启用工具调用<span class="rl-sub">JS 沙盒 / HTML 预览 / 文件 / 抓取网页</span></span>
+          <button class="switch" :class="{on: settings.agentEnabled}" @click="settings.agentEnabled = !settings.agentEnabled; persistSettings()"></button>
+        </div>
+        <div class="row static">
+          <span class="row-label">网页访问 (web_fetch)</span>
+          <div class="seg" style="width:190px">
+            <button :class="{on: settings.webFetch === 'ask'}" @click="settings.webFetch = 'ask'; persistSettings()">询问</button>
+            <button :class="{on: settings.webFetch === 'always'}" @click="settings.webFetch = 'always'; persistSettings()">允许</button>
+            <button :class="{on: settings.webFetch === 'never'}" @click="settings.webFetch = 'never'; persistSettings()">禁止</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="sec-label">对话</div>
+      <div class="card">
+        <div class="row static">
+          <span class="row-label">温度 (temperature)</span>
+          <input type="text" inputmode="decimal" style="width:80px" :value="settings.temperature == null ? '' : settings.temperature" placeholder="默认" @change="setTemp($event.target.value)">
+        </div>
+        <div class="row static">
+          <span class="row-label">最大输出 tokens</span>
+          <input type="text" inputmode="numeric" style="width:80px" :value="settings.maxTokens || ''" placeholder="默认" @change="setMaxTokens($event.target.value)">
+        </div>
+      </div>
+      <div class="sec-label">系统提示词</div>
+      <textarea class="textarea-block" v-model="settings.systemPrompt" placeholder="全局 System Prompt，留空则不发送" @change="persistSettings()"></textarea>
+
+      <div class="sec-label">外观</div>
+      <div class="card">
+        <div class="row static">
+          <span class="row-label">主题</span>
+          <div class="seg" style="width:190px">
+            <button :class="{on: settings.theme === 'auto'}" @click="setTheme('auto')">跟随系统</button>
+            <button :class="{on: settings.theme === 'light'}" @click="setTheme('light')">浅色</button>
+            <button :class="{on: settings.theme === 'dark'}" @click="setTheme('dark')">深色</button>
+          </div>
+        </div>
+        <div class="row static">
+          <span class="row-label">字号</span>
+          <div class="seg" style="width:140px">
+            <button :class="{on: settings.fontSize === 'normal'}" @click="setFontSize('normal')">标准</button>
+            <button :class="{on: settings.fontSize === 'large'}" @click="setFontSize('large')">大</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="sec-label">数据</div>
+      <div class="card">
+        <button class="row" @click="exportAll()">
+          <span class="row-label">导出全部数据<span class="rl-sub">会话、提供商与设置（JSON）</span></span>
+          <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 6l6 6-6 6"/></svg>
+        </button>
+        <button class="row" @click="importData()">
+          <span class="row-label">导入数据<span class="rl-sub">从 WepChat 备份文件恢复</span></span>
+          <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 6l6 6-6 6"/></svg>
+        </button>
+        <button class="row" @click="clearAllAsk()">
+          <span class="row-label" style="color:var(--danger)">清空全部数据</span>
+        </button>
+      </div>
+      <div class="hint">已用本地存储约 {{ U.fmtSize(storageUsed) }} · WepChat v1.0</div>
+    </div>
+  </div>
+
+  <!-- ================= 提供商编辑页 ================= -->
+  <div class="page" v-if="pageIs('provider')">
+    <div class="page-head">
+      <button class="icon-btn" @click="closePage()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M15 5l-7 7 7 7"/></svg></button>
+      <div class="page-title">{{ provForm.isNew ? '添加提供商' : '编辑提供商' }}</div>
+      <button class="page-act" @click="saveProvider()">保存</button>
+    </div>
+    <div class="page-body" v-if="provForm.data">
+      <div class="sec-label">基本信息</div>
+      <div class="card">
+        <div class="row static"><span class="row-label" style="flex:none">名称</span><input type="text" v-model="provForm.data.name" placeholder="如 OpenAI / DeepSeek"></div>
+        <div class="row static">
+          <span class="row-label" style="flex:none">接口类型</span>
+          <select v-model="provForm.data.api" style="text-align:right;flex:1;direction:rtl">
+            <option v-for="t in API.API_TYPES" :value="t.value">{{ t.label }}</option>
+          </select>
+        </div>
+        <div class="row static"><span class="row-label" style="flex:none">API 地址</span><input type="url" v-model="provForm.data.baseUrl" placeholder="https://api.openai.com"></div>
+        <div class="row static"><span class="row-label" style="flex:none">API Key</span><input :type="provForm.showKey ? 'text' : 'password'" v-model="provForm.data.apiKey" placeholder="sk-..." @focus="provForm.showKey = true" @blur="provForm.showKey = false"></div>
+      </div>
+      <div class="hint">地址只填域名时自动补 /v1；以 # 结尾表示按原样使用完整地址。</div>
+
+      <div class="sec-label">模型列表（每行一个）</div>
+      <textarea class="textarea-block" style="font-family:ui-monospace,Menlo,monospace;font-size:13px" v-model="provForm.modelsText" placeholder="gpt-4o-mini&#10;gpt-4o"></textarea>
+      <button class="big-btn plain" :disabled="provForm.fetching" @click="fetchModels()">{{ provForm.fetching ? '获取中…' : '从接口获取模型列表' }}</button>
+      <button class="big-btn plain" :disabled="provForm.testing" @click="testProvider()">{{ provForm.testing ? '测试中…' : '测试连接' }}</button>
+      <button class="big-btn danger" v-if="!provForm.isNew" @click="deleteProviderAsk()">删除提供商</button>
+    </div>
+  </div>
+
+  <!-- ================= 文件查看器 ================= -->
+  <div class="page" v-if="pageIs('viewer')">
+    <div class="page-head">
+      <button class="icon-btn" @click="closePage()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M15 5l-7 7 7 7"/></svg></button>
+      <div class="page-title">{{ viewer.name }}</div>
+      <button class="page-act" @click="saveWorkspaceFile()">导出</button>
+      <button class="page-act" style="color:var(--danger)" @click="deleteWorkspaceFile()">删除</button>
+    </div>
+    <div class="viewer-img" v-if="viewer.isImage"><img :src="viewer.dataUrl"></div>
+    <pre class="viewer-pre" v-else>{{ viewer.content }}</pre>
+  </div>
+
+  <!-- ================= HTML 预览 ================= -->
+  <div class="page preview-page" v-if="pageIs('preview')">
+    <div class="page-head">
+      <button class="icon-btn" @click="closePage()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+      <div class="page-title">{{ preview.title }}</div>
+      <button class="icon-btn small" @click="runPreview()" aria-label="重新运行"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><path d="M20 12a8 8 0 1 1-2.3-5.6M20 3v4h-4"/></svg></button>
+      <button class="icon-btn small" @click="savePreviewToWorkspace()" aria-label="保存"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><path d="M17 21v-8H7v8M7 3v5h8"/></svg></button>
+      <button class="icon-btn small" @click="exportPreview()" aria-label="导出"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><path d="M12 3v12M7 10l5 5 5-5M4 21h16"/></svg></button>
+    </div>
+    <div class="pv-tabs">
+      <button class="pv-tab" :class="{on: preview.tab === 'view'}" @click="preview.tab = 'view'">预览</button>
+      <button class="pv-tab" :class="{on: preview.tab === 'src'}" @click="preview.tab = 'src'">源码</button>
+      <button class="pv-tab" :class="{on: preview.tab === 'console'}" @click="preview.tab = 'console'">控制台{{ preview.logs.length ? ' (' + preview.logs.length + ')' : '' }}</button>
+    </div>
+    <div class="pv-frame-wrap">
+      <iframe class="pv-frame" ref="pvFrame" v-show="preview.tab === 'view'" sandbox="allow-scripts allow-modals"></iframe>
+      <div class="pv-src" v-show="preview.tab === 'src'">{{ preview.doc }}</div>
+      <div class="pv-console" v-show="preview.tab === 'console'">
+        <div class="pv-empty" v-if="!preview.logs.length">暂无输出</div>
+        <div class="pv-log" v-for="(l, i) in preview.logs" :key="i" :class="l.level">{{ l.text }}</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ================= 对话框 ================= -->
+  <div class="dlg-mask" v-if="dlg" @click.self="dlgAnswer(null)">
+    <div class="dlg">
+      <div class="dlg-title" v-if="dlg.title">{{ dlg.title }}</div>
+      <div class="dlg-msg" v-if="dlg.msg">{{ dlg.msg }}</div>
+      <input class="dlg-input" v-if="dlg.input != null" v-model="dlg.value" :placeholder="dlg.placeholder || ''" ref="dlgInput">
+      <textarea class="dlg-input" style="min-height:110px;resize:none" v-if="dlg.textarea" v-model="dlg.value" :placeholder="dlg.placeholder || ''"></textarea>
+      <div class="dlg-btns">
+        <button class="dlg-btn" v-for="b in dlg.buttons" :class="b.style" @click="dlgAnswer(b.value)">{{ b.text }}</button>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<script src="js/util.js"></script>
+<script src="js/store.js"></script>
+<script src="js/markdown.js"></script>
+<script src="js/api.js"></script>
+<script src="js/tools.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>
