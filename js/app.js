@@ -15,6 +15,11 @@
   function normalizeSession(sess) {
     sess = sess || Store.newSession();
     sess.messages = Array.isArray(sess.messages) ? sess.messages : [];
+    sess.messages.forEach(m => {
+      if (Array.isArray(m.toolCalls)) {
+        m.toolCalls.forEach(t => { t._open = false; });
+      }
+    });
     sess.files = sess.files || {};
     sess.services = Array.isArray(sess.services) ? sess.services : [];
     sess.createdAt = sess.createdAt || U.now();
@@ -722,7 +727,7 @@
               arguments: t.arguments || '{}',
               status: 'running',
               result: null,
-              _open: true
+              _open: false
             }));
             assistant.toolCalls = assistant.toolCalls.concat(displayCalls);
             workingMessages.push({

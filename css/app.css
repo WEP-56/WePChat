@@ -441,6 +441,7 @@ html.dark .df-line.add { color: #7ee09d; background: rgba(52, 199, 89, 0.14); }
 /* ============ 文件管理 ============ */
 .file-row { display: flex; align-items: center; gap: 12px; padding: 12px 14px; width: 100%; text-align: left; }
 .file-row:active { background: var(--surface); opacity: 1; }
+.file-row .chev { width: 17px; height: 17px; color: var(--text3); flex: none; }
 .file-ic {
   width: 38px; height: 38px; border-radius: 11px; background: var(--surface);
   display: flex; align-items: center; justify-content: center; flex: none;
