@@ -116,6 +116,56 @@
     return U.escapeHtml(String(s || ''));
   }
 
+  const TextTargets = new Map();
+  const TextTimers = new Map();
+  const TextResolvers = new Map();
+
+  function resolveTyping(id) {
+    const list = TextResolvers.get(id) || [];
+    TextResolvers.delete(id);
+    list.forEach(fn => fn());
+  }
+
+  function smoothText(vm, msg, target) {
+    if (!msg || !msg.id) return;
+    const id = msg.id;
+    const viewMsg = vm && vm.session && Array.isArray(vm.session.messages)
+      ? (vm.session.messages.find(m => m && m.id === id) || msg)
+      : msg;
+    target = String(target || '');
+    TextTargets.set(id, target);
+    if (TextTimers.has(id)) return;
+    const timer = setInterval(() => {
+      const full = TextTargets.get(id) || '';
+      let cur = viewMsg.content || '';
+      if (!full.startsWith(cur)) {
+        cur = '';
+        viewMsg.content = '';
+      }
+      const rest = full.slice(cur.length);
+      if (!rest) {
+        clearInterval(timer);
+        TextTimers.delete(id);
+        TextTargets.delete(id);
+        resolveTyping(id);
+        return;
+      }
+      const step = rest.length > 6000 ? 12 : rest.length > 2500 ? 6 : rest.length > 900 ? 3 : rest.length > 240 ? 2 : 1;
+      viewMsg.content = cur + rest.slice(0, step);
+      nextTick(() => vm.scrollToBottom(false));
+    }, 24);
+    TextTimers.set(id, timer);
+  }
+
+  function waitSmoothText(msg) {
+    if (!msg || !msg.id || !TextTimers.has(msg.id)) return Promise.resolve();
+    return new Promise(resolve => {
+      const list = TextResolvers.get(msg.id) || [];
+      list.push(resolve);
+      TextResolvers.set(msg.id, list);
+    });
+  }
+
   createApp({
     data() {
       const settings = Store.loadSettings();
@@ -303,6 +353,46 @@
       setMaxTokens(v) {
         const n = parseInt(v, 10);
         this.settings.maxTokens = Number.isFinite(n) && n > 0 ? n : null;
+        this.persistSettings();
+      },
+      setMaxToolRounds(v) {
+        const n = parseInt(v, 10);
+        this.settings.maxToolRounds = Number.isFinite(n) ? U.clamp(n, 1, 32) : 8;
+        this.persistSettings();
+      },
+      setMaxToolCalls(v) {
+        const n = parseInt(v, 10);
+        this.settings.maxToolCalls = Number.isFinite(n) ? U.clamp(n, 1, 128) : 24;
+        this.persistSettings();
+      },
+      toolPermissionKey(name) {
+        if (name === 'run_js') return 'run_js';
+        if (name === 'preview_html') return 'preview_html';
+        if (name === 'web_fetch') return 'web_fetch';
+        if (name === 'run_service' || name === 'stop_service' || name === 'list_services') return 'services';
+        if (name === 'read_file' || name === 'write_file' || name === 'list_files' || name === 'create_workspace') return 'files';
+        return 'files';
+      },
+      toolPermissionLabel(name) {
+        const map = {
+          run_js: 'JavaScript 沙盒',
+          preview_html: 'HTML 预览',
+          web_fetch: '网页访问',
+          services: '工作区服务',
+          files: '工作区文件'
+        };
+        return map[this.toolPermissionKey(name)] || this.toolLabel(name);
+      },
+      toolPermission(nameOrKey) {
+        const key = ['run_js', 'preview_html', 'files', 'services', 'web_fetch'].includes(nameOrKey)
+          ? nameOrKey
+          : this.toolPermissionKey(nameOrKey);
+        const perms = this.settings.toolPermissions || {};
+        return perms[key] || (key === 'web_fetch' ? (this.settings.webFetch || 'ask') : 'ask');
+      },
+      setToolPermission(key, mode) {
+        this.settings.toolPermissions = Object.assign({}, this.settings.toolPermissions || {}, { [key]: mode });
+        if (key === 'web_fetch') this.settings.webFetch = mode;
         this.persistSettings();
       },
 
@@ -587,6 +677,19 @@
         }).join('');
         return '<div class="diff-view">' + html + '</div>';
       },
+      async authorizeToolCall(t) {
+        const mode = this.toolPermission(t.name);
+        const label = this.toolPermissionLabel(t.name);
+        if (mode === 'never') return '错误：用户已禁止工具：' + label;
+        if (mode === 'always') return '';
+        const ok = await this.confirm(
+          'AI 请求使用工具：' + label + '\n\n' +
+          '工具名：' + t.name + '\n' +
+          '参数：\n' + U.truncate(this.prettyJson(t.arguments), 900),
+          '工具授权'
+        );
+        return ok ? '' : '错误：用户拒绝了工具调用：' + label;
+      },
       async copyMsg(m) {
         const ok = await U.copyText(m.content || '');
         U.toast(ok ? '已复制' : '复制失败');
@@ -681,8 +784,9 @@
           createdAt: U.now()
         };
         this.session.messages.push(assistant);
+        const assistantMsg = this.session.messages[this.session.messages.length - 1];
         const workingMessages = this.session.messages
-          .filter(m => m.id !== assistant.id && (m.role === 'user' || m.role === 'assistant'))
+          .filter(m => m.id !== assistantMsg.id && (m.role === 'user' || m.role === 'assistant'))
           .map(m => {
             if (m.role === 'assistant') {
               return { role: 'assistant', content: m.content || '', reasoning: m.reasoning || '' };
@@ -695,9 +799,12 @@
         this.generating = true;
         this.stopRequested = false;
         this.abortCtl = new AbortController();
+        const maxToolRounds = U.clamp(parseInt(this.settings.maxToolRounds || 8, 10), 1, 32);
+        const maxToolCalls = U.clamp(parseInt(this.settings.maxToolCalls || 24, 10), 1, 128);
+        let totalToolCalls = 0;
 
         try {
-          for (let step = 0; step < 4; step++) {
+          for (let step = 0; step <= maxToolRounds; step++) {
             const result = await API.send({
               provider,
               model,
@@ -706,21 +813,31 @@
               settings: reqSettings,
               signal: this.abortCtl.signal,
               onUpdate: st => {
-                assistant.content = st.content || '';
-                assistant.reasoning = st.reasoning || '';
-                assistant.status = 'streaming';
+                smoothText(this, assistantMsg, st.content || '');
+                assistantMsg.reasoning = st.reasoning || '';
+                assistantMsg.status = 'streaming';
                 nextTick(() => this.scrollToBottom(false));
               }
             });
 
-            assistant.content = result.content || assistant.content || '';
-            assistant.reasoning = result.reasoning || assistant.reasoning || '';
+            smoothText(this, assistantMsg, result.content || assistantMsg.content || '');
+            assistantMsg.reasoning = result.reasoning || assistantMsg.reasoning || '';
 
             if (this.stopRequested || !tools.length || !result.toolCalls || !result.toolCalls.length) break;
 
             const rawCalls = result.toolCalls.filter(t => t && t.name);
             if (!rawCalls.length) break;
+            if (step >= maxToolRounds) {
+              assistantMsg.error = '已达到最大工具轮次（' + maxToolRounds + '）。可以在设置里调高“最大工具轮次”。';
+              break;
+            }
+            if (totalToolCalls + rawCalls.length > maxToolCalls) {
+              assistantMsg.error = '已达到最大工具调用数（' + maxToolCalls + '）。可以在设置里调高“最大工具调用数”。';
+              break;
+            }
+            totalToolCalls += rawCalls.length;
 
+            const callStart = assistantMsg.toolCalls.length;
             const displayCalls = rawCalls.map((t, idx) => ({
               id: t.id || ('call_' + step + '_' + idx),
               name: t.name,
@@ -729,7 +846,7 @@
               result: null,
               _open: false
             }));
-            assistant.toolCalls = assistant.toolCalls.concat(displayCalls);
+            assistantMsg.toolCalls = assistantMsg.toolCalls.concat(displayCalls);
             workingMessages.push({
               role: 'assistant',
               content: result.content || '',
@@ -741,10 +858,12 @@
             });
             this.persistSession();
 
-            for (const t of displayCalls) {
-              const out = await Tools.execute(t.name, t.arguments, {
+            for (let ti = 0; ti < displayCalls.length; ti++) {
+              const t = assistantMsg.toolCalls[callStart + ti] || displayCalls[ti];
+              const denied = await this.authorizeToolCall(t);
+              const out = denied || await Tools.execute(t.name, t.arguments, {
                 session: this.session,
-                webFetchMode: this.settings.webFetch,
+                webFetchMode: 'always',
                 confirm: msg => this.confirm(msg, '工具授权'),
                 openPreview: payload => this.openPreview(payload),
                 openService: serviceId => this.openServicePreview(serviceId)
@@ -756,12 +875,14 @@
               nextTick(() => this.scrollToBottom(false));
             }
           }
-          if (!assistant.content && !assistant.toolCalls.length && this.stopRequested) assistant.content = '已停止。';
-          assistant.status = 'done';
+          if (!assistantMsg.content && !assistantMsg.toolCalls.length && this.stopRequested) smoothText(this, assistantMsg, '已停止。');
+          await waitSmoothText(assistantMsg);
+          assistantMsg.status = 'done';
         } catch (e) {
-          assistant.status = 'done';
-          assistant.error = e && e.message || String(e);
+          assistantMsg.status = 'done';
+          assistantMsg.error = e && e.message || String(e);
         } finally {
+          await waitSmoothText(assistantMsg);
           this.generating = false;
           this.abortCtl = null;
           this.stopRequested = false;

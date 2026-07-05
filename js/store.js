@@ -14,6 +14,15 @@ const Store = {
       activeModel: '',
       agentEnabled: true,            // 是否给模型配置工具
       webFetch: 'ask',               // ask | always | never
+      toolPermissions: {
+        run_js: 'ask',
+        preview_html: 'ask',
+        files: 'ask',
+        services: 'ask',
+        web_fetch: 'ask'
+      },
+      maxToolRounds: 8,
+      maxToolCalls: 24,
       systemPrompt: '',
       temperature: null,             // null = 不传
       maxTokens: null,
@@ -39,7 +48,15 @@ const Store = {
   },
 
   loadSettings() {
-    return Object.assign(this.defaultSettings(), this._get(this.KEY_SETTINGS, {}));
+    const d = this.defaultSettings();
+    const saved = this._get(this.KEY_SETTINGS, {});
+    const out = Object.assign(d, saved);
+    out.toolPermissions = Object.assign({}, d.toolPermissions, saved.toolPermissions || {});
+    if (saved.webFetch && !(saved.toolPermissions && saved.toolPermissions.web_fetch)) {
+      out.toolPermissions.web_fetch = saved.webFetch;
+    }
+    out.webFetch = out.toolPermissions.web_fetch;
+    return out;
   },
   saveSettings(s) { this._set(this.KEY_SETTINGS, s); },
 

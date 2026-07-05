@@ -316,11 +316,43 @@
           <button class="switch" :class="{on: settings.agentEnabled}" @click="settings.agentEnabled = !settings.agentEnabled; persistSettings()"></button>
         </div>
         <div class="row static">
+          <span class="row-label">JavaScript 沙盒</span>
+          <div class="seg" style="width:190px">
+            <button :class="{on: toolPermission('run_js') === 'ask'}" @click="setToolPermission('run_js', 'ask')">询问</button>
+            <button :class="{on: toolPermission('run_js') === 'always'}" @click="setToolPermission('run_js', 'always')">允许</button>
+            <button :class="{on: toolPermission('run_js') === 'never'}" @click="setToolPermission('run_js', 'never')">禁止</button>
+          </div>
+        </div>
+        <div class="row static">
+          <span class="row-label">HTML 预览</span>
+          <div class="seg" style="width:190px">
+            <button :class="{on: toolPermission('preview_html') === 'ask'}" @click="setToolPermission('preview_html', 'ask')">询问</button>
+            <button :class="{on: toolPermission('preview_html') === 'always'}" @click="setToolPermission('preview_html', 'always')">允许</button>
+            <button :class="{on: toolPermission('preview_html') === 'never'}" @click="setToolPermission('preview_html', 'never')">禁止</button>
+          </div>
+        </div>
+        <div class="row static">
+          <span class="row-label">工作区文件</span>
+          <div class="seg" style="width:190px">
+            <button :class="{on: toolPermission('files') === 'ask'}" @click="setToolPermission('files', 'ask')">询问</button>
+            <button :class="{on: toolPermission('files') === 'always'}" @click="setToolPermission('files', 'always')">允许</button>
+            <button :class="{on: toolPermission('files') === 'never'}" @click="setToolPermission('files', 'never')">禁止</button>
+          </div>
+        </div>
+        <div class="row static">
+          <span class="row-label">工作区服务</span>
+          <div class="seg" style="width:190px">
+            <button :class="{on: toolPermission('services') === 'ask'}" @click="setToolPermission('services', 'ask')">询问</button>
+            <button :class="{on: toolPermission('services') === 'always'}" @click="setToolPermission('services', 'always')">允许</button>
+            <button :class="{on: toolPermission('services') === 'never'}" @click="setToolPermission('services', 'never')">禁止</button>
+          </div>
+        </div>
+        <div class="row static">
           <span class="row-label">网页访问 (web_fetch)</span>
           <div class="seg" style="width:190px">
-            <button :class="{on: settings.webFetch === 'ask'}" @click="settings.webFetch = 'ask'; persistSettings()">询问</button>
-            <button :class="{on: settings.webFetch === 'always'}" @click="settings.webFetch = 'always'; persistSettings()">允许</button>
-            <button :class="{on: settings.webFetch === 'never'}" @click="settings.webFetch = 'never'; persistSettings()">禁止</button>
+            <button :class="{on: toolPermission('web_fetch') === 'ask'}" @click="setToolPermission('web_fetch', 'ask')">询问</button>
+            <button :class="{on: toolPermission('web_fetch') === 'always'}" @click="setToolPermission('web_fetch', 'always')">允许</button>
+            <button :class="{on: toolPermission('web_fetch') === 'never'}" @click="setToolPermission('web_fetch', 'never')">禁止</button>
           </div>
         </div>
       </div>
@@ -334,6 +366,14 @@
         <div class="row static">
           <span class="row-label">最大输出 tokens</span>
           <input type="text" inputmode="numeric" style="width:80px" :value="settings.maxTokens || ''" placeholder="默认" @change="setMaxTokens($event.target.value)">
+        </div>
+        <div class="row static">
+          <span class="row-label">最大工具轮次<span class="rl-sub">每轮可包含多个工具调用</span></span>
+          <input type="text" inputmode="numeric" style="width:80px" :value="settings.maxToolRounds || 8" @change="setMaxToolRounds($event.target.value)">
+        </div>
+        <div class="row static">
+          <span class="row-label">最大工具调用数</span>
+          <input type="text" inputmode="numeric" style="width:80px" :value="settings.maxToolCalls || 24" @change="setMaxToolCalls($event.target.value)">
         </div>
       </div>
       <div class="sec-label">系统提示词</div>
