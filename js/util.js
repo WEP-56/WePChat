@@ -155,6 +155,75 @@ const U = {
       .trim() || 'download';
   },
 
+  /* data: URL 同步解码为 Blob。不用 fetch(dataUrl)：部分 Android WebView 不支持 */
+  dataUrlToBlob(dataUrl) {
+    const s = String(dataUrl || '');
+    const m = s.match(/^data:([^;,]+)?((?:;[^;,]+)*?)(;base64)?,/i);
+    if (!m) throw new Error('无效的图片数据');
+    const mime = m[1] || 'application/octet-stream';
+    const body = s.slice(m[0].length);
+    if (m[3]) {
+      const bin = atob(body);
+      const bytes = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+      return new Blob([bytes], { type: mime });
+    }
+    return new Blob([decodeURIComponent(body)], { type: mime });
+  },
+
+  blobToDataUrl(blob) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result || ''));
+      reader.onerror = () => reject(reader.error || new Error('读取数据失败'));
+      reader.readAsDataURL(blob);
+    });
+  },
+
+  blobToText(blob) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result || ''));
+      reader.onerror = () => reject(reader.error || new Error('读取数据失败'));
+      reader.readAsText(blob);
+    });
+  },
+
+  /* plus 桥接回调在部分 ROM 上可能不触发，所有原生操作都要有超时兜底，
+     否则 await 永久挂起，界面表现为“点了没反应” */
+  _withTimeout(promise, ms, msg) {
+    return new Promise((resolve, reject) => {
+      const t = setTimeout(() => reject(new Error(msg || '操作超时')), ms);
+      Promise.resolve(promise).then(
+        v => { clearTimeout(t); resolve(v); },
+        e => { clearTimeout(t); reject(e); }
+      );
+    });
+  },
+
+  _plusError(e, fallback) {
+    if (e instanceof Error) return e;
+    const msg = (e && (e.message || (e.code != null ? '错误码 ' + e.code : ''))) || '';
+    return new Error(msg || fallback || '操作失败');
+  },
+
+  /* Android 6+ 运行时存储权限。Android 11+ 会直接拒绝但公共目录写入不受影响，
+     所以无论结果如何都放行，由后续写入操作自己报错 */
+  _requestStoragePermission() {
+    return new Promise(resolve => {
+      if (!U.isPlus() || !window.plus.android || typeof plus.android.requestPermissions !== 'function') return resolve(true);
+      let done = false;
+      const finish = () => { if (!done) { done = true; resolve(true); } };
+      setTimeout(finish, 8000);
+      try {
+        plus.android.requestPermissions(
+          ['android.permission.WRITE_EXTERNAL_STORAGE', 'android.permission.READ_EXTERNAL_STORAGE'],
+          finish, finish
+        );
+      } catch (e) { finish(); }
+    });
+  },
+
   _mimeForName(filename, fallback) {
     if (fallback) return fallback;
     if (/\.html?$/i.test(filename)) return 'text/html;charset=utf-8';
@@ -206,7 +275,7 @@ const U = {
 
   _plusFileSystem(type) {
     return new Promise((resolve, reject) => {
-      plus.io.requestFileSystem(type, fs => resolve(fs.root), reject);
+      plus.io.requestFileSystem(type, fs => resolve(fs.root), e => reject(U._plusError(e, '访问文件系统失败')));
     });
   },
 
@@ -218,38 +287,72 @@ const U = {
     return entry.fullPath || entry.name || '';
   },
 
+  /* Entry 的平台绝对路径（/storage/...），供 Native.js 和 gallery/share 使用 */
+  _plusEntryPath(entry) {
+    if (!entry) return '';
+    try {
+      if (typeof entry.toLocalURL === 'function') {
+        const u = entry.toLocalURL() || '';
+        if (/^file:\/\//i.test(u)) return u.replace(/^file:\/\//i, '');
+        if (u && plus.io && typeof plus.io.convertLocalFileSystemURL === 'function') {
+          const abs = plus.io.convertLocalFileSystemURL(u);
+          if (abs) return abs;
+        }
+      }
+    } catch (e) {}
+    try {
+      if (entry.fullPath && entry.fullPath.charAt(0) === '/') return entry.fullPath;
+    } catch (e) {}
+    return '';
+  },
+
+  /* 原生 Bitmap 保存图片：base64 原生解码、原生落盘，不让二进制数据过 JS 桥。
+     Native.js 的 byte[] 跨桥会拿到 null（实机 NullPointerException），不能用 */
+  _plusSaveBitmap(absPath, dataUrl) {
+    return new Promise((resolve, reject) => {
+      if (!plus.nativeObj || !plus.nativeObj.Bitmap) return reject(new Error('当前基座不支持 Bitmap'));
+      const bmp = new plus.nativeObj.Bitmap('wc-export-' + Date.now() + '-' + Math.floor(Math.random() * 1e6));
+      const done = err => {
+        try { bmp.clear(); } catch (e) {}
+        if (err) reject(err); else resolve();
+      };
+      bmp.loadBase64Data(dataUrl, () => {
+        const fmt = /\.jpe?g$/i.test(absPath) ? 'jpg' : 'png';
+        bmp.save(absPath, { overwrite: true, format: fmt, quality: 100 },
+          () => done(),
+          e => done(U._plusError(e, '保存图片失败')));
+      }, e => done(U._plusError(e, '解码图片数据失败')));
+    });
+  },
+
   async _plusWriteBlobAt(root, parts, blob) {
     const clean = (parts || []).map(p => U._safeExportName(p)).filter(Boolean);
     const filename = clean.pop() || 'file';
     const dir = await U._plusGetDir(root, clean);
-    return await new Promise((resolve, reject) => {
-      dir.getFile(filename, { create: true }, entry => {
-        entry.createWriter(writer => {
-          let writing = false;
-          writer.onerror = reject;
-          writer.onwriteend = () => {
-            if (!writing) {
-              writing = true;
-              try { writer.seek(0); } catch (e) {}
-              writer.write(blob);
-              return;
-            }
-            resolve(entry);
-          };
-          try {
-            if (writer.length > 0) writer.truncate(0);
-            else {
-              writing = true;
-              writer.write(blob);
-            }
-          }
-          catch (e) {
-            writing = true;
-            writer.write(blob);
-          }
-        }, reject);
-      }, reject);
+    let entry = await new Promise((resolve, reject) => {
+      dir.getFile(filename, { create: true }, resolve, e => reject(U._plusError(e, '创建文件失败')));
     });
+    const absPath = U._plusEntryPath(entry) || U._plusEntryUrl(entry);
+    /* 图片：原生 Bitmap 落盘 */
+    if (/^image\//i.test(blob && blob.type || '') && absPath) {
+      const dataUrl = await U.blobToDataUrl(blob);
+      await U._withTimeout(U._plusSaveBitmap(absPath, dataUrl), 20000, '保存图片超时');
+      return entry;
+    }
+    /* 文本：FileWriter 只可靠支持字符串写入；先删除重建避免旧内容残留 */
+    const text = await U.blobToText(blob);
+    await new Promise(resolve => { try { entry.remove(resolve, resolve); } catch (e) { resolve(); } });
+    entry = await new Promise((resolve, reject) => {
+      dir.getFile(filename, { create: true }, resolve, e => reject(U._plusError(e, '创建文件失败')));
+    });
+    await U._withTimeout(new Promise((resolve, reject) => {
+      entry.createWriter(writer => {
+        writer.onwriteend = () => resolve();
+        writer.onerror = () => reject(U._plusError(writer.error, '写入文件失败'));
+        writer.write(text);
+      }, e => reject(U._plusError(e, '写入文件失败')));
+    }), 15000, '写入文件超时');
+    return entry;
   },
 
   /* 保存 Blob 到设备。浏览器优先弹保存文件对话框；plus 环境写入公共下载目录。 */
@@ -265,23 +368,19 @@ const U = {
         throw e;
       }
     }
-    return new Promise((resolve, reject) => {
-      if (U.isPlus()) {
-        const fsType = plus.io.PUBLIC_DOWNLOADS != null ? plus.io.PUBLIC_DOWNLOADS : plus.io.PUBLIC_DOCUMENTS;
-        U._plusFileSystem(fsType).then(root => {
-          U._plusWriteBlobAt(root, ['wepchat', name], blob).then(entry => {
-            resolve({
-              path: '下载/wepchat/' + name,
-              name,
-              fullPath: entry.fullPath || '',
-              localUrl: U._plusEntryUrl(entry)
-            });
-          }, reject);
-        }, reject);
-      } else {
-        resolve({ path: '浏览器下载目录', name: U._downloadBlob(name, blob) });
-      }
-    });
+    if (U.isPlus()) {
+      await U._requestStoragePermission();
+      const fsType = plus.io.PUBLIC_DOWNLOADS != null ? plus.io.PUBLIC_DOWNLOADS : plus.io.PUBLIC_DOCUMENTS;
+      const root = await U._withTimeout(U._plusFileSystem(fsType), 10000, '打开下载目录超时');
+      const entry = await U._withTimeout(U._plusWriteBlobAt(root, ['wepchat', name], blob), 30000, '写入下载目录超时');
+      return {
+        path: '下载/wepchat/' + name,
+        name,
+        fullPath: entry.fullPath || '',
+        localUrl: U._plusEntryUrl(entry)
+      };
+    }
+    return { path: '浏览器下载目录', name: U._downloadBlob(name, blob) };
   },
 
   /* 保存文本到设备 */
@@ -291,9 +390,7 @@ const U = {
   },
 
   async saveDataUrlFile(filename, dataUrl, opts) {
-    const res = await fetch(dataUrl);
-    const blob = await res.blob();
-    return U.saveBlobFile(filename, blob, opts);
+    return U.saveBlobFile(filename, U.dataUrlToBlob(dataUrl), opts);
   },
 
   async saveImageToGallery(filename, dataUrl) {
@@ -301,13 +398,18 @@ const U = {
     if (!U.isPlus() || !plus.gallery || !plus.gallery.save) {
       return U.saveDataUrlFile(name, dataUrl, { picker: false });
     }
-    const res = await fetch(dataUrl);
-    const blob = await res.blob();
-    const root = await U._plusFileSystem(plus.io.PRIVATE_DOC);
-    const entry = await U._plusWriteBlobAt(root, ['wepchat-share', Date.now() + '-' + name], blob);
-    const localUrl = U._plusEntryUrl(entry);
+    await U._requestStoragePermission();
+    const blob = U.dataUrlToBlob(dataUrl);
+    const root = await U._withTimeout(U._plusFileSystem(plus.io.PRIVATE_DOC), 10000, '打开应用目录超时');
+    const entry = await U._withTimeout(
+      U._plusWriteBlobAt(root, ['wepchat-share', Date.now() + '-' + name], blob),
+      30000, '写入临时文件超时'
+    );
+    const target = U._plusEntryPath(entry) || U._plusEntryUrl(entry);
     try {
-      await new Promise((resolve, reject) => plus.gallery.save(localUrl, resolve, reject));
+      await U._withTimeout(new Promise((resolve, reject) => {
+        plus.gallery.save(target, resolve, e => reject(U._plusError(e, '保存到相册失败')));
+      }), 20000, '保存到相册超时');
       return { path: '系统相册', name };
     } finally {
       try { entry.remove(() => {}, () => {}); } catch (e) {}
@@ -320,18 +422,22 @@ const U = {
 
   async shareImageFile(filename, dataUrl) {
     const name = U._safeExportName(filename);
-    const res = await fetch(dataUrl);
-    const blob = await res.blob();
+    const blob = U.dataUrlToBlob(dataUrl);
     if (U.isPlus() && plus.share && plus.share.sendWithSystem) {
-      const saved = await U.saveBlobFile(name, blob, { picker: false });
-      const localUrl = saved.localUrl || saved.fullPath || '';
-      if (!localUrl) throw new Error('无法创建可分享的本地文件');
+      /* 临时文件放应用私有目录，分享不依赖存储权限 */
+      const root = await U._withTimeout(U._plusFileSystem(plus.io.PRIVATE_DOC), 10000, '打开应用目录超时');
+      const entry = await U._withTimeout(
+        U._plusWriteBlobAt(root, ['wepchat-share', Date.now() + '-' + name], blob),
+        30000, '创建分享文件超时'
+      );
+      const pic = U._plusEntryPath(entry) || U._plusEntryUrl(entry);
+      if (!pic) throw new Error('无法创建可分享的本地文件');
       return await new Promise((resolve, reject) => {
         plus.share.sendWithSystem({
           type: 'image',
           content: name,
-          pictures: [localUrl]
-        }, () => resolve({ path: '系统分享面板', name }), reject);
+          pictures: [pic]
+        }, () => resolve({ path: '系统分享面板', name }), e => reject(U._plusError(e, '系统分享失败')));
       });
     }
     if (navigator.share && typeof File !== 'undefined') {
@@ -353,7 +459,7 @@ const U = {
           type: 'text',
           title: name,
           content
-        }, () => resolve({ path: '系统分享面板', name }), reject);
+        }, () => resolve({ path: '系统分享面板', name }), e => reject(U._plusError(e, '系统分享失败')));
       });
     }
     if (navigator.share) {
@@ -373,8 +479,7 @@ const U = {
 
   async _blobForExportFile(file) {
     if (file.dataUrl && !file.content) {
-      const res = await fetch(file.dataUrl);
-      return await res.blob();
+      return U.dataUrlToBlob(file.dataUrl);
     }
     return new Blob([file.content || ''], { type: U._mimeForName(file.path, file.mime) });
   },
@@ -494,7 +599,9 @@ const U = {
   async _plusGetDir(root, parts) {
     let dir = root;
     for (const part of parts) {
-      dir = await new Promise((resolve, reject) => dir.getDirectory(part, { create: true }, resolve, reject));
+      dir = await new Promise((resolve, reject) => {
+        dir.getDirectory(part, { create: true }, resolve, e => reject(U._plusError(e, '创建目录失败')));
+      });
     }
     return dir;
   },
@@ -503,10 +610,49 @@ const U = {
     await U._plusWriteBlobAt(root, ['wepchat', baseDir].concat(parts), blob);
   },
 
+  /* App 端 ZIP：文件先暂存到 _doc/ 临时目录（图片走 Bitmap、文本走 FileWriter），
+     再用 plus.zip.compress 原生压缩到下载目录，全程无二进制过 JS 桥 */
+  async _plusExportZip(files, zipName) {
+    await U._requestStoragePermission();
+    const docRoot = await U._withTimeout(U._plusFileSystem(plus.io.PRIVATE_DOC), 10000, '打开应用目录超时');
+    const stageName = 'wepchat-zip-' + Date.now();
+    const baseName = U._safeExportName(zipName.replace(/\.zip$/i, '')) || 'workspace';
+    const cleanup = () => {
+      try {
+        docRoot.getDirectory(stageName, {}, d => d.removeRecursively(() => {}, () => {}), () => {});
+      } catch (e) {}
+    };
+    try {
+      for (const file of files) {
+        const parts = [stageName, baseName].concat(U._safePathParts(file.path));
+        const blob = await U._blobForExportFile(file);
+        await U._withTimeout(U._plusWriteBlobAt(docRoot, parts, blob), 30000, '写入临时文件超时');
+      }
+      const fsType = plus.io.PUBLIC_DOWNLOADS != null ? plus.io.PUBLIC_DOWNLOADS : plus.io.PUBLIC_DOCUMENTS;
+      const dlRoot = await U._withTimeout(U._plusFileSystem(fsType), 10000, '打开下载目录超时');
+      const dlDir = await U._plusGetDir(dlRoot, ['wepchat']);
+      /* 已存在的同名 ZIP 先删除，避免 compress 追加或报错 */
+      await new Promise(resolve => {
+        try { dlDir.getFile(zipName, {}, old => old.remove(resolve, resolve), resolve); } catch (e) { resolve(); }
+      });
+      const dstPath = (U._plusEntryPath(dlDir) || U._plusEntryUrl(dlDir)) + '/' + zipName;
+      const srcUrl = '_doc/' + stageName + '/' + baseName;
+      await U._withTimeout(new Promise((resolve, reject) => {
+        plus.zip.compress(srcUrl, dstPath, resolve, e => reject(U._plusError(e, '压缩失败')));
+      }), 60000, '压缩超时');
+      return { path: '下载/wepchat/' + zipName, name: zipName };
+    } finally {
+      cleanup();
+    }
+  },
+
   async exportFilesAsZip(files, filename, opts) {
     const list = Array.isArray(files) ? files : [];
     if (!list.length) return null;
     const zipName = U._safeExportName(filename || ('workspace-' + new Date().toISOString().slice(0, 10) + '.zip'));
+    if (U.isPlus() && plus.zip && plus.zip.compress) {
+      return await U._plusExportZip(list, zipName);
+    }
     const blob = await U.zipFilesBlob(list);
     return U.saveBlobFile(zipName, blob, Object.assign({ picker: true }, opts || {}, { mime: 'application/zip' }));
   },
@@ -530,15 +676,14 @@ const U = {
       return { count: list.length, path: '所选文件夹' };
     }
     if (U.isPlus()) {
+      await U._requestStoragePermission();
       const baseDir = U._safeExportName((opts && opts.baseDir) || ('workspace-' + new Date().toISOString().slice(0, 10)));
-      const root = await new Promise((resolve, reject) => {
-        const fsType = plus.io.PUBLIC_DOWNLOADS != null ? plus.io.PUBLIC_DOWNLOADS : plus.io.PUBLIC_DOCUMENTS;
-        plus.io.requestFileSystem(fsType, fs => resolve(fs.root), reject);
-      });
+      const fsType = plus.io.PUBLIC_DOWNLOADS != null ? plus.io.PUBLIC_DOWNLOADS : plus.io.PUBLIC_DOCUMENTS;
+      const root = await U._withTimeout(U._plusFileSystem(fsType), 10000, '打开下载目录超时');
       for (const file of list) {
         const parts = U._safePathParts(file.path);
         const blob = await U._blobForExportFile(file);
-        await U._plusWriteExportFile(root, baseDir, parts, blob);
+        await U._withTimeout(U._plusWriteExportFile(root, baseDir, parts, blob), 30000, '写入下载目录超时');
       }
       return { count: list.length, path: '下载/wepchat/' + baseDir };
     }

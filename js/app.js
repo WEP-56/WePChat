@@ -1,8 +1,11 @@
 /* WepChat - Vue 应用入口 */
 'use strict';
 
-(() => {
+(async () => {
   const { createApp, nextTick } = Vue;
+
+  /* 存储层先就绪（IndexedDB 预热 + localStorage 旧数据迁移）再挂载应用 */
+  await Store.init();
 
   function clone(obj) {
     return JSON.parse(JSON.stringify(obj));
@@ -182,8 +185,10 @@
   }
 
   function resolveWorkspaceRef(ref, basePath) {
-    const raw = String(ref || '').trim().replace(/\\/g, '/');
+    let raw = String(ref || '').trim().replace(/\\/g, '/');
     if (!raw || isExternalRef(raw)) return '';
+    raw = raw.replace(/[?#].*$/, '');
+    if (!raw) return '';
     const seed = raw.startsWith('/') ? raw.replace(/^\/+/, '') : [parentFolder(basePath), raw].filter(Boolean).join('/');
     const out = [];
     for (const part of seed.split('/')) {
@@ -249,6 +254,14 @@
     return /^(?:[a-z]+:|\/\/|#)/i.test(String(ref || '').trim());
   }
 
+  function externalWebUrl(ref) {
+    const raw = String(ref || '').trim();
+    if (/^https?:\/\//i.test(raw)) return raw;
+    if (/^\/\//.test(raw)) return 'https:' + raw;
+    if (/^www\./i.test(raw)) return 'https://' + raw;
+    return '';
+  }
+
   function normalizeRef(ref) {
     return String(ref || '').trim().replace(/^\.?\//, '').replace(/\\/g, '/');
   }
@@ -304,6 +317,104 @@
       const list = TextResolvers.get(msg.id) || [];
       list.push(resolve);
       TextResolvers.set(msg.id, list);
+    });
+  }
+
+  function streamToolKey(step, idx) {
+    return 'step_' + step + '_' + idx;
+  }
+
+  function findToolDisplay(msg, src, key) {
+    const calls = msg.toolCalls || (msg.toolCalls = []);
+    return calls.find(t => t && t._streamKey === key)
+      || (src && src.id ? calls.find(t => t && t.id === src.id) : null);
+  }
+
+  function syncStreamToolCalls(msg, tools, step) {
+    if (!msg || !Array.isArray(tools) || !tools.length) return;
+    const calls = msg.toolCalls || (msg.toolCalls = []);
+    tools.filter(Boolean).forEach((src, idx) => {
+      const key = streamToolKey(step, idx);
+      let t = findToolDisplay(msg, src, key);
+      if (!t) {
+        t = {
+          id: src.id || key,
+          name: src.name || '',
+          arguments: src.arguments || '',
+          status: 'composing',
+          result: null,
+          _open: true,
+          _streaming: true,
+          _streamKey: key,
+          _streamStep: step
+        };
+        calls.push(t);
+      }
+      if (src.id) t.id = src.id;
+      if (src.name) t.name = src.name;
+      if (src.arguments != null) t.arguments = src.arguments || '';
+      if (t.status !== 'running' && t.status !== 'done' && t.status !== 'error') t.status = 'composing';
+      if (typeof t._open !== 'boolean') t._open = true;
+      t._streaming = true;
+      t._streamKey = key;
+      t._streamStep = step;
+    });
+  }
+
+  function clearStreamState(t) {
+    delete t._streaming;
+    delete t._streamKey;
+    delete t._streamStep;
+    return t;
+  }
+
+  function finalizeStreamToolCalls(msg, rawCalls, step) {
+    const calls = msg.toolCalls || (msg.toolCalls = []);
+    const displayCalls = [];
+    (rawCalls || []).forEach((src, idx) => {
+      const key = streamToolKey(step, idx);
+      const id = src.id || ('call_' + step + '_' + idx);
+      let t = findToolDisplay(msg, src, key);
+      if (!t) {
+        t = {
+          id,
+          name: src.name || '',
+          arguments: src.arguments || '{}',
+          status: 'running',
+          result: null,
+          _open: false
+        };
+        calls.push(t);
+      }
+      t.id = id;
+      t.name = src.name || t.name || '';
+      t.arguments = src.arguments || t.arguments || '{}';
+      t.status = 'running';
+      if (t.result == null) t.result = null;
+      if (typeof t._open !== 'boolean') t._open = false;
+      displayCalls.push(clearStreamState(t));
+    });
+    for (let i = calls.length - 1; i >= 0; i--) {
+      const t = calls[i];
+      if (t && t._streaming && t._streamStep === step && !displayCalls.includes(t)) calls.splice(i, 1);
+    }
+    return displayCalls;
+  }
+
+  function discardStreamToolCalls(msg, step) {
+    const calls = msg && msg.toolCalls || [];
+    for (let i = calls.length - 1; i >= 0; i--) {
+      const t = calls[i];
+      if (t && t._streaming && t._streamStep === step) calls.splice(i, 1);
+    }
+  }
+
+  function cancelStreamToolCalls(msg, step) {
+    (msg && msg.toolCalls || []).forEach(t => {
+      if (!t || !t._streaming || t._streamStep !== step) return;
+      t.status = 'cancelled';
+      t.result = '已停止。';
+      clearStreamState(t);
     });
   }
 
@@ -364,7 +475,11 @@
           doc: '',
           logs: [],
           editPrompt: '',
-          dirty: false
+          dirty: false,
+          address: '',
+          currentPath: '',
+          history: [],
+          historyIndex: -1
         },
         openFolders: {},
         workspacePressTimer: null,
@@ -381,7 +496,11 @@
           tab: 'view',
           logs: [],
           serviceId: '',
-          mode: 'html'
+          mode: 'html',
+          currentPath: '',
+          address: '',
+          history: [],
+          historyIndex: -1
         },
 
         dlg: null,
@@ -1749,6 +1868,7 @@
               onUpdate: st => {
                 smoothText(this, assistantMsg, st.content || '');
                 assistantMsg.reasoning = st.reasoning || '';
+                if (st.streamTools && st.streamTools.length) syncStreamToolCalls(assistantMsg, st.streamTools, step);
                 assistantMsg.status = 'streaming';
                 nextTick(() => this.scrollToBottom(false));
               }
@@ -1757,30 +1877,33 @@
             smoothText(this, assistantMsg, result.content || assistantMsg.content || '');
             assistantMsg.reasoning = result.reasoning || assistantMsg.reasoning || '';
 
-            if (this.stopRequested || !tools.length || !result.toolCalls || !result.toolCalls.length) break;
+            if (this.stopRequested) {
+              cancelStreamToolCalls(assistantMsg, step);
+              break;
+            }
+            if (!tools.length || !result.toolCalls || !result.toolCalls.length) {
+              discardStreamToolCalls(assistantMsg, step);
+              break;
+            }
 
             const rawCalls = result.toolCalls.filter(t => t && t.name);
-            if (!rawCalls.length) break;
+            if (!rawCalls.length) {
+              discardStreamToolCalls(assistantMsg, step);
+              break;
+            }
             if (step >= maxToolRounds) {
+              discardStreamToolCalls(assistantMsg, step);
               assistantMsg.error = '已达到最大工具轮次（' + maxToolRounds + '）。可以在设置里调高“最大工具轮次”。';
               break;
             }
             if (totalToolCalls + rawCalls.length > maxToolCalls) {
+              discardStreamToolCalls(assistantMsg, step);
               assistantMsg.error = '已达到最大工具调用数（' + maxToolCalls + '）。可以在设置里调高“最大工具调用数”。';
               break;
             }
             totalToolCalls += rawCalls.length;
 
-            const callStart = assistantMsg.toolCalls.length;
-            const displayCalls = rawCalls.map((t, idx) => ({
-              id: t.id || ('call_' + step + '_' + idx),
-              name: t.name,
-              arguments: t.arguments || '{}',
-              status: 'running',
-              result: null,
-              _open: false
-            }));
-            assistantMsg.toolCalls = assistantMsg.toolCalls.concat(displayCalls);
+            const displayCalls = finalizeStreamToolCalls(assistantMsg, rawCalls, step);
             workingMessages.push({
               role: 'assistant',
               content: result.content || '',
@@ -1793,7 +1916,7 @@
             this.persistSession();
 
             for (let ti = 0; ti < displayCalls.length; ti++) {
-              const t = assistantMsg.toolCalls[callStart + ti] || displayCalls[ti];
+              const t = displayCalls[ti];
               const denied = await this.authorizeToolCall(t);
               const out = denied || await Tools.execute(t.name, t.arguments, {
                 session: this.session,
@@ -2030,10 +2153,13 @@
         if (/\.m?js$/i.test(path)) return '';
         return '';
       },
-      viewFile(name) {
+      loadViewerFile(name, opts) {
         const f = this.session.files[name];
         if (!f) return;
+        opts = opts || {};
         const editable = isEditableName(name, f);
+        const history = Array.isArray(opts.history) ? opts.history.slice() : [name];
+        const historyIndex = Number.isInteger(opts.historyIndex) ? opts.historyIndex : history.length - 1;
         this.viewer = {
           name,
           isImage: !!f.dataUrl,
@@ -2045,10 +2171,17 @@
           doc: '',
           logs: [],
           editPrompt: '',
-          dirty: false
+          dirty: false,
+          address: name,
+          currentPath: name,
+          history,
+          historyIndex
         };
-        this.pushPage('viewer');
+        if (opts.pushPage !== false) this.pushPage('viewer');
         if (isHtmlName(name) && editable) nextTick(() => this.runViewerPreview());
+      },
+      viewFile(name) {
+        this.loadViewerFile(name, { pushPage: true });
       },
       onViewerInput() {
         this.viewer.dirty = this.viewer.content !== this.viewer.originalContent;
@@ -2062,6 +2195,142 @@
       setViewerTab(tab) {
         this.viewer.tab = tab;
         if (tab === 'view' && isHtmlName(this.viewer.name)) nextTick(() => this.runViewerPreview());
+      },
+      browserState(target) {
+        return target === 'viewer' ? this.viewer : this.preview;
+      },
+      browserBasePath(target) {
+        if (target === 'viewer') return this.viewer.currentPath || this.viewer.name || '';
+        const svc = this.preview.serviceId && this.serviceById(this.preview.serviceId);
+        return this.preview.currentPath || (svc && svc.entry) || '';
+      },
+      workspaceRoutePath(rawHref, basePath) {
+        const files = this.session.files || {};
+        const hrefText = String(rawHref || '').trim();
+        if (/^\?/.test(hrefText) && basePath && files[basePath]) return basePath;
+        const path = resolveWorkspaceRef(rawHref, basePath || '');
+        const raw = String(rawHref || '').trim().replace(/[?#].*$/, '');
+        const candidates = [];
+        const add = p => { if (p && !candidates.includes(p)) candidates.push(p); };
+        add(path);
+        if (!path) add('index.html');
+        if (path && (raw.endsWith('/') || !/\.[^/]+$/.test(path))) add(path + '/index.html');
+        if (path && !/\.[^/]+$/.test(path)) add(path + '.html');
+        return candidates.find(name => files[name]) || '';
+      },
+      nextBrowserHistory(state, path, replace) {
+        let history = Array.isArray(state && state.history) ? state.history.slice() : [];
+        let index = Number.isInteger(state && state.historyIndex) ? state.historyIndex : history.length - 1;
+        if (replace && index >= 0) {
+          history[index] = path;
+        } else if (history[index] === path) {
+          // keep current entry
+        } else {
+          history = index >= 0 ? history.slice(0, index + 1) : [];
+          history.push(path);
+          index = history.length - 1;
+        }
+        if (!history.length) {
+          history = [path];
+          index = 0;
+        }
+        return { history, historyIndex: index };
+      },
+      canBrowserBack(target) {
+        const state = this.browserState(target);
+        return !!state && (state.historyIndex || 0) > 0;
+      },
+      canBrowserForward(target) {
+        const state = this.browserState(target);
+        return !!state && Array.isArray(state.history) && state.historyIndex >= 0 && state.historyIndex < state.history.length - 1;
+      },
+      async applyBrowserPath(target, path, navState) {
+        if (target === 'viewer') {
+          this.loadViewerFile(path, {
+            pushPage: false,
+            history: navState.history,
+            historyIndex: navState.historyIndex
+          });
+          return;
+        }
+        this.preview.currentPath = path;
+        this.preview.address = path;
+        this.preview.history = navState.history;
+        this.preview.historyIndex = navState.historyIndex;
+        this.preview.tab = 'view';
+        this.runPreview();
+      },
+      async navigateBrowser(target, rawHref, opts) {
+        opts = opts || {};
+        const href = String(rawHref || '').trim();
+        if (!href || href.charAt(0) === '#') return;
+        const external = externalWebUrl(href);
+        if (external) {
+          U.openExternal(external);
+          const state = this.browserState(target);
+          if (state) state.address = this.browserBasePath(target);
+          return;
+        }
+        if (/^[a-z][a-z0-9+.-]*:/i.test(href)) {
+          U.toast('无法打开此链接：' + href);
+          return;
+        }
+        const basePath = opts.basePath || this.browserBasePath(target);
+        const path = this.workspaceRoutePath(href, basePath);
+        if (!path) {
+          U.toast('工作区文件不存在：' + href);
+          return;
+        }
+        if (target === 'viewer' && this.viewer.dirty && path !== this.viewer.name) {
+          const ok = await this.confirm('当前文件有未保存修改，跳转会离开此文件。', '离开文件');
+          if (!ok) return;
+        }
+        if (target === 'viewer' && path === this.viewer.name) {
+          this.viewer.currentPath = path;
+          this.viewer.address = path;
+          this.runViewerPreview();
+          return;
+        }
+        if (!isHtmlName(path)) {
+          this.viewFile(path);
+          return;
+        }
+        const state = this.browserState(target);
+        const navState = opts.navState || this.nextBrowserHistory(state, path, !!opts.replace);
+        await this.applyBrowserPath(target, path, navState);
+      },
+      async goBrowserAddress(target) {
+        const state = this.browserState(target);
+        if (!state) return;
+        await this.navigateBrowser(target, state.address, { basePath: this.browserBasePath(target) });
+      },
+      async goBrowserHistory(target, delta) {
+        const state = this.browserState(target);
+        if (!state || !Array.isArray(state.history)) return;
+        const nextIndex = state.historyIndex + delta;
+        if (nextIndex < 0 || nextIndex >= state.history.length) return;
+        const path = state.history[nextIndex];
+        if (target === 'viewer' && this.viewer.dirty && path !== this.viewer.name) {
+          const ok = await this.confirm('当前文件有未保存修改，跳转会离开此文件。', '离开文件');
+          if (!ok) return;
+        }
+        await this.applyBrowserPath(target, path, {
+          history: state.history.slice(),
+          historyIndex: nextIndex
+        });
+      },
+      browserBack(target) {
+        return this.goBrowserHistory(target, -1);
+      },
+      browserForward(target) {
+        return this.goBrowserHistory(target, 1);
+      },
+      reloadBrowser(target) {
+        if (target === 'viewer') {
+          this.runViewerPreview();
+          return;
+        }
+        this.runPreview();
       },
       growViewerEdit(e) {
         const el = e && e.target;
@@ -2394,12 +2663,21 @@
         this.preview.logs = [];
         this.preview.serviceId = svc.id;
         this.preview.mode = 'service';
+        this.preview.currentPath = svc.entry;
+        this.preview.address = svc.entry;
+        this.preview.history = [svc.entry];
+        this.preview.historyIndex = 0;
         this.preview.doc = this.buildServiceDoc(svc);
         this.pushPage('preview');
         nextTick(() => this.runPreview());
       },
       buildServiceDoc(svc) {
-        return this.buildWorkspaceHtml(svc.entry, null, 'preview');
+        const path = this.preview.currentPath && this.session.files[this.preview.currentPath]
+          ? this.preview.currentPath
+          : svc.entry;
+        this.preview.currentPath = path;
+        this.preview.address = path;
+        return this.buildWorkspaceHtml(path, null, 'preview');
       },
       buildWorkspaceHtml(entry, contentOverride, target) {
         const f = this.session.files[entry];
@@ -2436,6 +2714,10 @@
         this.preview.logs = [];
         this.preview.serviceId = '';
         this.preview.mode = 'html';
+        this.preview.currentPath = '';
+        this.preview.address = '';
+        this.preview.history = [];
+        this.preview.historyIndex = -1;
         this.preview.doc = this.buildPreviewDoc();
         this.pushPage('preview');
         nextTick(() => this.runPreview());
@@ -2454,6 +2736,25 @@
   ['log','info','debug'].forEach(function (k) { console[k] = function () { send('log', arguments); }; });
   ['warn','error'].forEach(function (k) { console[k] = function () { send(k, arguments); }; });
   window.onerror = function (msg, src, line, col) { send('error', [msg + ' @ ' + line + ':' + col]); };
+  function nav(href) {
+    parent.postMessage({ source: 'wepchat-preview', target: ${JSON.stringify(channel)}, type: 'navigate', href: String(href || '') }, '*');
+  }
+  document.addEventListener('click', function (ev) {
+    if (ev.defaultPrevented || ev.button !== 0 || ev.metaKey || ev.ctrlKey || ev.shiftKey || ev.altKey) return;
+    var el = ev.target;
+    while (el && el !== document && !(el.tagName && String(el.tagName).toLowerCase() === 'a')) el = el.parentNode;
+    if (!el || el === document) return;
+    var href = el.getAttribute('href') || '';
+    if (!href || /^\\s*#/.test(href) || /^\\s*javascript:/i.test(href) || el.hasAttribute('download')) return;
+    ev.preventDefault();
+    nav(href);
+  }, true);
+  var nativeOpen = window.open;
+  window.open = function (url) {
+    if (url) nav(url);
+    else if (nativeOpen) return nativeOpen.apply(window, arguments);
+    return null;
+  };
 })();
 <\/script>`;
         return bridge;
@@ -2488,6 +2789,10 @@
       onPreviewMessage(e) {
         const data = e.data || {};
         if (data.source !== 'wepchat-preview') return;
+        if (data.type === 'navigate') {
+          this.navigateBrowser(data.target === 'viewer' ? 'viewer' : 'preview', data.href);
+          return;
+        }
         const row = {
           level: data.level === 'error' || data.level === 'warn' ? data.level : 'log',
           text: String(data.text || '')

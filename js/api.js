@@ -216,9 +216,11 @@ const API = (() => {
             if (tc.function.arguments) st.toolCalls[i].arguments += tc.function.arguments;
           }
         });
+        if (d.tool_calls && d.tool_calls.length) st.streamTools = st.toolCalls.filter(Boolean);
         onUpdate(st);
       }
     });
+    delete st.streamTools;
     st.toolCalls = st.toolCalls.filter(Boolean).map((t, i) => ({ id: t.id || ('call_' + i), name: t.name, arguments: t.arguments || '{}' }));
     return st;
   }
@@ -252,6 +254,7 @@ const API = (() => {
     }
     const st = { content: '', reasoning: '', toolCalls: [] };
     const pending = {}; // item_id -> toolCall
+    const streamTools = () => st.toolCalls.concat(Object.keys(pending).map(k => pending[k]));
     await sseRequest({
       url: joinUrl(provider.baseUrl, '/responses', { autoV1: true }),
       headers: authHeaders(provider),
@@ -262,15 +265,20 @@ const API = (() => {
         else if (type === 'response.reasoning_summary_text.delta' || type === 'response.reasoning_text.delta') { st.reasoning += data.delta || ''; onUpdate(st); }
         else if (type === 'response.output_item.added' && data.item && data.item.type === 'function_call') {
           pending[data.item.id] = { id: data.item.call_id || data.item.id, name: data.item.name || '', arguments: data.item.arguments || '' };
+          st.streamTools = streamTools();
+          onUpdate(st);
         }
         else if (type === 'response.function_call_arguments.delta' && pending[data.item_id]) {
           pending[data.item_id].arguments += data.delta || '';
+          st.streamTools = streamTools();
+          onUpdate(st);
         }
         else if (type === 'response.output_item.done' && data.item && data.item.type === 'function_call') {
           const t = pending[data.item.id] || { id: data.item.call_id, name: data.item.name, arguments: '' };
           t.name = data.item.name || t.name;
           t.arguments = data.item.arguments || t.arguments || '{}';
           st.toolCalls.push(t); delete pending[data.item.id];
+          st.streamTools = streamTools();
           onUpdate(st);
         }
         else if (type === '__json__') {
@@ -283,6 +291,7 @@ const API = (() => {
       }
     });
     Object.keys(pending).forEach(k => st.toolCalls.push(pending[k]));
+    delete st.streamTools;
     return st;
   }
 
@@ -346,6 +355,7 @@ const API = (() => {
     };
     const st = { content: '', reasoning: '', toolCalls: [] };
     const blocks = {}; // index -> {type, tool}
+    const streamTools = () => st.toolCalls.concat(Object.keys(blocks).map(k => blocks[k]).filter(b => b && b.tool).map(b => b.tool));
     await sseRequest({
       url: anthropicUrl(provider.baseUrl),
       headers, body, signal,
@@ -356,15 +366,27 @@ const API = (() => {
           blocks[data.index] = b.type === 'tool_use'
             ? { type: 'tool_use', tool: { id: b.id, name: b.name, arguments: '' } }
             : { type: b.type };
+          if (b.type === 'tool_use') {
+            st.streamTools = streamTools();
+            onUpdate(st);
+          }
         } else if (type === 'content_block_delta') {
           const d = data.delta || {}, blk = blocks[data.index] || {};
           if (d.type === 'text_delta') st.content += d.text || '';
           else if (d.type === 'thinking_delta') st.reasoning += d.thinking || '';
-          else if (d.type === 'input_json_delta' && blk.tool) blk.tool.arguments += d.partial_json || '';
+          else if (d.type === 'input_json_delta' && blk.tool) {
+            blk.tool.arguments += d.partial_json || '';
+            st.streamTools = streamTools();
+          }
           onUpdate(st);
         } else if (type === 'content_block_stop') {
           const blk = blocks[data.index];
-          if (blk && blk.tool) { st.toolCalls.push(blk.tool); onUpdate(st); }
+          delete blocks[data.index];
+          if (blk && blk.tool) {
+            st.toolCalls.push(blk.tool);
+            st.streamTools = streamTools();
+            onUpdate(st);
+          }
         } else if (type === '__json__') {
           (data.content || []).forEach(b => {
             if (b.type === 'text') st.content += b.text || '';
@@ -374,6 +396,7 @@ const API = (() => {
         }
       }
     });
+    delete st.streamTools;
     st.toolCalls.forEach(t => { if (!t.arguments) t.arguments = '{}'; });
     return st;
   }

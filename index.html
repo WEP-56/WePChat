@@ -88,14 +88,17 @@
                   <span class="tool-ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M14.7 6.3a4.5 4.5 0 0 0-6 6L3 18l3 3 5.7-5.7a4.5 4.5 0 0 0 6-6L14 13l-3-3 3.7-3.7z"/></svg></span>
                   <span class="tool-name">{{ toolLabel(t.name) }}</span>
                   <span class="tool-status">
-                    <span class="spinner" v-if="t.status === 'running'"></span>
+                    <span class="spinner" v-if="t.status === 'composing' || t.status === 'running'"></span>
+                    <template v-if="t.status === 'composing'">编写中</template>
+                    <template v-else-if="t.status === 'running'">执行中</template>
                     <template v-else-if="t.status === 'done'">完成</template>
                     <template v-else-if="t.status === 'error'">出错</template>
+                    <template v-else-if="t.status === 'cancelled'">已停止</template>
                   </span>
                 </button>
                 <div class="tool-body" v-if="t._open">
                   <div class="tool-sec">参数</div>
-                  <div class="tool-pre">{{ prettyJson(t.arguments) }}</div>
+                  <div class="tool-pre">{{ t.arguments ? prettyJson(t.arguments) : '等待参数…' }}</div>
                   <template v-if="t.result != null">
                     <div class="tool-sec">结果</div>
                     <div v-if="isDiffResult(t.result)" v-html="renderDiff(t.result)"></div>
@@ -862,6 +865,21 @@
     <div class="pv-tabs" v-if="viewerTabs.length > 1">
       <button class="pv-tab" v-for="tab in viewerTabs" :key="tab.id" :class="{on: viewer.tab === tab.id}" @click="setViewerTab(tab.id)">{{ tab.label }}</button>
     </div>
+    <form class="browser-bar" v-if="viewerIsHtml" @submit.prevent="goBrowserAddress('viewer')">
+      <button type="button" class="browser-btn" :disabled="!canBrowserBack('viewer')" @click="browserBack('viewer')" aria-label="后退">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 6l-6 6 6 6"/></svg>
+      </button>
+      <button type="button" class="browser-btn" :disabled="!canBrowserForward('viewer')" @click="browserForward('viewer')" aria-label="前进">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"/></svg>
+      </button>
+      <button type="button" class="browser-btn" @click="reloadBrowser('viewer')" aria-label="刷新">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M20 12a8 8 0 1 1-2.3-5.6M20 3v4h-4"/></svg>
+      </button>
+      <input class="browser-address" v-model="viewer.address" autocapitalize="off" autocomplete="off" spellcheck="false" placeholder="index.html 或 https://example.com">
+      <button type="submit" class="browser-go" aria-label="前往">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+      </button>
+    </form>
     <div class="viewer-workbench">
       <div class="viewer-img" v-if="viewer.isImage"><img :src="viewer.dataUrl"></div>
       <template v-else>
@@ -899,6 +917,21 @@
       <button class="pv-tab" :class="{on: preview.tab === 'src'}" @click="preview.tab = 'src'">源码</button>
       <button class="pv-tab" :class="{on: preview.tab === 'console'}" @click="preview.tab = 'console'">控制台{{ preview.logs.length ? ' (' + preview.logs.length + ')' : '' }}</button>
     </div>
+    <form class="browser-bar" v-if="preview.mode === 'service'" @submit.prevent="goBrowserAddress('preview')">
+      <button type="button" class="browser-btn" :disabled="!canBrowserBack('preview')" @click="browserBack('preview')" aria-label="后退">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 6l-6 6 6 6"/></svg>
+      </button>
+      <button type="button" class="browser-btn" :disabled="!canBrowserForward('preview')" @click="browserForward('preview')" aria-label="前进">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"/></svg>
+      </button>
+      <button type="button" class="browser-btn" @click="reloadBrowser('preview')" aria-label="刷新">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M20 12a8 8 0 1 1-2.3-5.6M20 3v4h-4"/></svg>
+      </button>
+      <input class="browser-address" v-model="preview.address" autocapitalize="off" autocomplete="off" spellcheck="false" placeholder="index.html 或 https://example.com">
+      <button type="submit" class="browser-go" aria-label="前往">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+      </button>
+    </form>
     <div class="pv-frame-wrap">
       <iframe class="pv-frame" ref="pvFrame" v-show="preview.tab === 'view'" sandbox="allow-scripts allow-modals"></iframe>
       <div class="pv-src" v-show="preview.tab === 'src'">{{ preview.doc }}</div>

@@ -598,6 +598,23 @@ html.plus-app .page-head { padding-top: 6px; }
 .pv-tabs { display: flex; gap: 4px; padding: 0 12px 8px; }
 .pv-tab { padding: 7px 15px; border-radius: 18px; font-size: 13.5px; color: var(--text2); background: var(--surface); font-weight: 500; }
 .pv-tab.on { background: var(--accent); color: var(--accent-fg); font-weight: 600; }
+.browser-bar {
+  display: flex; align-items: center; gap: 6px;
+  padding: 0 12px 8px; flex: none;
+}
+.browser-btn, .browser-go {
+  width: 34px; height: 34px; border-radius: 10px; flex: none;
+  display: flex; align-items: center; justify-content: center;
+  color: var(--text2); background: var(--surface);
+}
+.browser-btn svg, .browser-go svg { width: 17px; height: 17px; }
+.browser-btn:disabled { opacity: 0.35; }
+.browser-btn:not(:disabled):active, .browser-go:active { background: var(--surface2); color: var(--text); opacity: 1; }
+.browser-address {
+  min-width: 0; flex: 1; height: 34px; border: 1px solid var(--border);
+  border-radius: 10px; padding: 0 10px; background: var(--bg2);
+  color: var(--text); font-size: 13px; font-family: ui-monospace, "Cascadia Mono", Menlo, Consolas, monospace;
+}
 .pv-frame-wrap { flex: 1; position: relative; background: #fff; }
 .pv-frame { position: absolute; inset: 0; width: 100%; height: 100%; border: none; }
 .pv-src {
