@@ -18,6 +18,7 @@ const Store = {
         run_js: 'ask',
         preview_html: 'ask',
         files: 'ask',
+        delete_files: 'ask',
         services: 'ask',
         web_fetch: 'ask'
       },
@@ -86,6 +87,7 @@ const Store = {
       model: '',
       messages: [],
       files: {},       // name -> {content, mime, size, mtime, dataUrl?}
+      folders: [],     // empty folders and user-created folder paths
       services: []     // {id,name,entry,status,createdAt,updatedAt,lastStartedAt?}
     };
   },

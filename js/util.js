@@ -148,29 +148,185 @@ const U = {
     return /\.(png|jpe?g|gif|webp|bmp)$/i.test(name || '');
   },
 
-  /* 保存文本到设备（plus 环境写入 Documents，浏览器触发下载） */
-  saveTextFile(filename, text) {
+  _safeExportName(filename) {
+    return String(filename || 'download')
+      .replace(/[\\/:*?"<>|]/g, '_')
+      .replace(/\s+/g, ' ')
+      .trim() || 'download';
+  },
+
+  _mimeForName(filename, fallback) {
+    if (fallback) return fallback;
+    if (/\.html?$/i.test(filename)) return 'text/html;charset=utf-8';
+    if (/\.css$/i.test(filename)) return 'text/css;charset=utf-8';
+    if (/\.m?js$/i.test(filename)) return 'text/javascript;charset=utf-8';
+    if (/\.json$/i.test(filename)) return 'application/json;charset=utf-8';
+    if (/\.(md|markdown)$/i.test(filename)) return 'text/markdown;charset=utf-8';
+    if (/\.png$/i.test(filename)) return 'image/png';
+    if (/\.jpe?g$/i.test(filename)) return 'image/jpeg';
+    if (/\.webp$/i.test(filename)) return 'image/webp';
+    return 'application/octet-stream';
+  },
+
+  _pickerTypes(filename, mime) {
+    const ext = (String(filename || '').match(/\.[a-z0-9]+$/i) || ['.txt'])[0].toLowerCase();
+    const cleanMime = String(mime || 'application/octet-stream').split(';')[0] || 'application/octet-stream';
+    return [{ description: '文件', accept: { [cleanMime]: [ext] } }];
+  },
+
+  async _writeBlobWithPicker(filename, blob) {
+    if (U.isPlus() || typeof window.showSaveFilePicker !== 'function') return null;
+    const name = U._safeExportName(filename);
+    let handle;
+    try {
+      handle = await window.showSaveFilePicker({
+        suggestedName: name,
+        types: U._pickerTypes(name, blob.type || U._mimeForName(name))
+      });
+    } catch (e) {
+      if (e && e.name === 'TypeError') handle = await window.showSaveFilePicker({ suggestedName: name });
+      else throw e;
+    }
+    const writer = await handle.createWritable();
+    await writer.write(blob);
+    await writer.close();
+    return handle.name || name;
+  },
+
+  _downloadBlob(filename, blob) {
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = U._safeExportName(filename);
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+    return a.download;
+  },
+
+  /* 保存 Blob 到设备。浏览器优先弹保存文件对话框；plus 环境写入 Documents/wepchat。 */
+  async saveBlobFile(filename, blob, opts) {
+    const name = U._safeExportName(filename);
+    const usePicker = !opts || opts.picker !== false;
+    if (usePicker) {
+      try {
+        const picked = await U._writeBlobWithPicker(name, blob);
+        if (picked) return picked;
+      } catch (e) {
+        if (e && e.name === 'AbortError') return null;
+        throw e;
+      }
+    }
     return new Promise((resolve, reject) => {
       if (U.isPlus()) {
         plus.io.requestFileSystem(plus.io.PUBLIC_DOCUMENTS, fs => {
-          fs.root.getFile('wepchat/' + filename, { create: true }, entry => {
+          U._plusGetDir(fs.root, ['wepchat']).then(dir => dir.getFile(name, { create: true }, entry => {
             entry.createWriter(writer => {
-              writer.onwrite = () => resolve(entry.fullPath || ('文档/wepchat/' + filename));
+              writer.onwrite = () => resolve({ path: entry.fullPath || ('文档/wepchat/' + name), name });
               writer.onerror = e => reject(e);
-              writer.write(text);
+              writer.write(blob);
             }, reject);
-          }, reject);
+          }, reject)).catch(reject);
         }, reject);
       } else {
-        const blob = new Blob([text], { type: 'application/octet-stream' });
-        const a = document.createElement('a');
-        a.href = URL.createObjectURL(blob);
-        a.download = filename;
-        a.click();
-        setTimeout(() => URL.revokeObjectURL(a.href), 5000);
-        resolve(filename);
+        resolve({ path: '浏览器下载目录', name: U._downloadBlob(name, blob) });
       }
     });
+  },
+
+  /* 保存文本到设备 */
+  saveTextFile(filename, text, opts) {
+    const blob = new Blob([text], { type: U._mimeForName(filename, opts && opts.mime) });
+    return U.saveBlobFile(filename, blob, opts);
+  },
+
+  async saveDataUrlFile(filename, dataUrl, opts) {
+    const res = await fetch(dataUrl);
+    const blob = await res.blob();
+    return U.saveBlobFile(filename, blob, opts);
+  },
+
+  _safePathParts(path) {
+    return String(path || 'file')
+      .replace(/\\/g, '/')
+      .split('/')
+      .map(p => p.trim().replace(/[\\/:*?"<>|]/g, '_'))
+      .filter(Boolean);
+  },
+
+  async _blobForExportFile(file) {
+    if (file.dataUrl && !file.content) {
+      const res = await fetch(file.dataUrl);
+      return await res.blob();
+    }
+    return new Blob([file.content || ''], { type: U._mimeForName(file.path, file.mime) });
+  },
+
+  async _writeDirectoryHandleFile(root, parts, blob) {
+    let dir = root;
+    for (let i = 0; i < parts.length - 1; i++) {
+      dir = await dir.getDirectoryHandle(parts[i], { create: true });
+    }
+    const fh = await dir.getFileHandle(parts[parts.length - 1] || 'file', { create: true });
+    const writer = await fh.createWritable();
+    await writer.write(blob);
+    await writer.close();
+  },
+
+  async _plusGetDir(root, parts) {
+    let dir = root;
+    for (const part of parts) {
+      dir = await new Promise((resolve, reject) => dir.getDirectory(part, { create: true }, resolve, reject));
+    }
+    return dir;
+  },
+
+  async _plusWriteExportFile(root, baseDir, parts, blob) {
+    const dir = await U._plusGetDir(root, ['wepchat', baseDir].concat(parts.slice(0, -1)));
+    await new Promise((resolve, reject) => {
+      dir.getFile(parts[parts.length - 1] || 'file', { create: true }, entry => {
+        entry.createWriter(writer => {
+          writer.onwrite = resolve;
+          writer.onerror = reject;
+          writer.write(blob);
+        }, reject);
+      }, reject);
+    });
+  },
+
+  async exportFilesToDirectory(files, opts) {
+    const list = Array.isArray(files) ? files : [];
+    if (!list.length) return null;
+    if (!U.isPlus() && typeof window.showDirectoryPicker === 'function') {
+      let dir;
+      try {
+        dir = await window.showDirectoryPicker({ mode: 'readwrite' });
+      } catch (e) {
+        if (e && e.name === 'AbortError') return null;
+        throw e;
+      }
+      for (const file of list) {
+        const parts = U._safePathParts(file.path);
+        const blob = await U._blobForExportFile(file);
+        await U._writeDirectoryHandleFile(dir, parts, blob);
+      }
+      return { count: list.length, path: '所选文件夹' };
+    }
+    if (U.isPlus()) {
+      const baseDir = U._safeExportName((opts && opts.baseDir) || ('workspace-' + new Date().toISOString().slice(0, 10)));
+      const root = await new Promise((resolve, reject) => {
+        plus.io.requestFileSystem(plus.io.PUBLIC_DOCUMENTS, fs => resolve(fs.root), reject);
+      });
+      for (const file of list) {
+        const parts = U._safePathParts(file.path);
+        const blob = await U._blobForExportFile(file);
+        await U._plusWriteExportFile(root, baseDir, parts, blob);
+      }
+      return { count: list.length, path: '文档/wepchat/' + baseDir };
+    }
+    for (const file of list) {
+      const blob = await U._blobForExportFile(file);
+      U._downloadBlob(U._safeExportName(file.path), blob);
+    }
+    return { count: list.length, path: '浏览器下载目录' };
   },
 
   debounce(fn, ms) {

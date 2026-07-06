@@ -21,6 +21,7 @@
       }
     });
     sess.files = sess.files || {};
+    sess.folders = Array.isArray(sess.folders) ? sess.folders : [];
     sess.services = Array.isArray(sess.services) ? sess.services : [];
     sess.createdAt = sess.createdAt || U.now();
     sess.updatedAt = sess.updatedAt || U.now();
@@ -55,11 +56,93 @@
       .slice(0, 80) || 'untitled';
   }
 
-  function dataUrlDownload(name, dataUrl) {
-    const a = document.createElement('a');
-    a.href = dataUrl;
-    a.download = name;
-    a.click();
+  function normalizeWorkspacePath(path, opts) {
+    const allowEmpty = opts && opts.allowEmpty;
+    const raw = String(path || '').trim().replace(/\\/g, '/').replace(/^\/+/, '').replace(/\/+$/, '');
+    const parts = [];
+    raw.split('/').forEach(part => {
+      part = part.trim();
+      if (!part || part === '.') return;
+      if (part === '..') throw new Error('路径不能包含 ..');
+      if (/[<>:"|?*]/.test(part)) throw new Error('路径包含非法字符：' + part);
+      parts.push(part);
+    });
+    const out = parts.join('/');
+    if (!out && !allowEmpty) throw new Error('路径不能为空');
+    if (out.length > 180) throw new Error('路径过长');
+    return out;
+  }
+
+  function parentFolder(path) {
+    const p = normalizeWorkspacePath(path, { allowEmpty: true });
+    const i = p.lastIndexOf('/');
+    return i >= 0 ? p.slice(0, i) : '';
+  }
+
+  function ensureParentFolders(sess, path) {
+    sess.folders = Array.isArray(sess.folders) ? sess.folders : [];
+    const parts = normalizeWorkspacePath(path).split('/');
+    for (let i = 1; i < parts.length; i++) {
+      const folder = parts.slice(0, i).join('/');
+      if (!sess.folders.includes(folder)) sess.folders.push(folder);
+    }
+  }
+
+  function workspaceMime(name) {
+    if (/\.html?$/i.test(name)) return 'text/html';
+    if (/\.css$/i.test(name)) return 'text/css';
+    if (/\.m?js$/i.test(name)) return 'text/javascript';
+    if (/\.json$/i.test(name)) return 'application/json';
+    if (/\.md|\.markdown$/i.test(name)) return 'text/markdown';
+    if (/\.svg$/i.test(name)) return 'image/svg+xml';
+    return 'text/plain';
+  }
+
+  function workspaceExt(name) {
+    const m = String(name || '').match(/\.([a-z0-9]+)$/i);
+    return m ? m[1].slice(0, 4).toUpperCase() : 'TXT';
+  }
+
+  function isHtmlName(name) { return /\.html?$/i.test(name || ''); }
+  function isMarkdownName(name) { return /\.(md|markdown)$/i.test(name || ''); }
+
+  function isEditableName(name, file) {
+    if (file && file.dataUrl && !file.content) return false;
+    return U.isTextFile(name, file && file.mime);
+  }
+
+  function languageForName(name) {
+    const ext = String(name || '').split('.').pop().toLowerCase();
+    const map = {
+      html: 'xml', htm: 'xml', vue: 'xml', svg: 'xml',
+      js: 'javascript', mjs: 'javascript', json: 'json',
+      css: 'css', md: 'markdown', markdown: 'markdown',
+      py: 'python', sh: 'bash', bat: 'dos', xml: 'xml',
+      yml: 'yaml', yaml: 'yaml', ts: 'typescript'
+    };
+    return map[ext] || ext || 'plaintext';
+  }
+
+  function resolveWorkspaceRef(ref, basePath) {
+    const raw = String(ref || '').trim().replace(/\\/g, '/');
+    if (!raw || isExternalRef(raw)) return '';
+    const seed = raw.startsWith('/') ? raw.replace(/^\/+/, '') : [parentFolder(basePath), raw].filter(Boolean).join('/');
+    const out = [];
+    for (const part of seed.split('/')) {
+      if (!part || part === '.') continue;
+      if (part === '..') {
+        if (!out.length) return '';
+        out.pop();
+      } else {
+        out.push(part);
+      }
+    }
+    try { return normalizeWorkspacePath(out.join('/'), { allowEmpty: true }); }
+    catch (e) { return ''; }
+  }
+
+  async function dataUrlDownload(name, dataUrl) {
+    return await U.saveDataUrlFile(fileSafeName(name), dataUrl);
   }
 
   function readPickedFile() {
@@ -193,6 +276,10 @@
         abortCtl: null,
         stopRequested: false,
         showScrollDown: false,
+        autoFollow: true,
+        lastBackAt: 0,
+        plusReady: false,
+        backHandler: null,
 
         provForm: {
           isNew: true,
@@ -207,8 +294,15 @@
           name: '',
           isImage: false,
           dataUrl: '',
-          content: ''
+          mime: '',
+          content: '',
+          originalContent: '',
+          tab: 'source',
+          doc: '',
+          logs: [],
+          dirty: false
         },
+        openFolders: {},
 
         preview: {
           title: 'HTML 预览',
@@ -245,6 +339,15 @@
       fileCount() {
         return Object.keys(this.session.files || {}).length;
       },
+      folderCount() {
+        const files = this.session.files || {};
+        const folders = new Set(this.session.folders || []);
+        Object.keys(files).forEach(name => {
+          const parts = String(name).split('/');
+          for (let i = 1; i < parts.length; i++) folders.add(parts.slice(0, i).join('/'));
+        });
+        return folders.size;
+      },
       serviceCount() {
         return (this.session.services || []).length;
       },
@@ -253,6 +356,89 @@
       },
       previewService() {
         return this.preview.serviceId ? ((this.session.services || []).find(s => s.id === this.preview.serviceId) || null) : null;
+      },
+      workspaceRows() {
+        const files = this.session.files || {};
+        const folderSet = new Set();
+        (this.session.folders || []).forEach(path => {
+          try {
+            const p = normalizeWorkspacePath(path, { allowEmpty: true });
+            if (p) folderSet.add(p);
+          } catch (e) {}
+        });
+        Object.keys(files).forEach(name => {
+          try {
+            const parts = normalizeWorkspacePath(name).split('/');
+            for (let i = 1; i < parts.length; i++) folderSet.add(parts.slice(0, i).join('/'));
+          } catch (e) {}
+        });
+
+        const children = new Map();
+        const push = (parent, item) => {
+          const list = children.get(parent) || [];
+          list.push(item);
+          children.set(parent, list);
+        };
+        folderSet.forEach(path => {
+          const parts = path.split('/');
+          push(parts.slice(0, -1).join('/'), { type: 'folder', path, name: parts[parts.length - 1] });
+        });
+        Object.keys(files).forEach(path => {
+          const parts = String(path).split('/');
+          push(parts.slice(0, -1).join('/'), {
+            type: 'file',
+            path,
+            name: parts[parts.length - 1],
+            file: files[path],
+            kind: this.fileKind(path, files[path])
+          });
+        });
+
+        const rows = [];
+        const walk = (parent, depth) => {
+          const list = (children.get(parent) || []).slice().sort((a, b) => {
+            if (a.type !== b.type) return a.type === 'folder' ? -1 : 1;
+            return a.name.localeCompare(b.name, 'zh-Hans');
+          });
+          list.forEach(item => {
+            if (item.type === 'folder') {
+              const open = this.isFolderOpen(item.path);
+              rows.push(Object.assign({}, item, {
+                depth,
+                open,
+                childCount: (children.get(item.path) || []).length
+              }));
+              if (open) walk(item.path, depth + 1);
+            } else {
+              rows.push(Object.assign({}, item, { depth }));
+            }
+          });
+        };
+        walk('', 0);
+        return rows;
+      },
+      viewerTabs() {
+        if (!this.viewer.name) return [];
+        if (this.viewer.isImage) return [{ id: 'view', label: '预览' }];
+        if (isHtmlName(this.viewer.name)) return [
+          { id: 'view', label: '预览' },
+          { id: 'source', label: '源码' },
+          { id: 'console', label: '控制台' + (this.viewer.logs.length ? ' (' + this.viewer.logs.length + ')' : '') }
+        ];
+        if (isMarkdownName(this.viewer.name)) return [
+          { id: 'view', label: '预览' },
+          { id: 'source', label: '源码' }
+        ];
+        return [{ id: 'source', label: '源码' }];
+      },
+      viewerIsHtml() {
+        return isHtmlName(this.viewer.name);
+      },
+      viewerIsMarkdown() {
+        return isMarkdownName(this.viewer.name);
+      },
+      viewerCanSave() {
+        return !!this.viewer.name && !this.viewer.isImage;
       },
       canSend() {
         return !this.generating && (!!this.input.trim() || this.attachments.length > 0);
@@ -284,6 +470,8 @@
       this.applyTheme();
       this.persistSettings();
       window.addEventListener('message', this.onPreviewMessage);
+      document.addEventListener('plusready', this.initPlusApp, false);
+      if (window.plus) this.initPlusApp();
       const mq = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)');
       if (mq) {
         const fn = () => this.applyTheme();
@@ -297,6 +485,44 @@
     },
 
     methods: {
+      initPlusApp() {
+        if (this.plusReady || !window.plus) return;
+        this.plusReady = true;
+        document.documentElement.classList.add('plus-app');
+        if (plus.key && !this.backHandler) {
+          this.backHandler = () => this.handleBackButton();
+          plus.key.addEventListener('backbutton', this.backHandler, false);
+        }
+      },
+      handleBackButton() {
+        if (this.dlg) {
+          this.lastBackAt = 0;
+          this.dlgAnswer(null);
+          return;
+        }
+        if (this.sheet) {
+          this.lastBackAt = 0;
+          this.sheet = '';
+          return;
+        }
+        if (this.drawerOpen) {
+          this.lastBackAt = 0;
+          this.drawerOpen = false;
+          return;
+        }
+        if (this.pages.length) {
+          this.lastBackAt = 0;
+          this.closePage();
+          return;
+        }
+        const now = Date.now();
+        if (now - this.lastBackAt < 1800) {
+          if (window.plus && plus.runtime && plus.runtime.quit) plus.runtime.quit();
+          return;
+        }
+        this.lastBackAt = now;
+        U.toast('再次返回退出应用');
+      },
       persistSettings() {
         Store.saveSettings(this.settings);
         this.storageUsed = Store.usage();
@@ -365,12 +591,29 @@
         this.settings.maxToolCalls = Number.isFinite(n) ? U.clamp(n, 1, 128) : 24;
         this.persistSettings();
       },
+      fileKind(name, file) {
+        if (file && file.dataUrl && !file.content) return 'image';
+        if (isHtmlName(name)) return 'html';
+        if (isMarkdownName(name)) return 'md';
+        if (/\.(js|mjs|ts|css|json|vue|svg|py|sh|bat|kt|java|go|rs|php|rb|xml|ya?ml)$/i.test(name || '')) return 'code';
+        return 'text';
+      },
+      fileExt(name) {
+        return workspaceExt(name);
+      },
+      isFolderOpen(path) {
+        return this.openFolders[path] !== false;
+      },
+      toggleFolder(path) {
+        this.openFolders[path] = !this.isFolderOpen(path);
+      },
       toolPermissionKey(name) {
         if (name === 'run_js') return 'run_js';
         if (name === 'preview_html') return 'preview_html';
         if (name === 'web_fetch') return 'web_fetch';
+        if (name === 'delete_file') return 'delete_files';
         if (name === 'run_service' || name === 'stop_service' || name === 'list_services') return 'services';
-        if (name === 'read_file' || name === 'write_file' || name === 'list_files' || name === 'create_workspace') return 'files';
+        if (name === 'read_file' || name === 'write_file' || name === 'edit_file' || name === 'list_files' || name === 'create_workspace') return 'files';
         return 'files';
       },
       toolPermissionLabel(name) {
@@ -378,19 +621,21 @@
           run_js: 'JavaScript 沙盒',
           preview_html: 'HTML 预览',
           web_fetch: '网页访问',
+          delete_files: '删除工作区文件',
           services: '工作区服务',
           files: '工作区文件'
         };
         return map[this.toolPermissionKey(name)] || this.toolLabel(name);
       },
       toolPermission(nameOrKey) {
-        const key = ['run_js', 'preview_html', 'files', 'services', 'web_fetch'].includes(nameOrKey)
+        const key = ['run_js', 'preview_html', 'files', 'delete_files', 'services', 'web_fetch'].includes(nameOrKey)
           ? nameOrKey
           : this.toolPermissionKey(nameOrKey);
         const perms = this.settings.toolPermissions || {};
         return perms[key] || (key === 'web_fetch' ? (this.settings.webFetch || 'ask') : 'ask');
       },
       setToolPermission(key, mode) {
+        if (key === 'delete_files' && mode === 'always') mode = 'ask';
         this.settings.toolPermissions = Object.assign({}, this.settings.toolPermissions || {}, { [key]: mode });
         if (key === 'web_fetch') this.settings.webFetch = mode;
         this.persistSettings();
@@ -516,10 +761,25 @@
         }
         this.sheet = '';
       },
-      exportSession(it) {
+      toastExportResult(result, fallback) {
+        if (!result) return;
+        if (typeof result === 'string') U.toast((fallback || '已导出') + '：' + result, 3200);
+        else if (result.path) U.toast((fallback || '已导出') + '到 ' + result.path, 3200);
+        else U.toast(fallback || '已导出');
+      },
+      toastExportError(e) {
+        if (e && e.name === 'AbortError') return;
+        U.toast('导出失败：' + (e && e.message || String(e)), 3600);
+      },
+      async exportSession(it) {
         const s = Store.loadSession(it.id) || this.session;
         const name = fileSafeName((s.title || 'wepchat-session') + '.json');
-        U.saveTextFile(name, JSON.stringify(s, null, 2)).then(() => U.toast('已导出'));
+        try {
+          const saved = await U.saveTextFile(name, JSON.stringify(s, null, 2));
+          this.toastExportResult(saved, '已导出会话');
+        } catch (e) {
+          this.toastExportError(e);
+        }
         this.sheet = '';
       },
 
@@ -645,11 +905,13 @@
           preview_html: 'HTML 预览',
           read_file: '读取文件',
           write_file: '写入文件',
+          edit_file: '修改文件',
+          delete_file: '删除文件',
           list_files: '列出文件',
           create_workspace: '创建工作区',
-          run_service: '启动服务',
-          stop_service: '停止服务',
-          list_services: '列出服务',
+          run_service: '启动预览',
+          stop_service: '停止预览',
+          list_services: '列出预览',
           web_fetch: '抓取网页'
         };
         return map[name] || name || '工具';
@@ -678,7 +940,9 @@
         return '<div class="diff-view">' + html + '</div>';
       },
       async authorizeToolCall(t) {
-        const mode = this.toolPermission(t.name);
+        const key = this.toolPermissionKey(t.name);
+        let mode = this.toolPermission(t.name);
+        if (key === 'delete_files' && mode === 'always') mode = 'ask';
         const label = this.toolPermissionLabel(t.name);
         if (mode === 'never') return '错误：用户已禁止工具：' + label;
         if (mode === 'always') return '';
@@ -907,13 +1171,15 @@
       onScroll() {
         const el = this.$refs.scroller;
         if (!el) return;
-        this.showScrollDown = el.scrollHeight - el.scrollTop - el.clientHeight > 160;
+        const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
+        this.showScrollDown = distance > 160;
+        this.autoFollow = distance < 80;
       },
       scrollToBottom(force) {
         const el = this.$refs.scroller;
         if (!el) return;
-        const near = el.scrollHeight - el.scrollTop - el.clientHeight < 220;
-        if (force || near) {
+        if (force) this.autoFollow = true;
+        if (force || this.autoFollow) {
           el.scrollTop = el.scrollHeight;
           this.showScrollDown = false;
         }
@@ -957,11 +1223,23 @@
       async uploadToWorkspace() {
         const f = await readPickedFile();
         if (!f) return;
-        const name = fileSafeName(f.name);
+        const inputName = await this.askText('保存到工作区', fileSafeName(f.name), '例如 index.html 或 assets/icon.png');
+        if (inputName == null) return;
+        let name;
+        try { name = normalizeWorkspacePath(inputName); }
+        catch (e) {
+          U.toast(e.message || '路径无效');
+          return;
+        }
         if (Object.keys(this.session.files).length >= Tools.MAX_FILES && !this.session.files[name]) {
           U.toast('会话文件数已达上限');
           return;
         }
+        if (this.session.files[name]) {
+          const ok = await this.confirm('覆盖工作区文件：' + name, '覆盖文件');
+          if (!ok) return;
+        }
+        ensureParentFolders(this.session, name);
         if (f.asImage) {
           this.session.files[name] = { dataUrl: f.content, mime: f.type, size: f.size, mtime: U.now() };
         } else {
@@ -973,31 +1251,252 @@
           this.session.files[name] = { content: text, mime: f.type || 'text/plain', size: text.length, mtime: U.now() };
         }
         this.persistSession();
+        const folder = parentFolder(name);
+        if (folder) this.openFolders[folder] = true;
         U.toast('已加入工作区');
+      },
+      async newWorkspaceItem() {
+        const type = await this.dialog({
+          title: '新建',
+          msg: '在当前会话工作区中新建文件或文件夹。',
+          buttons: [
+            { text: '取消', value: null },
+            { text: '文件夹', value: 'folder' },
+            { text: '文件', value: 'file', style: 'primary' }
+          ]
+        });
+        if (!type) return;
+        const raw = await this.askText(type === 'folder' ? '新建文件夹' : '新建文件', '', type === 'folder' ? '例如 demo/assets' : '例如 index.html 或 demo/app.js');
+        if (raw == null) return;
+        let path;
+        try { path = normalizeWorkspacePath(raw); }
+        catch (e) {
+          U.toast(e.message || '路径无效');
+          return;
+        }
+        if (type === 'folder') {
+          this.session.folders = Array.isArray(this.session.folders) ? this.session.folders : [];
+          if (!this.session.folders.includes(path)) this.session.folders.push(path);
+          const parent = parentFolder(path);
+          if (parent) this.openFolders[parent] = true;
+          this.openFolders[path] = true;
+          this.persistSession();
+          U.toast('已新建文件夹');
+          return;
+        }
+        if (Object.keys(this.session.files || {}).length >= Tools.MAX_FILES && !this.session.files[path]) {
+          U.toast('会话文件数已达上限');
+          return;
+        }
+        if (this.session.files[path]) {
+          const ok = await this.confirm('覆盖工作区文件：' + path, '覆盖文件');
+          if (!ok) return;
+        }
+        const content = this.defaultFileContent(path);
+        ensureParentFolders(this.session, path);
+        this.session.files[path] = { content, mime: workspaceMime(path), size: content.length, mtime: U.now() };
+        const folder = parentFolder(path);
+        if (folder) this.openFolders[folder] = true;
+        this.persistSession();
+        this.viewFile(path);
+      },
+      defaultFileContent(path) {
+        if (isHtmlName(path)) {
+          return '<!doctype html>\n<html>\n<head>\n  <meta charset="utf-8">\n  <meta name="viewport" content="width=device-width, initial-scale=1">\n  <title>Demo</title>\n</head>\n<body>\n\n</body>\n</html>\n';
+        }
+        if (isMarkdownName(path)) return '# Untitled\n';
+        if (/\.json$/i.test(path)) return '{}\n';
+        if (/\.css$/i.test(path)) return 'body {\n  margin: 0;\n}\n';
+        if (/\.m?js$/i.test(path)) return '';
+        return '';
       },
       viewFile(name) {
         const f = this.session.files[name];
         if (!f) return;
+        const editable = isEditableName(name, f);
         this.viewer = {
           name,
           isImage: !!f.dataUrl,
           dataUrl: f.dataUrl || '',
-          content: f.content || ''
+          mime: f.mime || workspaceMime(name),
+          content: editable ? (f.content || '') : '',
+          originalContent: editable ? (f.content || '') : '',
+          tab: f.dataUrl ? 'view' : (isHtmlName(name) || isMarkdownName(name) ? 'view' : 'source'),
+          doc: '',
+          logs: [],
+          dirty: false
         };
         this.pushPage('viewer');
+        if (isHtmlName(name) && editable) nextTick(() => this.runViewerPreview());
       },
-      saveWorkspaceFile() {
+      onViewerInput() {
+        this.viewer.dirty = this.viewer.content !== this.viewer.originalContent;
+      },
+      syncEditorScroll(e) {
+        const pre = this.$refs.viewerHighlight;
+        if (!pre || !e || !e.target) return;
+        pre.scrollTop = e.target.scrollTop;
+        pre.scrollLeft = e.target.scrollLeft;
+      },
+      setViewerTab(tab) {
+        this.viewer.tab = tab;
+        if (tab === 'view' && isHtmlName(this.viewer.name)) nextTick(() => this.runViewerPreview());
+      },
+      saveViewerFile() {
+        if (!this.viewerCanSave) return;
         const f = this.session.files[this.viewer.name];
         if (!f) return;
-        if (f.dataUrl) dataUrlDownload(this.viewer.name, f.dataUrl);
-        else U.saveTextFile(this.viewer.name, f.content || '').then(() => U.toast('已导出'));
+        const content = String(this.viewer.content || '');
+        if (content.length > Tools.MAX_FILE) {
+          U.toast('文件超过 ' + U.fmtSize(Tools.MAX_FILE));
+          return;
+        }
+        f.content = content;
+        f.mime = f.mime || workspaceMime(this.viewer.name);
+        f.size = content.length;
+        f.mtime = U.now();
+        delete f.dataUrl;
+        this.viewer.originalContent = content;
+        this.viewer.dirty = false;
+        this.persistSession();
+        if (isHtmlName(this.viewer.name)) this.runViewerPreview();
+        U.toast('已保存');
+      },
+      async exportViewerFile() {
+        const f = this.session.files[this.viewer.name];
+        if (!f) return;
+        try {
+          const saved = f.dataUrl && !this.viewer.content
+            ? await dataUrlDownload(this.viewer.name, f.dataUrl)
+            : await U.saveTextFile(fileSafeName(this.viewer.name), this.viewer.content || f.content || '', { mime: f.mime });
+          this.toastExportResult(saved, '已导出文件');
+        } catch (e) {
+          this.toastExportError(e);
+        }
       },
       async deleteWorkspaceFile() {
+        if (!this.viewer.name) return;
         const ok = await this.confirm('删除文件：' + this.viewer.name, '删除文件');
         if (!ok) return;
         delete this.session.files[this.viewer.name];
         this.persistSession();
         this.closePage();
+      },
+      async deleteWorkspacePath(row) {
+        if (!row) return;
+        if (row.type === 'folder') {
+          await this.deleteWorkspaceFolder(row.path);
+          return;
+        }
+        const ok = await this.confirm('删除文件：' + row.path, '删除文件');
+        if (!ok) return;
+        delete this.session.files[row.path];
+        this.persistSession();
+      },
+      async deleteWorkspaceFolder(path) {
+        const prefix = path + '/';
+        const files = Object.keys(this.session.files || {}).filter(name => name === path || name.startsWith(prefix));
+        const ok = await this.confirm('删除文件夹：' + path + '\n包含 ' + files.length + ' 个文件。', '删除文件夹');
+        if (!ok) return;
+        files.forEach(name => delete this.session.files[name]);
+        this.session.folders = (this.session.folders || []).filter(name => name !== path && !name.startsWith(prefix));
+        delete this.openFolders[path];
+        this.persistSession();
+      },
+      async exportWorkspace() {
+        const names = Object.keys(this.session.files || {}).sort((a, b) => a.localeCompare(b, 'zh-Hans'));
+        if (!names.length) {
+          U.toast('工作区没有可导出的文件');
+          return;
+        }
+        const choice = await this.dialog({
+          title: '导出工作区',
+          msg: '导出真实文件会打开目录选择器；打包 JSON 适合备份或导入回 WepChat。',
+          buttons: [
+            { text: '取消', value: null },
+            { text: '打包 JSON', value: 'bundle' },
+            { text: '选择文件', value: 'pick' },
+            { text: '全部文件', value: 'all', style: 'primary' }
+          ]
+        });
+        if (!choice) return;
+        if (choice === 'all') {
+          await this.exportWorkspaceFiles(names);
+          return;
+        }
+        if (choice === 'bundle') {
+          const data = {
+            app: 'wepchat-workspace',
+            version: 1,
+            title: this.session.title || '',
+            exportedAt: U.now(),
+            folders: this.session.folders || [],
+            files: this.session.files || {}
+          };
+          const name = fileSafeName((this.session.title || 'workspace') + '-' + new Date().toISOString().slice(0, 10) + '.json');
+          try {
+            const saved = await U.saveTextFile(name, JSON.stringify(data, null, 2), { mime: 'application/json' });
+            this.toastExportResult(saved, '已导出工作区包');
+          } catch (e) {
+            this.toastExportError(e);
+          }
+          return;
+        }
+        const picked = await this.askText('选择导出文件', names.join('\n'), '每行一个文件路径', true);
+        if (picked == null) return;
+        const selected = picked.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+        const missing = selected.filter(name => !this.session.files[name]);
+        if (missing.length) {
+          U.toast('文件不存在：' + missing[0]);
+          return;
+        }
+        await this.exportWorkspaceFiles(selected);
+      },
+      async exportWorkspaceFiles(names) {
+        const files = names.map(name => {
+          const f = this.session.files[name];
+          if (!f) return null;
+          return {
+            path: name,
+            content: f.content || '',
+            dataUrl: f.dataUrl || '',
+            mime: f.mime || workspaceMime(name)
+          };
+        }).filter(Boolean);
+        try {
+          const result = await U.exportFilesToDirectory(files, {
+            baseDir: fileSafeName(this.session.title || 'workspace')
+          });
+          if (result) U.toast('已导出 ' + result.count + ' 个文件到 ' + result.path, 3600);
+        } catch (e) {
+          this.toastExportError(e);
+        }
+      },
+      renderViewerMarkdown() {
+        return MD.render(this.viewer.content || '');
+      },
+      highlightSource(text, name) {
+        const code = String(text == null ? '' : text);
+        const withTail = code.endsWith('\n') ? code : code + '\n';
+        try {
+          if (window.hljs) {
+            const lang = languageForName(name);
+            if (hljs.getLanguage && hljs.getLanguage(lang)) {
+              return hljs.highlight(withTail, { language: lang, ignoreIllegals: true }).value;
+            }
+            return hljs.highlightAuto(withTail).value;
+          }
+        } catch (e) {}
+        return U.escapeHtml(withTail);
+      },
+      runViewerPreview() {
+        if (!isHtmlName(this.viewer.name)) return;
+        this.viewer.logs = [];
+        this.viewer.doc = this.buildWorkspaceHtml(this.viewer.name, this.viewer.content, 'viewer');
+        nextTick(() => {
+          const frame = this.$refs.viewerFrame;
+          if (frame) frame.srcdoc = this.viewer.doc;
+        });
       },
 
       serviceById(id) {
@@ -1059,32 +1558,32 @@
         nextTick(() => this.runPreview());
       },
       buildServiceDoc(svc) {
-        const f = this.session.files[svc.entry];
-        let html = f && f.content || '';
+        return this.buildWorkspaceHtml(svc.entry, null, 'preview');
+      },
+      buildWorkspaceHtml(entry, contentOverride, target) {
+        const f = this.session.files[entry];
+        let html = contentOverride != null ? String(contentOverride) : (f && f.content || '');
         const files = this.session.files || {};
         html = html.replace(/<link\b([^>]*?)href=["']([^"']+)["']([^>]*)>/gi, (m, a, href) => {
           if (isExternalRef(href)) return m;
-          const name = normalizeRef(href);
+          const name = resolveWorkspaceRef(href, entry);
           const dep = files[name];
           if (!dep || dep.dataUrl) return '<!-- missing stylesheet: ' + htmlAttr(name) + ' -->';
           return '<style data-wepchat-file="' + htmlAttr(name) + '">\n' + (dep.content || '') + '\n</style>';
         });
         html = html.replace(/<script\b([^>]*?)src=["']([^"']+)["']([^>]*)>\s*<\/script>/gi, (m, a, src) => {
           if (isExternalRef(src)) return m;
-          const name = normalizeRef(src);
+          const name = resolveWorkspaceRef(src, entry);
           const dep = files[name];
           if (!dep || dep.dataUrl) return '<script>console.error("missing script: ' + escapeScriptEnd(name) + '")<\/script>';
           return '<script data-wepchat-file="' + htmlAttr(name) + '">\n' + escapeScriptEnd(dep.content || '') + '\n<\/script>';
         });
         html = html.replace(/(<img\b[^>]*?\bsrc=["'])([^"']+)(["'][^>]*>)/gi, (m, pre, src, post) => {
           if (isExternalRef(src)) return m;
-          const dep = files[normalizeRef(src)];
+          const dep = files[resolveWorkspaceRef(src, entry)];
           return dep && dep.dataUrl ? pre + dep.dataUrl + post : m;
         });
-        this.preview.html = html;
-        this.preview.css = '';
-        this.preview.js = '';
-        return this.wrapPreviewDoc(html, '', '');
+        return this.wrapPreviewDoc(html, '', '', target || 'preview');
       },
 
       openPreview(payload) {
@@ -1100,12 +1599,13 @@
         this.pushPage('preview');
         nextTick(() => this.runPreview());
       },
-      previewBridge() {
+      previewBridge(target) {
+        const channel = target || 'preview';
         const bridge = `
 <script>
 (function () {
   function send(level, args) {
-    parent.postMessage({ source: 'wepchat-preview', level: level, text: Array.prototype.map.call(args, function (x) {
+    parent.postMessage({ source: 'wepchat-preview', target: ${JSON.stringify(channel)}, level: level, text: Array.prototype.map.call(args, function (x) {
       if (typeof x === 'string') return x;
       try { return JSON.stringify(x); } catch (e) { return String(x); }
     }).join(' ') }, '*');
@@ -1117,8 +1617,8 @@
 <\/script>`;
         return bridge;
       },
-      wrapPreviewDoc(sourceHtml, sourceCss, sourceJs) {
-        const bridge = this.previewBridge();
+      wrapPreviewDoc(sourceHtml, sourceCss, sourceJs, target) {
+        const bridge = this.previewBridge(target || 'preview');
         const css = sourceCss ? '<style>\n' + sourceCss + '\n</style>' : '';
         const js = sourceJs ? '<script>\n' + escapeScriptEnd(sourceJs) + '\n<\/script>' : '';
         let html = sourceHtml || '';
@@ -1133,7 +1633,7 @@
         return html;
       },
       buildPreviewDoc() {
-        return this.wrapPreviewDoc(this.preview.html || '', this.preview.css || '', this.preview.js || '');
+        return this.wrapPreviewDoc(this.preview.html || '', this.preview.css || '', this.preview.js || '', 'preview');
       },
       runPreview() {
         this.preview.logs = [];
@@ -1147,10 +1647,12 @@
       onPreviewMessage(e) {
         const data = e.data || {};
         if (data.source !== 'wepchat-preview') return;
-        this.preview.logs.push({
+        const row = {
           level: data.level === 'error' || data.level === 'warn' ? data.level : 'log',
           text: String(data.text || '')
-        });
+        };
+        if (data.target === 'viewer') this.viewer.logs.push(row);
+        else this.preview.logs.push(row);
       },
       savePreviewToWorkspace() {
         const name = fileSafeName(this.preview.title || 'preview') + '.html';
@@ -1163,14 +1665,23 @@
         this.persistSession();
         U.toast('已保存到会话文件');
       },
-      exportPreview() {
-        U.saveTextFile(fileSafeName(this.preview.title || 'preview') + '.html', this.preview.doc).then(() => U.toast('已导出'));
+      async exportPreview() {
+        try {
+          const saved = await U.saveTextFile(fileSafeName(this.preview.title || 'preview') + '.html', this.preview.doc, { mime: 'text/html' });
+          this.toastExportResult(saved, '已导出预览');
+        } catch (e) {
+          this.toastExportError(e);
+        }
       },
 
       async exportAll() {
         const data = Store.exportAll();
-        await U.saveTextFile('wepchat-backup-' + new Date().toISOString().slice(0, 10) + '.json', JSON.stringify(data, null, 2));
-        U.toast('已导出全部数据');
+        try {
+          const saved = await U.saveTextFile('wepchat-backup-' + new Date().toISOString().slice(0, 10) + '.json', JSON.stringify(data, null, 2), { mime: 'application/json' });
+          this.toastExportResult(saved, '已导出全部数据');
+        } catch (e) {
+          this.toastExportError(e);
+        }
       },
       async importData() {
         const f = await U.pickFile('.json,application/json', false);

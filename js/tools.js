@@ -1,5 +1,5 @@
 /* WepChat - Agent 工具集与 JS 沙盒
- * 工具：run_js / preview_html / read_file / write_file / list_files / create_workspace / run_service / stop_service / list_services / web_fetch
+ * 工具：run_js / preview_html / read_file / write_file / edit_file / delete_file / list_files / web_fetch
  * 安全：Worker 隔离执行 + 超时熔断 + 输出截断；文件仅限当前会话工作区；网络需授权 */
 'use strict';
 
@@ -95,7 +95,16 @@ const Tools = (() => {
   }
   function ensureWorkspace(session) {
     session.files = session.files || {};
+    session.folders = Array.isArray(session.folders) ? session.folders : [];
     session.services = Array.isArray(session.services) ? session.services : [];
+  }
+  function ensureParentFolders(session, path) {
+    session.folders = Array.isArray(session.folders) ? session.folders : [];
+    const parts = String(path || '').split('/');
+    for (let i = 1; i < parts.length; i++) {
+      const folder = parts.slice(0, i).join('/');
+      if (folder && !session.folders.includes(folder)) session.folders.push(folder);
+    }
   }
   function textMime(name) {
     if (/\.html?$/i.test(name)) return 'text/html';
@@ -143,14 +152,42 @@ const Tools = (() => {
     if (!session.files[name] && Object.keys(session.files).length >= MAX_FILES) throw new Error('会话文件数已达上限');
     const before = session.files[name] && session.files[name].content || '';
     const existed = !!session.files[name];
+    ensureParentFolders(session, name);
     session.files[name] = { content, mime: args.mime || textMime(name), size: content.length, mtime: U.now() };
     const d = diffText(name, before, content);
     return (existed ? '已更新 ' : '已创建 ') + name + '（' + U.fmtSize(content.length) + '）' +
       (d ? '\n\n' + d : '\n\n内容未变化。');
   }
+  function fEditFile(session, args) {
+    ensureWorkspace(session);
+    const name = safeName(args.path);
+    const f = session.files[name];
+    if (!f) throw new Error('文件不存在: ' + name + '。请先 list_files 或 write_file。');
+    if (f.dataUrl && !f.content) throw new Error('该文件是二进制文件，无法以文本修改');
+    const find = String(args.find == null ? '' : args.find);
+    const replace = String(args.replace == null ? '' : args.replace);
+    if (!find) throw new Error('缺少 find 参数');
+    const before = String(f.content || '');
+    if (!before.includes(find)) throw new Error('未找到要替换的文本。请先 read_file 获取最新内容。');
+    const after = args.all ? before.split(find).join(replace) : before.replace(find, replace);
+    if (after.length > MAX_FILE) throw new Error('内容超过 ' + U.fmtSize(MAX_FILE) + ' 上限');
+    f.content = after;
+    f.size = after.length;
+    f.mtime = U.now();
+    f.mime = f.mime || textMime(name);
+    return '已修改 ' + name + '（' + (args.all ? '全部匹配' : '首个匹配') + '）\n\n' + diffText(name, before, after);
+  }
+  function fDeleteFile(session, args) {
+    ensureWorkspace(session);
+    const name = safeName(args.path);
+    const f = session.files[name];
+    if (!f) throw new Error('文件不存在: ' + name);
+    delete session.files[name];
+    return '已删除 ' + name;
+  }
   function fListFiles(session) {
     ensureWorkspace(session);
-    const names = Object.keys(session.files);
+    const names = Object.keys(session.files).sort((a, b) => a.localeCompare(b, 'zh-Hans'));
     if (!names.length) return '(工作区为空)';
     return names.map(n => n + '\t' + U.fmtSize(session.files[n].size)).join('\n');
   }
@@ -166,7 +203,7 @@ const Tools = (() => {
   function fCreateWorkspace(session, args) {
     ensureWorkspace(session);
     return '会话工作区已准备好。当前文件数：' + Object.keys(session.files).length +
-      '，服务数：' + session.services.length + '。可以继续使用 write_file/read_file/list_files/run_service。';
+      '。这个工作区默认存在，可以继续使用 write_file/read_file/edit_file/delete_file/list_files。';
   }
   function fRunService(session, args, ctx) {
     ensureWorkspace(session);
@@ -174,7 +211,7 @@ const Tools = (() => {
     if (!session.files[entry]) throw new Error('入口文件不存在: ' + entry + '。请先 write_file 创建它。');
     let svc = findService(session, args);
     if (!svc) {
-      if (session.services.length >= MAX_SERVICES) throw new Error('会话服务数已达上限');
+      if (session.services.length >= MAX_SERVICES) throw new Error('会话静态预览数已达上限');
       svc = { id: U.uuid(), name: serviceName(args.name), entry, status: 'stopped', createdAt: U.now(), updatedAt: U.now() };
       session.services.push(svc);
     }
@@ -184,15 +221,15 @@ const Tools = (() => {
     svc.updatedAt = U.now();
     svc.lastStartedAt = U.now();
     if (ctx.openService) ctx.openService(svc.id);
-    return '服务已启动：' + svc.name + '\n入口：' + svc.entry + '\n预览：wepchat://service/' + svc.id +
-      '\n用户可以在会话工作区里停止、重新启动或进入预览。';
+    return '静态预览已启动：' + svc.name + '\n入口：' + svc.entry + '\n内部地址：wepchat://service/' + svc.id +
+      '\n当前版本不会启动后台进程或 localhost 端口；用户可以在会话工作区里停止、重新启动或进入预览。';
   }
   function fStopService(session, args) {
     const svc = findService(session, args);
-    if (!svc) throw new Error('服务不存在');
+    if (!svc) throw new Error('静态预览不存在');
     svc.status = 'stopped';
     svc.updatedAt = U.now();
-    return '服务已停止：' + svc.name;
+    return '静态预览已停止：' + svc.name;
   }
   function fListServices(session) {
     ensureWorkspace(session);
@@ -257,51 +294,44 @@ const Tools = (() => {
     },
     {
       name: 'read_file',
-      description: '读取当前会话工作区中的文本文件内容。',
-      parameters: { type: 'object', properties: { path: { type: 'string', description: '文件名' } }, required: ['path'] }
+      description: '读取当前会话工作区中的文本文件内容。路径可以包含文件夹，例如 demo/index.html。',
+      parameters: { type: 'object', properties: { path: { type: 'string', description: '工作区文件路径' } }, required: ['path'] }
     },
     {
       name: 'write_file',
-      description: '把文本内容写入当前会话工作区（新建或覆盖）。',
-      parameters: { type: 'object', properties: { path: { type: 'string' }, content: { type: 'string' } }, required: ['path', 'content'] }
+      description: '把文本内容写入当前会话工作区（新建或覆盖）。生成 HTML/CSS/JS/Markdown/JSON 等文件时优先使用它，而不是把完整代码直接输出在聊天正文里。',
+      parameters: {
+        type: 'object',
+        properties: {
+          path: { type: 'string', description: '工作区文件路径，例如 index.html 或 demo/app.js' },
+          content: { type: 'string', description: '完整文件内容' },
+          mime: { type: 'string', description: '可选 MIME 类型' }
+        },
+        required: ['path', 'content']
+      }
+    },
+    {
+      name: 'edit_file',
+      description: '修改当前会话工作区中的已有文本文件。先 read_file 获取最新内容，再用 find/replace 做小范围改动；适合修复代码、调整样式、替换片段。',
+      parameters: {
+        type: 'object',
+        properties: {
+          path: { type: 'string', description: '工作区文件路径' },
+          find: { type: 'string', description: '要查找的原文片段，必须精确匹配' },
+          replace: { type: 'string', description: '替换后的文本' },
+          all: { type: 'boolean', description: '是否替换全部匹配，默认 false' }
+        },
+        required: ['path', 'find', 'replace']
+      }
+    },
+    {
+      name: 'delete_file',
+      description: '删除当前会话工作区中的一个文件。这个工具总是需要用户确认或被禁止，不提供静默永久允许。',
+      parameters: { type: 'object', properties: { path: { type: 'string', description: '要删除的工作区文件路径' } }, required: ['path'] }
     },
     {
       name: 'list_files',
       description: '列出当前会话工作区中的所有文件。',
-      parameters: { type: 'object', properties: {} }
-    },
-    {
-      name: 'create_workspace',
-      description: '确保当前会话拥有一个文件工作区。需要创建多文件 HTML/JS 小工具或服务前先调用它。',
-      parameters: { type: 'object', properties: {} }
-    },
-    {
-      name: 'run_service',
-      description: '把会话工作区中的 HTML 入口文件作为一个持续服务启动，并打开内置预览。适合多文件小网页、demo、工具应用。静态原型中运行在隔离 iframe；原生版可映射为本地 HTTP 服务。',
-      parameters: {
-        type: 'object',
-        properties: {
-          name: { type: 'string', description: '服务名称，例如 Todo Demo' },
-          entry: { type: 'string', description: '入口 HTML 文件，默认 index.html' },
-          service_id: { type: 'string', description: '可选，已有服务 id，用于重新启动或切换入口' }
-        },
-        required: ['entry']
-      }
-    },
-    {
-      name: 'stop_service',
-      description: '停止当前会话工作区中的一个服务。',
-      parameters: {
-        type: 'object',
-        properties: {
-          service_id: { type: 'string', description: '服务 id' },
-          name: { type: 'string', description: '服务名称；只有一个服务时可省略' }
-        }
-      }
-    },
-    {
-      name: 'list_services',
-      description: '列出当前会话工作区中的服务及运行状态。',
       parameters: { type: 'object', properties: {} }
     },
     {
@@ -312,9 +342,13 @@ const Tools = (() => {
   ];
 
   const SYSTEM_HINT = [
-    '你可以使用以下工具：run_js（沙盒执行 JavaScript，适合精确计算、数据转换、编码解码）、preview_html（生成一次性可交互 HTML 页面）、create_workspace/read_file/write_file/list_files（当前会话的文件工作区）、run_service/stop_service/list_services（启动或管理工作区中的持续预览服务）、web_fetch(抓取网页文本)。',
+    '当前对话默认拥有一个“工作区”，可以保存 HTML、CSS、JavaScript、Markdown、JSON 等文件。用户可以在工作区里打开文件、预览 HTML/Markdown、编辑源码、查看控制台并导出文件。',
+    '你可以使用以下工具：run_js（沙盒执行 JavaScript，适合精确计算、数据转换、编码解码）、preview_html（生成一次性可交互 HTML 页面）、read_file/write_file/edit_file/delete_file/list_files（当前会话工作区文件）、web_fetch（抓取网页文本）。',
     '简单问题直接回答；只在需要精确计算、验证、数据处理、生成可交互页面或操作文件时调用工具。',
-    '制作单文件临时页面时可用 preview_html；制作多文件或需要持续预览的小应用时，先 create_workspace，再 write_file 写入 index.html/css/js，最后 run_service。',
+    '当用户要你写网页、小工具、代码示例、临时项目或需要多文件协作时，优先把代码写入工作区文件，例如 index.html、style.css、script.js；不要把大段完整代码只堆在聊天正文里。',
+    '修改已有文件前，先 list_files 或 read_file 了解当前内容；小改动优先用 edit_file，整文件重写才用 write_file。',
+    'HTML 文件写入工作区后，告诉用户可以在会话工作区点击 .html 文件进入预览/源码/控制台；不要声称启动了真实后台进程、shell、Node/Python 服务或 localhost 端口。',
+    '只有一次性演示、不需要保存为项目文件时才使用 preview_html。',
     '不要在代码中包含任何 API Key 或用户隐私。'
   ].join('\n');
 
@@ -343,6 +377,8 @@ const Tools = (() => {
         }
         case 'read_file': return fReadFile(ctx.session, args);
         case 'write_file': return fWriteFile(ctx.session, args);
+        case 'edit_file': return fEditFile(ctx.session, args);
+        case 'delete_file': return fDeleteFile(ctx.session, args);
         case 'list_files': return fListFiles(ctx.session);
         case 'create_workspace': return fCreateWorkspace(ctx.session, args);
         case 'run_service': return fRunService(ctx.session, args, ctx);
