@@ -23,6 +23,7 @@
     sess.files = sess.files || {};
     sess.folders = Array.isArray(sess.folders) ? sess.folders : [];
     sess.services = Array.isArray(sess.services) ? sess.services : [];
+    sess.mode = sess.mode === 'image' ? 'image' : 'chat';
     sess.createdAt = sess.createdAt || U.now();
     sess.updatedAt = sess.updatedAt || U.now();
     sess.title = sess.title || '';
@@ -30,15 +31,22 @@
   }
 
   function newProvider() {
-    return {
+    return MODEL_META.normalizeProvider({
       id: U.uuid(),
       name: 'OpenAI Compatible',
       api: 'openai-chat',
       baseUrl: '',
       apiKey: '',
       models: ['gpt-4o-mini'],
+      imageModels: ['gpt-image-1', 'gpt-image-2'],
+      modelMeta: {},
+      imageModelMeta: {},
+      imageBaseUrl: '',
+      imageApiKey: '',
+      imageEndpointPath: '',
+      imageEditEndpointPath: '',
       extraHeaders: []
-    };
+    });
   }
 
   function parseModels(text) {
@@ -46,6 +54,55 @@
       .split(/\r?\n/)
       .map(s => s.trim())
       .filter(Boolean);
+  }
+
+  function modelsText(provider) {
+    provider = MODEL_META.normalizeProvider(provider || {});
+    return (provider.models || []).join('\n');
+  }
+
+  function imageModelsText(provider) {
+    provider = MODEL_META.normalizeProvider(provider || {});
+    return (provider.imageModels || []).join('\n');
+  }
+
+  function providerModelMeta(provider, id) {
+    return MODEL_META.get(provider, id);
+  }
+
+  function tokenMessageText(m) {
+    if (!m) return '';
+    let text = [m.content || '', m.reasoning || ''].filter(Boolean).join('\n');
+    (m.attachments || []).forEach(a => {
+      if (a.kind === 'text') text += '\n\n' + (a.name || 'file') + '\n' + (a.content || '');
+      else if (a.kind === 'image') text += '\n[image:' + (a.name || 'image') + ']';
+    });
+    (m.toolCalls || []).forEach(t => {
+      text += '\n' + (t.name || 'tool') + '\n' + (t.arguments || '') + '\n' + (t.result || '');
+    });
+    (m.images || []).forEach(img => {
+      text += '\n[generated-image:' + (img.path || img.name || 'image') + ']';
+    });
+    return text;
+  }
+
+  function imageExtForMime(mime) {
+    if (/jpe?g/i.test(mime || '')) return 'jpg';
+    if (/webp/i.test(mime || '')) return 'webp';
+    return 'png';
+  }
+
+  function imageFileName(prompt, idx, mime) {
+    const d = new Date();
+    const pad = x => String(x).padStart(2, '0');
+    const stamp = d.getFullYear() + pad(d.getMonth() + 1) + pad(d.getDate()) + '_' + pad(d.getHours()) + pad(d.getMinutes()) + pad(d.getSeconds());
+    const title = fileSafeName(U.truncate(String(prompt || 'image').replace(/\s+/g, ' '), 24)).toLowerCase();
+    const suffix = idx > 0 ? '_' + (idx + 1) : '';
+    return 'images/' + stamp + '_' + title + suffix + '.' + imageExtForMime(mime);
+  }
+
+  function attachmentFileName(name) {
+    return 'attachments/' + fileSafeName(name || 'attachment');
   }
 
   function fileSafeName(name) {
@@ -105,6 +162,7 @@
 
   function isHtmlName(name) { return /\.html?$/i.test(name || ''); }
   function isMarkdownName(name) { return /\.(md|markdown)$/i.test(name || ''); }
+  function isImageName(name) { return /\.(png|jpe?g|webp|gif|bmp)$/i.test(name || ''); }
 
   function isEditableName(name, file) {
     if (file && file.dataUrl && !file.content) return false;
@@ -252,13 +310,15 @@
   createApp({
     data() {
       const settings = Store.loadSettings();
-      const providers = Store.loadProviders();
+      const providers = Store.loadProviders().map(p => MODEL_META.normalizeProvider(p));
+      Store.saveProviders(providers);
       const index = Store.loadIndex();
       const first = index[0] && Store.loadSession(index[0].id);
 
       return {
         U,
         API,
+        MODEL_META,
         settings,
         providers,
         index,
@@ -285,6 +345,9 @@
           isNew: true,
           data: null,
           modelsText: '',
+          imageModelsText: '',
+          selectedModel: '',
+          selectedImageModel: '',
           showKey: false,
           fetching: false,
           testing: false
@@ -300,9 +363,14 @@
           tab: 'source',
           doc: '',
           logs: [],
+          editPrompt: '',
           dirty: false
         },
         openFolders: {},
+        workspacePressTimer: null,
+        workspacePressBlockTimer: null,
+        workspacePressStart: null,
+        workspaceLongPressFired: false,
 
         preview: {
           title: 'HTML 预览',
@@ -317,12 +385,19 @@
         },
 
         dlg: null,
+        tokenPanelOpen: false,
+        sessionManagerOpen: {},
         storageUsed: Store.usage(),
 
         suggestions: [
           { t: '算一下', q: '用工具精确计算 123456789 * 987654321，并解释结果。' },
           { t: '做个小工具', q: '做一个可以交互预览的 BMI 计算器，界面适合手机。' },
           { t: '处理文本', q: '把下面这段文本整理成 Markdown 表格：姓名 年龄 城市；张三 28 上海；李四 31 深圳。' }
+        ],
+        imageSuggestions: [
+          { t: '头像草图', q: '生成一张 1:1 的二次元头像，干净背景，清晰五官，柔和光线。' },
+          { t: '产品概念', q: '生成一张极简风桌面小音箱产品概念图，白色背景，柔和阴影。' },
+          { t: '社媒配图', q: '生成一张适合社交媒体封面的温暖插画，城市夜晚，小雨，霓虹反光。' }
         ]
       };
     },
@@ -332,9 +407,102 @@
         const id = this.settings.activeProviderId || this.session.providerId;
         return this.providers.find(p => p.id === id) || this.providers[0] || null;
       },
+      currentModelId() {
+        if (!this.currentProvider) return '';
+        return this.settings.activeModel || this.session.model || this.currentProvider.models[0] || '';
+      },
       currentModelLabel() {
         if (!this.currentProvider) return '未配置模型';
-        return this.settings.activeModel || this.session.model || this.currentProvider.models[0] || '默认模型';
+        return this.currentModelId || '默认模型';
+      },
+      topModelLabel() {
+        return this.appMode === 'image' ? (this.imageModelId || '未配置生图模型') : this.currentModelLabel;
+      },
+      topProviderLabel() {
+        return this.appMode === 'image'
+          ? (this.imageProvider && this.imageProvider.name || '图片生成')
+          : (this.currentProvider && this.currentProvider.name || '');
+      },
+      currentModelMeta() {
+        return this.currentProvider ? providerModelMeta(this.currentProvider, this.currentModelId) : null;
+      },
+      currentModelCaps() {
+        return MODEL_META.capLabels(this.currentModelMeta);
+      },
+      emptySuggestions() {
+        return this.appMode === 'image' ? this.imageSuggestions : this.suggestions;
+      },
+      appMode() {
+        return this.session && this.session.mode === 'image' ? 'image' : 'chat';
+      },
+      composerPlaceholder() {
+        return this.appMode === 'image' ? '描述你想生成的图片' : '有问题，尽管问';
+      },
+      imageProvider() {
+        const id = this.settings.imageProviderId || this.settings.activeProviderId;
+        return this.providers.find(p => p.id === id) || this.currentProvider || this.providers[0] || null;
+      },
+      imageModelId() {
+        const provider = this.imageProvider;
+        if (!provider) return '';
+        const imageModels = this.imageModelOptions;
+        const preferred = this.settings.imageModel;
+        if (preferred && imageModels.includes(preferred)) return preferred;
+        const found = imageModels.find(id => {
+          const meta = providerModelMeta(provider, id);
+          const caps = meta && meta.capabilities || {};
+          return caps.imageGeneration || (meta.image && meta.image.generation);
+        });
+        return found || imageModels[0] || '';
+      },
+      imageModelOptions() {
+        const provider = this.imageProvider;
+        if (!provider) return [];
+        const out = [];
+        (provider.imageModels || []).forEach(id => { if (id && !out.includes(id)) out.push(id); });
+        (provider.models || []).forEach(id => {
+          const meta = providerModelMeta(provider, id);
+          if (MODEL_META.isImageGenerationMeta(meta) && !out.includes(id)) out.push(id);
+        });
+        return out;
+      },
+      tokenStats() {
+        const meta = this.currentModelMeta || {};
+        const context = MODEL_META.toInt(meta.contextWindow) || MODEL_META.DEFAULT_CONTEXT;
+        const maxOut = MODEL_META.toInt(this.settings.maxTokens) || MODEL_META.toInt(meta.maxOutputTokens) || MODEL_META.DEFAULT_MAX_OUTPUT;
+        let input = MODEL_META.estimateTokens(this.settings.systemPrompt || '');
+        (this.session.messages || []).forEach(m => { input += MODEL_META.estimateTokens(tokenMessageText(m)) + 4; });
+        let pending = MODEL_META.estimateTokens(this.input || '');
+        (this.attachments || []).forEach(a => {
+          pending += a.kind === 'text' ? MODEL_META.estimateTokens((a.name || '') + '\n' + (a.content || '')) : 260;
+        });
+        const used = input + pending;
+        const pct = context ? Math.min(100, Math.round(used / context * 100)) : 0;
+        const remaining = Math.max(0, context - used);
+        return {
+          input,
+          pending,
+          used,
+          context,
+          maxOut,
+          remaining,
+          pct,
+          warn: pct >= 85,
+          danger: pct >= 95,
+          source: meta.source || 'estimate'
+        };
+      },
+      tokenRingStyle() {
+        const p = this.tokenStats.pct;
+        const fg = this.tokenStats.danger ? '#ff5449' : (this.tokenStats.warn ? '#f5a524' : 'var(--text)');
+        return {
+          background: 'conic-gradient(' + fg + ' ' + p + '%, var(--surface2) 0)'
+        };
+      },
+      provSelectedMeta() {
+        const p = this.provForm && this.provForm.data;
+        const id = this.provForm && this.provForm.selectedModel;
+        return p && id ? providerModelMeta(p, id) : null;
       },
       fileCount() {
         return Object.keys(this.session.files || {}).length;
@@ -347,6 +515,44 @@
           for (let i = 1; i < parts.length; i++) folders.add(parts.slice(0, i).join('/'));
         });
         return folders.size;
+      },
+      sessionManagerItems() {
+        return (this.index || []).map(meta => {
+          const sess = Store.loadSession(meta.id);
+          if (!sess) return null;
+          const files = sess.files || {};
+          const fileRows = Object.keys(files).sort((a, b) => a.localeCompare(b, 'zh-Hans')).map(path => {
+            const f = files[path] || {};
+            const size = Number(f.size) || (f.content ? String(f.content).length : 0) || (f.dataUrl ? Math.ceil(String(f.dataUrl).length * 0.75) : 0);
+            return {
+              path,
+              name: path.split('/').pop() || path,
+              kind: this.fileKind(path, f),
+              size,
+              mtime: f.mtime || sess.updatedAt || meta.updatedAt || 0,
+              mime: f.mime || workspaceMime(path)
+            };
+          });
+          const workspaceSize = fileRows.reduce((sum, f) => sum + (f.size || 0), 0);
+          return {
+            id: sess.id,
+            title: sess.title || '新聊天',
+            mode: sess.mode === 'image' ? 'image' : 'chat',
+            modeLabel: sess.mode === 'image' ? '生图' : '常规',
+            updatedAt: sess.updatedAt || meta.updatedAt || sess.createdAt || 0,
+            createdAt: sess.createdAt || meta.createdAt || 0,
+            pinned: !!(sess.pinned || meta.pinned),
+            messageCount: (sess.messages || []).length,
+            fileCount: fileRows.length,
+            folderCount: (sess.folders || []).length,
+            workspaceSize,
+            files: fileRows,
+            isCurrent: sess.id === this.session.id
+          };
+        }).filter(Boolean).sort((a, b) => {
+          if (!!a.pinned !== !!b.pinned) return a.pinned ? -1 : 1;
+          return (b.updatedAt || 0) - (a.updatedAt || 0);
+        });
       },
       serviceCount() {
         return (this.session.services || []).length;
@@ -529,6 +735,7 @@
         this.applyTheme();
       },
       persistProviders() {
+        this.providers = this.providers.map(p => MODEL_META.normalizeProvider(p));
         Store.saveProviders(this.providers);
         this.storageUsed = Store.usage();
       },
@@ -581,6 +788,30 @@
         this.settings.maxTokens = Number.isFinite(n) && n > 0 ? n : null;
         this.persistSettings();
       },
+      setAppMode(mode) {
+        this.session.mode = mode === 'image' ? 'image' : 'chat';
+        this.persistSession();
+        nextTick(() => this.growInput());
+      },
+      setImageCount(v) {
+        const n = parseInt(v, 10);
+        this.settings.imageDefaultCount = Number.isFinite(n) ? U.clamp(n, 1, 8) : 1;
+        this.persistSettings();
+      },
+      modelMeta(provider, id) {
+        return providerModelMeta(provider, id);
+      },
+      modelCapText(provider, id) {
+        return MODEL_META.capLabels(this.modelMeta(provider, id)).join(' · ');
+      },
+      modelContextText(provider, id) {
+        const meta = this.modelMeta(provider, id);
+        return MODEL_META.fmtTokens(meta.contextWindow || MODEL_META.DEFAULT_CONTEXT) + ' ctx';
+      },
+      modelSummary(provider, id) {
+        const meta = this.modelMeta(provider, id);
+        return this.modelContextText(provider, id) + ' · ' + MODEL_META.capLabels(meta).join(' · ');
+      },
       setMaxToolRounds(v) {
         const n = parseInt(v, 10);
         this.settings.maxToolRounds = Number.isFinite(n) ? U.clamp(n, 1, 32) : 8;
@@ -607,10 +838,58 @@
       toggleFolder(path) {
         this.openFolders[path] = !this.isFolderOpen(path);
       },
+      openWorkspaceRow(row) {
+        if (this.workspaceLongPressFired) {
+          this.workspaceLongPressFired = false;
+          return;
+        }
+        if (!row) return;
+        if (row.type === 'folder') this.toggleFolder(row.path);
+        else this.viewFile(row.path);
+      },
+      startWorkspaceFilePress(row, e) {
+        this.cancelWorkspaceFilePress();
+        if (!row || row.type !== 'file') return;
+        const x = e && e.clientX || 0;
+        const y = e && e.clientY || 0;
+        this.workspacePressStart = { x, y, path: row.path };
+        this.workspacePressTimer = setTimeout(() => {
+          this.workspacePressTimer = null;
+          this.markWorkspaceLongPressFired();
+          U.vibrate(18);
+          this.exportWorkspaceFileByName(row.path);
+        }, 520);
+      },
+      moveWorkspaceFilePress(e) {
+        if (!this.workspacePressTimer || !this.workspacePressStart || !e) return;
+        const dx = Math.abs((e.clientX || 0) - this.workspacePressStart.x);
+        const dy = Math.abs((e.clientY || 0) - this.workspacePressStart.y);
+        if (dx > 10 || dy > 10) this.cancelWorkspaceFilePress();
+      },
+      cancelWorkspaceFilePress() {
+        if (this.workspacePressTimer) clearTimeout(this.workspacePressTimer);
+        this.workspacePressTimer = null;
+        this.workspacePressStart = null;
+      },
+      markWorkspaceLongPressFired() {
+        this.workspaceLongPressFired = true;
+        if (this.workspacePressBlockTimer) clearTimeout(this.workspacePressBlockTimer);
+        this.workspacePressBlockTimer = setTimeout(() => {
+          this.workspaceLongPressFired = false;
+          this.workspacePressBlockTimer = null;
+        }, 900);
+      },
+      showWorkspaceFileContext(row) {
+        if (!row || row.type !== 'file') return;
+        this.cancelWorkspaceFilePress();
+        this.markWorkspaceLongPressFired();
+        this.exportWorkspaceFileByName(row.path);
+      },
       toolPermissionKey(name) {
         if (name === 'run_js') return 'run_js';
         if (name === 'preview_html') return 'preview_html';
         if (name === 'web_fetch') return 'web_fetch';
+        if (name === 'image_go' || name === 'image_generation') return 'image_go';
         if (name === 'delete_file') return 'delete_files';
         if (name === 'run_service' || name === 'stop_service' || name === 'list_services') return 'services';
         if (name === 'read_file' || name === 'write_file' || name === 'edit_file' || name === 'list_files' || name === 'create_workspace') return 'files';
@@ -621,6 +900,7 @@
           run_js: 'JavaScript 沙盒',
           preview_html: 'HTML 预览',
           web_fetch: '网页访问',
+          image_go: '图片生成',
           delete_files: '删除工作区文件',
           services: '工作区服务',
           files: '工作区文件'
@@ -628,16 +908,18 @@
         return map[this.toolPermissionKey(name)] || this.toolLabel(name);
       },
       toolPermission(nameOrKey) {
-        const key = ['run_js', 'preview_html', 'files', 'delete_files', 'services', 'web_fetch'].includes(nameOrKey)
+        const key = ['run_js', 'preview_html', 'files', 'delete_files', 'services', 'web_fetch', 'image_go'].includes(nameOrKey)
           ? nameOrKey
           : this.toolPermissionKey(nameOrKey);
         const perms = this.settings.toolPermissions || {};
+        if (key === 'image_go') return perms[key] || this.settings.imagePermission || 'ask';
         return perms[key] || (key === 'web_fetch' ? (this.settings.webFetch || 'ask') : 'ask');
       },
       setToolPermission(key, mode) {
         if (key === 'delete_files' && mode === 'always') mode = 'ask';
         this.settings.toolPermissions = Object.assign({}, this.settings.toolPermissions || {}, { [key]: mode });
         if (key === 'web_fetch') this.settings.webFetch = mode;
+        if (key === 'image_go') this.settings.imagePermission = mode;
         this.persistSettings();
       },
 
@@ -701,14 +983,26 @@
         });
       },
 
-      newSession() {
+      async newSession() {
+        const mode = await this.dialog({
+          title: '新建会话',
+          msg: '选择这次会话的模式。创建后不可修改。',
+          buttons: [
+            { text: '取消', value: null },
+            { text: '常规', value: 'chat', style: 'primary' },
+            { text: '生图', value: 'image', style: 'primary' }
+          ]
+        });
+        if (!mode) return;
         this.stopGenerate();
         this.session = Store.newSession();
+        this.session.mode = mode === 'image' ? 'image' : 'chat';
         this.session.providerId = this.settings.activeProviderId || '';
         this.session.model = this.settings.activeModel || '';
         this.persistSession();
         this.input = '';
         this.attachments = [];
+        this.drawerOpen = false;
         nextTick(() => this.scrollToBottom(true));
       },
       openSession(id) {
@@ -761,9 +1055,88 @@
         }
         this.sheet = '';
       },
+      toggleManagedSession(id) {
+        this.sessionManagerOpen = Object.assign({}, this.sessionManagerOpen, {
+          [id]: !this.sessionManagerOpen[id]
+        });
+      },
+      async renameManagedSession(item) {
+        if (!item) return;
+        const name = await this.askText('重命名会话', item.title || '新聊天', '会话名称');
+        if (name == null) return;
+        const title = cleanTitle(name);
+        const s = Store.loadSession(item.id);
+        if (!s) {
+          U.toast('会话不存在');
+          this.index = Store.loadIndex();
+          return;
+        }
+        s.title = title;
+        Store.saveSession(s);
+        const i = this.index.findIndex(x => x.id === item.id);
+        if (i >= 0) this.index[i] = Object.assign({}, this.index[i], {
+          title,
+          updatedAt: s.updatedAt
+        });
+        if (this.session.id === item.id) this.session.title = title;
+        Store.saveIndex(this.index);
+        this.storageUsed = Store.usage();
+        U.toast('已重命名');
+      },
+      async clearManagedSessionFiles(item) {
+        if (!item) return;
+        if (!item.fileCount) {
+          U.toast('这个会话没有工作区文件');
+          return;
+        }
+        const ok = await this.confirm(
+          '这会真正删除该会话工作区内的 ' + item.fileCount + ' 个文件，无法恢复。\n\n会话消息、名称和模型配置会保留。\n\n会话：' + item.title,
+          '删除工作区文件'
+        );
+        if (!ok) return;
+        const s = Store.loadSession(item.id);
+        if (!s) {
+          U.toast('会话不存在');
+          this.index = Store.loadIndex();
+          return;
+        }
+        s.files = {};
+        s.folders = [];
+        Store.saveSession(s);
+        const i = this.index.findIndex(x => x.id === item.id);
+        if (i >= 0) this.index[i] = Object.assign({}, this.index[i], { updatedAt: s.updatedAt });
+        Store.saveIndex(this.index);
+        if (this.session.id === item.id) {
+          this.session.files = {};
+          this.session.folders = [];
+          this.session.updatedAt = s.updatedAt;
+        }
+        this.storageUsed = Store.usage();
+        U.toast('已删除工作区文件');
+      },
+      async deleteManagedSession(item) {
+        if (!item) return;
+        const ok = await this.confirm(
+          '这会真正删除该会话、全部消息和它的工作区文件，无法恢复。\n\n会话：' + item.title + '\n工作区：' + item.fileCount + ' 个文件，约 ' + U.fmtSize(item.workspaceSize),
+          '真正删除会话'
+        );
+        if (!ok) return;
+        Store.deleteSession(item.id);
+        this.index = this.index.filter(x => x.id !== item.id);
+        Store.saveIndex(this.index);
+        delete this.sessionManagerOpen[item.id];
+        this.sessionManagerOpen = Object.assign({}, this.sessionManagerOpen);
+        if (this.session.id === item.id) {
+          const next = this.index[0] && Store.loadSession(this.index[0].id);
+          this.session = normalizeSession(next || Store.newSession());
+        }
+        this.storageUsed = Store.usage();
+        U.toast('会话已删除');
+      },
       toastExportResult(result, fallback) {
         if (!result) return;
         if (typeof result === 'string') U.toast((fallback || '已导出') + '：' + result, 3200);
+        else if (result.path === '系统分享面板' || result.path === '系统相册') U.toast((fallback || '已完成') + '：' + result.path, 3200);
         else if (result.path) U.toast((fallback || '已导出') + '到 ' + result.path, 3200);
         else U.toast(fallback || '已导出');
       },
@@ -788,7 +1161,10 @@
         this.provForm = {
           isNew: true,
           data: p,
-          modelsText: p.models.join('\n'),
+          modelsText: modelsText(p),
+          imageModelsText: imageModelsText(p),
+          selectedModel: p.models[0] || '',
+          selectedImageModel: p.imageModels && p.imageModels[0] || '',
           showKey: false,
           fetching: false,
           testing: false
@@ -796,24 +1172,89 @@
         this.pushPage('provider');
       },
       editProvider(p) {
-        const data = clone(p);
+        const data = MODEL_META.normalizeProvider(clone(p));
         data.extraHeaders = data.extraHeaders || [];
         this.provForm = {
           isNew: false,
           data,
-          modelsText: (data.models || []).join('\n'),
+          modelsText: modelsText(data),
+          imageModelsText: imageModelsText(data),
+          selectedModel: data.models[0] || '',
+          selectedImageModel: data.imageModels && data.imageModels[0] || '',
           showKey: false,
           fetching: false,
           testing: false
         };
         this.pushPage('provider');
       },
+      syncProvModelsFromText() {
+        const p = this.provForm.data;
+        if (!p) return;
+        p.models = parseModels(this.provForm.modelsText);
+        p.modelMeta = p.modelMeta || {};
+        p.models.forEach(id => {
+          p.modelMeta[id] = MODEL_META.mergeMeta(providerModelMeta(p, id), p.modelMeta[id]);
+        });
+        Object.keys(p.modelMeta).forEach(id => {
+          if (!p.models.includes(id)) delete p.modelMeta[id];
+        });
+        if (!this.provForm.selectedModel || !p.models.includes(this.provForm.selectedModel)) {
+          this.provForm.selectedModel = p.models[0] || '';
+        }
+      },
+      syncProvImageModelsFromText() {
+        const p = this.provForm.data;
+        if (!p) return;
+        p.imageModels = parseModels(this.provForm.imageModelsText);
+        p.imageModelMeta = p.imageModelMeta || {};
+        p.imageModels.forEach(id => {
+          p.imageModelMeta[id] = MODEL_META.mergeMeta(providerModelMeta(p, id), p.imageModelMeta[id]);
+          p.imageModelMeta[id].capabilities = Object.assign({}, p.imageModelMeta[id].capabilities || {}, {
+            imageGeneration: true,
+            tools: false,
+            structuredOutput: false
+          });
+        });
+        Object.keys(p.imageModelMeta).forEach(id => {
+          if (!p.imageModels.includes(id)) delete p.imageModelMeta[id];
+        });
+        if (!this.provForm.selectedImageModel || !p.imageModels.includes(this.provForm.selectedImageModel)) {
+          this.provForm.selectedImageModel = p.imageModels[0] || '';
+        }
+      },
+      selectedProvModelMeta() {
+        const p = this.provForm.data;
+        const id = this.provForm.selectedModel;
+        if (!p || !id) return null;
+        this.syncProvModelsFromText();
+        p.modelMeta = p.modelMeta || {};
+        p.modelMeta[id] = MODEL_META.mergeMeta(providerModelMeta(p, id), p.modelMeta[id]);
+        return p.modelMeta[id];
+      },
+      setSelectedModelNumber(key, val) {
+        const meta = this.selectedProvModelMeta();
+        if (!meta) return;
+        const n = MODEL_META.toInt(val);
+        meta[key] = n == null ? 0 : n;
+      },
+      toggleSelectedModelCap(key) {
+        const meta = this.selectedProvModelMeta();
+        if (!meta) return;
+        meta.capabilities = meta.capabilities || {};
+        meta.capabilities[key] = !meta.capabilities[key];
+      },
       saveProvider() {
         const p = this.provForm.data;
         if (!p) return;
         p.name = String(p.name || '').trim() || '未命名提供商';
         p.baseUrl = String(p.baseUrl || '').trim();
-        p.models = parseModels(this.provForm.modelsText);
+        p.imageBaseUrl = String(p.imageBaseUrl || '').trim();
+        p.imageApiKey = String(p.imageApiKey || '').trim();
+        p.imageEndpointPath = String(p.imageEndpointPath || '').trim();
+        p.imageEditEndpointPath = String(p.imageEditEndpointPath || '').trim();
+        this.syncProvModelsFromText();
+        this.syncProvImageModelsFromText();
+        MODEL_META.normalizeProvider(p);
         if (!p.baseUrl) {
           U.toast('请填写 API 地址');
           return;
@@ -828,6 +1269,9 @@
         if (this.settings.activeProviderId === p.id && this.settings.activeModel && !p.models.includes(this.settings.activeModel)) {
           this.settings.activeModel = p.models[0] || '';
           if (this.session.providerId === p.id) this.session.model = this.settings.activeModel;
+        }
+        if (this.settings.imageProviderId === p.id && this.settings.imageModel && !(p.imageModels || []).includes(this.settings.imageModel)) {
+          this.settings.imageModel = p.imageModels && p.imageModels[0] || '';
         }
         this.persistProviders();
         this.persistSettings();
@@ -850,6 +1294,11 @@
         this.closePage();
       },
       pickModel(p, md) {
+        const oldModel = this.settings.activeModel || this.session.model || '';
+        const oldProvider = this.settings.activeProviderId || this.session.providerId || '';
+        if ((oldModel || oldProvider) && this.session.messages.length && (oldModel !== (md || p.models[0] || '') || oldProvider !== p.id)) {
+          U.toast('当前会话中途切换模型可能导致上下文风格和工具能力不一致', 3600);
+        }
         this.settings.activeProviderId = p.id;
         this.settings.activeModel = md || p.models[0] || '';
         this.session.providerId = p.id;
@@ -870,9 +1319,13 @@
         }
         this.provForm.fetching = true;
         try {
-          const models = await API.listModels(p);
-          this.provForm.modelsText = models.join('\n');
-          U.toast(models.length ? '已获取模型列表' : '接口返回空列表');
+          const rawModels = API.listModelsDetailed ? await API.listModelsDetailed(p) : await API.listModels(p);
+          MODEL_META.applyApiModels(p, rawModels);
+          this.provForm.modelsText = modelsText(p);
+          this.provForm.imageModelsText = imageModelsText(p);
+          this.provForm.selectedModel = p.models[0] || '';
+          this.provForm.selectedImageModel = p.imageModels && p.imageModels[0] || '';
+          U.toast((p.models.length || (p.imageModels && p.imageModels.length)) ? '已获取模型列表和元数据' : '接口返回空列表');
         } catch (e) {
           U.toast(e.message || '获取失败', 3500);
         } finally {
@@ -912,7 +1365,9 @@
           run_service: '启动预览',
           stop_service: '停止预览',
           list_services: '列出预览',
-          web_fetch: '抓取网页'
+          web_fetch: '抓取网页',
+          image_go: '图片生成',
+          image_generation: '图片生成'
         };
         return map[name] || name || '工具';
       },
@@ -997,8 +1452,219 @@
             return clone(m);
           });
       },
+      imageRequestModel() {
+        const provider = this.imageProvider;
+        const model = this.imageModelId;
+        if (!provider) throw new Error('请先添加图片提供商');
+        if (!provider.baseUrl) throw new Error('请先填写图片提供商 API 地址');
+        if (!model) throw new Error('请先在图片生成设置中选择模型');
+        const imageProvider = Object.assign({}, provider, {
+          baseUrl: String(provider.imageBaseUrl || provider.baseUrl || '').trim(),
+          apiKey: provider.imageApiKey || provider.apiKey || '',
+          imageEndpointPath: String(this.settings.imageEndpointPath || provider.imageEndpointPath || '').trim(),
+          imageEditEndpointPath: String(this.settings.imageEditEndpointPath || provider.imageEditEndpointPath || '').trim()
+        });
+        return { provider: imageProvider, model };
+      },
+      imagePromptFromArgs(args) {
+        const parts = [String(args.prompt || '').trim()];
+        if (args.style) parts.push('风格：' + args.style);
+        return parts.filter(Boolean).join('\n');
+      },
+      imageReferencesFromArgs(args) {
+        const refs = [];
+        const names = []
+          .concat(args.parentFile ? [args.parentFile] : [])
+          .concat(Array.isArray(args.referenceFiles) ? args.referenceFiles : []);
+        names.forEach(name => {
+          try {
+            const path = normalizeWorkspacePath(name);
+            const f = this.session.files && this.session.files[path];
+            if (f && f.dataUrl) refs.push({ name: path.split('/').pop() || 'reference.png', path, dataUrl: f.dataUrl, mime: f.mime || '' });
+          } catch (e) {}
+        });
+        (args.referenceImages || []).forEach((img, idx) => {
+          if (img && img.dataUrl) refs.push({ name: img.name || ('reference_' + (idx + 1) + '.png'), dataUrl: img.dataUrl, mime: img.mime || '' });
+        });
+        return refs;
+      },
+      recentImageReferencePaths() {
+        const out = [];
+        const msgs = (this.session.messages || []).slice().reverse();
+        for (const m of msgs) {
+          (m.attachments || []).forEach(a => {
+            if (a.kind === 'image' && a.path && !out.includes(a.path)) out.push(a.path);
+          });
+          if (out.length) break;
+        }
+        return out;
+      },
+      saveGeneratedImages(images, args, provider, model) {
+        const saved = [];
+        this.session.files = this.session.files || {};
+        (images || []).forEach((img, idx) => {
+          if (!img || !img.dataUrl) return;
+          if (Object.keys(this.session.files).length >= Tools.MAX_FILES) throw new Error('会话文件数已达上限');
+          let path = args.targetFile && images.length === 1 ? args.targetFile : imageFileName(args.prompt, idx, img.mime);
+          try { path = normalizeWorkspacePath(path); }
+          catch (e) { path = imageFileName(args.prompt, idx, img.mime); }
+          if (!isImageName(path)) path += '.' + imageExtForMime(img.mime);
+          if (this.session.files[path]) {
+            const ext = '.' + imageExtForMime(img.mime);
+            path = path.replace(/\.[a-z0-9]+$/i, '') + '_' + U.uuid().slice(0, 4) + ext;
+          }
+          ensureParentFolders(this.session, path);
+          const size = Math.ceil(String(img.dataUrl).length * 0.75);
+          this.session.files[path] = {
+            dataUrl: img.dataUrl,
+            mime: img.mime || 'image/png',
+            size,
+            mtime: U.now(),
+            source: args.source || 'image_mode',
+            imageMeta: {
+              prompt: args.prompt || '',
+              revisedPrompt: img.revisedPrompt || '',
+              model,
+              providerId: provider.id,
+              mode: args.mode || 'generate',
+              size: args.size || this.settings.imageDefaultSize || '1024x1024',
+              count: args.count || this.settings.imageDefaultCount || 1,
+              style: args.style || '',
+              referenceFiles: args.referenceFiles || [],
+              parentFile: args.parentFile || ''
+            }
+          };
+          saved.push({ path, dataUrl: img.dataUrl, mime: img.mime || 'image/png', prompt: args.prompt || '' });
+        });
+        if (saved.length) this.openFolders.images = true;
+        return saved;
+      },
+      async runImageRequest(rawArgs, targetMsg) {
+        const args = Object.assign({}, rawArgs || {});
+        args.prompt = this.imagePromptFromArgs(args);
+        if (!args.prompt) throw new Error('缺少图片提示词');
+        args.size = args.size && args.size !== 'auto' ? args.size : (this.settings.imageDefaultSize || '1024x1024');
+        args.count = U.clamp(parseInt(args.count || this.settings.imageDefaultCount || 1, 10) || 1, 1, 8);
+        const { provider, model } = this.imageRequestModel();
+        const meta = providerModelMeta(provider, model);
+        const caps = meta && meta.capabilities || {};
+        if (!(caps.imageGeneration || (meta.image && meta.image.generation))) {
+          U.toast('当前图片模型元数据未标记生图能力，仍尝试调用接口', 3200);
+        }
+        const referenceImages = this.imageReferencesFromArgs(args);
+        if (args.mode === 'edit' && !referenceImages.length) {
+          throw new Error('图片编辑需要至少一张参考图');
+        }
+        const result = await ImageAPI.generate({
+          provider,
+          model,
+          prompt: args.prompt,
+          mode: args.mode || (referenceImages.length ? 'edit' : 'generate'),
+          referenceImages,
+          size: args.size,
+          count: args.count,
+          settings: {
+            size: args.size,
+            count: args.count,
+            outputFormat: this.settings.imageOutputFormat || 'png',
+            apiMode: this.settings.imageApiMode || 'images',
+            endpointPath: this.settings.imageEndpointPath || provider.imageEndpointPath || '',
+            editsEndpointPath: this.settings.imageEditEndpointPath || provider.imageEditEndpointPath || '',
+            imageOnly: !!(caps.imageGeneration || (meta.image && meta.image.generation))
+          },
+          signal: this.abortCtl && this.abortCtl.signal
+        });
+        const saved = this.saveGeneratedImages(result.images || [], args, provider, model);
+        if (!saved.length) throw new Error('接口未返回可用图片');
+        if (targetMsg) {
+          targetMsg.images = (targetMsg.images || []).concat(saved);
+          targetMsg.content = targetMsg.content || ('已生成 ' + saved.length + ' 张图片，已保存到工作区 images/。');
+        }
+        this.persistSession();
+        return saved;
+      },
+      async imageGoTool(args, targetMsg) {
+        args = Object.assign({}, args || {});
+        const refs = []
+          .concat(args.parentFile ? [args.parentFile] : [])
+          .concat(Array.isArray(args.referenceFiles) ? args.referenceFiles : []);
+        if (!refs.length && (args.mode === 'edit' || this.recentImageReferencePaths().length)) {
+          args.referenceFiles = this.recentImageReferencePaths();
+          if (args.referenceFiles.length) args.mode = 'edit';
+        }
+        const saved = await this.runImageRequest(Object.assign({}, args, { source: 'image_go' }), targetMsg);
+        return '已生成 ' + saved.length + ' 张图片并写入当前会话工作区：\n' + saved.map(x => '- ' + x.path).join('\n');
+      },
+      async sendImageMessage() {
+        const content = this.input.trim();
+        if (!content) {
+          U.toast('请先描述你想生成的图片');
+          return;
+        }
+        try { this.imageRequestModel(); }
+        catch (e) {
+          U.toast(e.message || '请先配置图片生成模型', 3200);
+          this.openSettings();
+          return;
+        }
+        const user = {
+          id: U.uuid(),
+          role: 'user',
+          content,
+          attachments: clone(this.attachments),
+          createdAt: U.now()
+        };
+        const referenceFiles = (this.attachments || [])
+          .filter(a => a.kind === 'image' && a.path)
+          .map(a => a.path);
+        this.session.messages.push(user);
+        if (!this.session.title && content) this.session.title = cleanTitle(content);
+        const assistant = {
+          id: U.uuid(),
+          role: 'assistant',
+          content: '',
+          images: [],
+          status: 'streaming',
+          model: this.imageModelId,
+          createdAt: U.now()
+        };
+        this.session.messages.push(assistant);
+        const assistantMsg = this.session.messages[this.session.messages.length - 1];
+        this.input = '';
+        this.attachments = [];
+        this.generating = true;
+        this.stopRequested = false;
+        this.abortCtl = new AbortController();
+        this.persistSession();
+        nextTick(() => {
+          this.growInput();
+          this.scrollToBottom(true);
+        });
+        try {
+          await this.runImageRequest({
+            prompt: content,
+            source: 'image_mode',
+            mode: referenceFiles.length ? 'edit' : 'generate',
+            referenceFiles
+          }, assistantMsg);
+          assistantMsg.status = 'done';
+        } catch (e) {
+          assistantMsg.status = 'done';
+          assistantMsg.error = e && e.message || String(e);
+        } finally {
+          this.generating = false;
+          this.abortCtl = null;
+          this.stopRequested = false;
+          this.persistSession();
+          nextTick(() => this.scrollToBottom(false));
+        }
+      },
       async sendMessage() {
         if (!this.canSend) return;
+        if (this.appMode === 'image') {
+          await this.sendImageMessage();
+          return;
+        }
         const provider = this.currentProvider;
         if (!provider) {
           U.toast('请先添加模型提供商');
@@ -1010,6 +1676,10 @@
           U.toast('请先选择或填写模型');
           this.sheet = 'model';
           return;
+        }
+        const meta = providerModelMeta(provider, model);
+        if (this.attachments.some(a => a.kind === 'image') && !(meta.capabilities && meta.capabilities.vision)) {
+          U.toast('当前模型元数据未开启视觉能力，图片可能无法被理解', 3600);
         }
         const content = this.input.trim();
         const user = {
@@ -1130,7 +1800,8 @@
                 webFetchMode: 'always',
                 confirm: msg => this.confirm(msg, '工具授权'),
                 openPreview: payload => this.openPreview(payload),
-                openService: serviceId => this.openServicePreview(serviceId)
+                openService: serviceId => this.openServicePreview(serviceId),
+                imageGo: args => this.imageGoTool(args, assistantMsg)
               });
               t.result = out;
               t.status = String(out).startsWith('错误：') ? 'error' : 'done';
@@ -1207,7 +1878,19 @@
       async attachImage() {
         const f = await U.pickFile('image/*', true);
         if (!f) return;
-        this.attachments.push({ kind: 'image', name: f.name, size: f.size, mime: f.type, dataUrl: f.content });
+        let path;
+        try {
+          path = this.saveAttachmentToWorkspace({
+            name: f.name,
+            size: f.size,
+            mime: f.type,
+            dataUrl: f.content
+          });
+        } catch (e) {
+          U.toast(e.message || '附件写入工作区失败');
+          return;
+        }
+        this.attachments.push({ kind: 'image', name: f.name, path, size: f.size, mime: f.type, dataUrl: f.content });
         this.sheet = '';
       },
       async attachFile() {
@@ -1217,8 +1900,45 @@
           U.toast('当前只支持文本文件');
           return;
         }
-        this.attachments.push({ kind: 'text', name: f.name, size: f.size, mime: f.type, content: String(f.content || '') });
+        const content = String(f.content || '');
+        let path;
+        try {
+          path = this.saveAttachmentToWorkspace({
+            name: f.name,
+            size: content.length,
+            mime: f.type || 'text/plain',
+            content
+          });
+        } catch (e) {
+          U.toast(e.message || '附件写入工作区失败');
+          return;
+        }
+        this.attachments.push({ kind: 'text', name: f.name, path, size: content.length, mime: f.type, content });
         this.sheet = '';
+      },
+      saveAttachmentToWorkspace(file) {
+        this.session.files = this.session.files || {};
+        if (Object.keys(this.session.files).length >= Tools.MAX_FILES) throw new Error('会话文件数已达上限');
+        let path = attachmentFileName(file.name);
+        try { path = normalizeWorkspacePath(path); }
+        catch (e) { path = 'attachments/attachment'; }
+        if (this.session.files[path]) {
+          const dot = path.lastIndexOf('.');
+          const base = dot > 0 ? path.slice(0, dot) : path;
+          const ext = dot > 0 ? path.slice(dot) : '';
+          path = base + '_' + U.uuid().slice(0, 4) + ext;
+        }
+        ensureParentFolders(this.session, path);
+        if (file.dataUrl) {
+          this.session.files[path] = { dataUrl: file.dataUrl, mime: file.mime || workspaceMime(path), size: file.size || 0, mtime: U.now(), source: 'attachment' };
+        } else {
+          const content = String(file.content || '');
+          if (content.length > Tools.MAX_FILE) throw new Error('文件超过 ' + U.fmtSize(Tools.MAX_FILE));
+          this.session.files[path] = { content, mime: file.mime || workspaceMime(path), size: content.length, mtime: U.now(), source: 'attachment' };
+        }
+        this.openFolders.attachments = true;
+        this.persistSession();
+        return path;
       },
       async uploadToWorkspace() {
         const f = await readPickedFile();
@@ -1324,6 +2044,7 @@
           tab: f.dataUrl ? 'view' : (isHtmlName(name) || isMarkdownName(name) ? 'view' : 'source'),
           doc: '',
           logs: [],
+          editPrompt: '',
           dirty: false
         };
         this.pushPage('viewer');
@@ -1341,6 +2062,77 @@
       setViewerTab(tab) {
         this.viewer.tab = tab;
         if (tab === 'view' && isHtmlName(this.viewer.name)) nextTick(() => this.runViewerPreview());
+      },
+      growViewerEdit(e) {
+        const el = e && e.target;
+        if (!el) return;
+        el.style.height = 'auto';
+        el.style.height = Math.min(el.scrollHeight, 112) + 'px';
+      },
+      async sendViewerImageEdit() {
+        const prompt = String(this.viewer.editPrompt || '').trim();
+        if (!this.viewer.isImage || !this.viewer.name || !prompt || this.generating) return;
+        try { this.imageRequestModel(); }
+        catch (e) {
+          U.toast(e.message || '请先配置图片生成模型', 3200);
+          return;
+        }
+        const user = {
+          id: U.uuid(),
+          role: 'user',
+          content: prompt,
+          attachments: [{
+            kind: 'image',
+            name: this.viewer.name.split('/').pop() || this.viewer.name,
+            path: this.viewer.name,
+            mime: this.viewer.mime,
+            dataUrl: this.viewer.dataUrl
+          }],
+          createdAt: U.now()
+        };
+        const assistant = {
+          id: U.uuid(),
+          role: 'assistant',
+          content: '',
+          images: [],
+          status: 'streaming',
+          model: this.imageModelId,
+          createdAt: U.now()
+        };
+        this.session.messages.push(user, assistant);
+        const assistantMsg = this.session.messages[this.session.messages.length - 1];
+        this.viewer.editPrompt = '';
+        this.generating = true;
+        this.stopRequested = false;
+        this.abortCtl = new AbortController();
+        this.persistSession();
+        try {
+          await this.runImageRequest({
+            prompt,
+            source: 'image_edit',
+            mode: 'edit',
+            parentFile: this.viewer.name
+          }, assistantMsg);
+          assistantMsg.status = 'done';
+          if (assistantMsg.images && assistantMsg.images[0]) {
+            const nextPath = assistantMsg.images[0].path;
+            const f = this.session.files && this.session.files[nextPath];
+            if (f && f.dataUrl) {
+              this.viewer.name = nextPath;
+              this.viewer.dataUrl = f.dataUrl;
+              this.viewer.mime = f.mime || workspaceMime(nextPath);
+              this.viewer.editPrompt = '';
+            }
+          }
+        } catch (e) {
+          assistantMsg.status = 'done';
+          assistantMsg.error = e && e.message || String(e);
+        } finally {
+          this.generating = false;
+          this.abortCtl = null;
+          this.stopRequested = false;
+          this.persistSession();
+        }
       },
       saveViewerFile() {
         if (!this.viewerCanSave) return;
@@ -1363,13 +2155,47 @@
         U.toast('已保存');
       },
       async exportViewerFile() {
-        const f = this.session.files[this.viewer.name];
+        await this.exportWorkspaceFileByName(this.viewer.name, {
+          content: this.viewer.content,
+          mime: this.viewer.mime
+        });
+      },
+      async exportWorkspaceFileByName(path, opts) {
+        const f = this.session.files[path];
         if (!f) return;
+        const name = fileSafeName(path);
+        const content = opts && Object.prototype.hasOwnProperty.call(opts, 'content') ? opts.content : f.content;
+        const mime = opts && opts.mime || f.mime;
+        const isImage = f.dataUrl && !content;
+        const canShare = U.canShare && U.canShare();
+        const canSaveAlbum = U.isPlus() && plus.gallery && plus.gallery.save;
+        const buttons = [{ text: '取消', value: null }];
+        if (isImage) {
+          if (canSaveAlbum) buttons.push({ text: '存相册', value: 'album' });
+          if (canShare) buttons.push({ text: '分享', value: 'share' });
+          buttons.push({ text: U.isPlus() ? '下载目录' : '下载', value: 'download', style: 'primary' });
+        } else {
+          if (canShare && U.isTextFile(path, mime)) buttons.push({ text: '分享文本', value: 'share' });
+          buttons.push({ text: U.isPlus() ? '下载目录' : '下载', value: 'download', style: 'primary' });
+        }
+        const action = await this.dialog({
+          title: '导出文件',
+          msg: (isImage ? '选择图片导出方式：' : '选择文件导出方式：') + path,
+          buttons
+        });
+        if (!action) return;
         try {
-          const saved = f.dataUrl && !this.viewer.content
-            ? await dataUrlDownload(this.viewer.name, f.dataUrl)
-            : await U.saveTextFile(fileSafeName(this.viewer.name), this.viewer.content || f.content || '', { mime: f.mime });
-          this.toastExportResult(saved, '已导出文件');
+          let saved;
+          if (isImage) {
+            if (action === 'album') saved = await U.saveImageToGallery(name, f.dataUrl);
+            else if (action === 'share') saved = await U.shareImageFile(name, f.dataUrl);
+            else saved = await dataUrlDownload(name, f.dataUrl);
+          } else {
+            const text = content || '';
+            if (action === 'share') saved = await U.shareText(name, text);
+            else saved = await U.saveTextFile(name, text, { mime });
+          }
+          this.toastExportResult(saved, action === 'share' ? '已分享文件' : (action === 'album' ? '已保存图片' : '已导出文件'));
         } catch (e) {
           this.toastExportError(e);
         }
@@ -1411,17 +2237,19 @@
         }
         const choice = await this.dialog({
           title: '导出工作区',
-          msg: '导出真实文件会打开目录选择器；打包 JSON 适合备份或导入回 WepChat。',
+          msg: U.isPlus()
+            ? 'Android 会写入公共下载目录。整工作区建议打包 ZIP；JSON 适合备份或导入回 WepChat。'
+            : '整工作区建议打包 ZIP；JSON 适合备份或导入回 WepChat。',
           buttons: [
             { text: '取消', value: null },
-            { text: '打包 JSON', value: 'bundle' },
+            { text: 'JSON 备份', value: 'bundle' },
             { text: '选择文件', value: 'pick' },
-            { text: '全部文件', value: 'all', style: 'primary' }
+            { text: '下载 ZIP', value: 'zip', style: 'primary' }
           ]
         });
         if (!choice) return;
-        if (choice === 'all') {
-          await this.exportWorkspaceFiles(names);
+        if (choice === 'zip') {
+          await this.exportWorkspaceZip(names);
           return;
         }
         if (choice === 'bundle') {
@@ -1452,8 +2280,8 @@
         }
         await this.exportWorkspaceFiles(selected);
       },
-      async exportWorkspaceFiles(names) {
-        const files = names.map(name => {
+      workspaceExportFiles(names) {
+        return names.map(name => {
           const f = this.session.files[name];
           if (!f) return null;
           return {
@@ -1463,6 +2291,19 @@
             mime: f.mime || workspaceMime(name)
           };
         }).filter(Boolean);
+      },
+      async exportWorkspaceZip(names) {
+        const files = this.workspaceExportFiles(names);
+        const zipName = fileSafeName((this.session.title || 'workspace') + '-' + new Date().toISOString().slice(0, 10) + '.zip');
+        try {
+          const result = await U.exportFilesAsZip(files, zipName);
+          this.toastExportResult(result, '已导出工作区 ZIP');
+        } catch (e) {
+          this.toastExportError(e);
+        }
+      },
+      async exportWorkspaceFiles(names) {
+        const files = this.workspaceExportFiles(names);
         try {
           const result = await U.exportFilesToDirectory(files, {
             baseDir: fileSafeName(this.session.title || 'workspace')
@@ -1697,7 +2538,8 @@
         try {
           const res = Store.importAll(data, 'merge');
           this.settings = Store.loadSettings();
-          this.providers = Store.loadProviders();
+          this.providers = Store.loadProviders().map(p => MODEL_META.normalizeProvider(p));
+          Store.saveProviders(this.providers);
           this.index = Store.loadIndex();
           const first = this.index[0] && Store.loadSession(this.index[0].id);
           this.session = normalizeSession(first || Store.newSession());

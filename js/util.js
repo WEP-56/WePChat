@@ -165,6 +165,8 @@ const U = {
     if (/\.png$/i.test(filename)) return 'image/png';
     if (/\.jpe?g$/i.test(filename)) return 'image/jpeg';
     if (/\.webp$/i.test(filename)) return 'image/webp';
+    if (/\.gif$/i.test(filename)) return 'image/gif';
+    if (/\.zip$/i.test(filename)) return 'application/zip';
     return 'application/octet-stream';
   },
 
@@ -202,7 +204,55 @@ const U = {
     return a.download;
   },
 
-  /* 保存 Blob 到设备。浏览器优先弹保存文件对话框；plus 环境写入 Documents/wepchat。 */
+  _plusFileSystem(type) {
+    return new Promise((resolve, reject) => {
+      plus.io.requestFileSystem(type, fs => resolve(fs.root), reject);
+    });
+  },
+
+  _plusEntryUrl(entry) {
+    if (!entry) return '';
+    try {
+      if (entry.toLocalURL) return entry.toLocalURL();
+    } catch (e) {}
+    return entry.fullPath || entry.name || '';
+  },
+
+  async _plusWriteBlobAt(root, parts, blob) {
+    const clean = (parts || []).map(p => U._safeExportName(p)).filter(Boolean);
+    const filename = clean.pop() || 'file';
+    const dir = await U._plusGetDir(root, clean);
+    return await new Promise((resolve, reject) => {
+      dir.getFile(filename, { create: true }, entry => {
+        entry.createWriter(writer => {
+          let writing = false;
+          writer.onerror = reject;
+          writer.onwriteend = () => {
+            if (!writing) {
+              writing = true;
+              try { writer.seek(0); } catch (e) {}
+              writer.write(blob);
+              return;
+            }
+            resolve(entry);
+          };
+          try {
+            if (writer.length > 0) writer.truncate(0);
+            else {
+              writing = true;
+              writer.write(blob);
+            }
+          }
+          catch (e) {
+            writing = true;
+            writer.write(blob);
+          }
+        }, reject);
+      }, reject);
+    });
+  },
+
+  /* 保存 Blob 到设备。浏览器优先弹保存文件对话框；plus 环境写入公共下载目录。 */
   async saveBlobFile(filename, blob, opts) {
     const name = U._safeExportName(filename);
     const usePicker = !opts || opts.picker !== false;
@@ -217,14 +267,16 @@ const U = {
     }
     return new Promise((resolve, reject) => {
       if (U.isPlus()) {
-        plus.io.requestFileSystem(plus.io.PUBLIC_DOCUMENTS, fs => {
-          U._plusGetDir(fs.root, ['wepchat']).then(dir => dir.getFile(name, { create: true }, entry => {
-            entry.createWriter(writer => {
-              writer.onwrite = () => resolve({ path: entry.fullPath || ('文档/wepchat/' + name), name });
-              writer.onerror = e => reject(e);
-              writer.write(blob);
-            }, reject);
-          }, reject)).catch(reject);
+        const fsType = plus.io.PUBLIC_DOWNLOADS != null ? plus.io.PUBLIC_DOWNLOADS : plus.io.PUBLIC_DOCUMENTS;
+        U._plusFileSystem(fsType).then(root => {
+          U._plusWriteBlobAt(root, ['wepchat', name], blob).then(entry => {
+            resolve({
+              path: '下载/wepchat/' + name,
+              name,
+              fullPath: entry.fullPath || '',
+              localUrl: U._plusEntryUrl(entry)
+            });
+          }, reject);
         }, reject);
       } else {
         resolve({ path: '浏览器下载目录', name: U._downloadBlob(name, blob) });
@@ -244,12 +296,79 @@ const U = {
     return U.saveBlobFile(filename, blob, opts);
   },
 
+  async saveImageToGallery(filename, dataUrl) {
+    const name = U._safeExportName(filename);
+    if (!U.isPlus() || !plus.gallery || !plus.gallery.save) {
+      return U.saveDataUrlFile(name, dataUrl, { picker: false });
+    }
+    const res = await fetch(dataUrl);
+    const blob = await res.blob();
+    const root = await U._plusFileSystem(plus.io.PRIVATE_DOC);
+    const entry = await U._plusWriteBlobAt(root, ['wepchat-share', Date.now() + '-' + name], blob);
+    const localUrl = U._plusEntryUrl(entry);
+    try {
+      await new Promise((resolve, reject) => plus.gallery.save(localUrl, resolve, reject));
+      return { path: '系统相册', name };
+    } finally {
+      try { entry.remove(() => {}, () => {}); } catch (e) {}
+    }
+  },
+
+  canShare() {
+    return !!((U.isPlus() && plus.share && plus.share.sendWithSystem) || navigator.share);
+  },
+
+  async shareImageFile(filename, dataUrl) {
+    const name = U._safeExportName(filename);
+    const res = await fetch(dataUrl);
+    const blob = await res.blob();
+    if (U.isPlus() && plus.share && plus.share.sendWithSystem) {
+      const saved = await U.saveBlobFile(name, blob, { picker: false });
+      const localUrl = saved.localUrl || saved.fullPath || '';
+      if (!localUrl) throw new Error('无法创建可分享的本地文件');
+      return await new Promise((resolve, reject) => {
+        plus.share.sendWithSystem({
+          type: 'image',
+          content: name,
+          pictures: [localUrl]
+        }, () => resolve({ path: '系统分享面板', name }), reject);
+      });
+    }
+    if (navigator.share && typeof File !== 'undefined') {
+      const file = new File([blob], name, { type: blob.type || U._mimeForName(name) });
+      if (!navigator.canShare || navigator.canShare({ files: [file] })) {
+        await navigator.share({ title: name, files: [file] });
+        return { path: '系统分享面板', name };
+      }
+    }
+    throw new Error('当前环境不支持系统分享');
+  },
+
+  async shareText(title, text) {
+    const name = U._safeExportName(title || 'text.txt');
+    const content = String(text == null ? '' : text);
+    if (U.isPlus() && plus.share && plus.share.sendWithSystem) {
+      return await new Promise((resolve, reject) => {
+        plus.share.sendWithSystem({
+          type: 'text',
+          title: name,
+          content
+        }, () => resolve({ path: '系统分享面板', name }), reject);
+      });
+    }
+    if (navigator.share) {
+      await navigator.share({ title: name, text: content });
+      return { path: '系统分享面板', name };
+    }
+    throw new Error('当前环境不支持系统分享');
+  },
+
   _safePathParts(path) {
     return String(path || 'file')
       .replace(/\\/g, '/')
       .split('/')
       .map(p => p.trim().replace(/[\\/:*?"<>|]/g, '_'))
-      .filter(Boolean);
+      .filter(p => p && p !== '.' && p !== '..');
   },
 
   async _blobForExportFile(file) {
@@ -258,6 +377,107 @@ const U = {
       return await res.blob();
     }
     return new Blob([file.content || ''], { type: U._mimeForName(file.path, file.mime) });
+  },
+
+  _crcTable: null,
+
+  _crc32(bytes) {
+    if (!U._crcTable) {
+      U._crcTable = new Uint32Array(256);
+      for (let i = 0; i < 256; i++) {
+        let c = i;
+        for (let k = 0; k < 8; k++) c = (c & 1) ? (0xedb88320 ^ (c >>> 1)) : (c >>> 1);
+        U._crcTable[i] = c >>> 0;
+      }
+    }
+    let crc = 0xffffffff;
+    for (let i = 0; i < bytes.length; i++) crc = U._crcTable[(crc ^ bytes[i]) & 0xff] ^ (crc >>> 8);
+    return (crc ^ 0xffffffff) >>> 0;
+  },
+
+  _zipDateParts(date) {
+    const d = date instanceof Date ? date : new Date();
+    const year = Math.max(1980, d.getFullYear());
+    return {
+      time: (d.getHours() << 11) | (d.getMinutes() << 5) | Math.floor(d.getSeconds() / 2),
+      date: ((year - 1980) << 9) | ((d.getMonth() + 1) << 5) | d.getDate()
+    };
+  },
+
+  _zipSafePath(path) {
+    return U._safePathParts(path).join('/') || 'file';
+  },
+
+  async zipFilesBlob(files) {
+    const list = Array.isArray(files) ? files : [];
+    const enc = new TextEncoder();
+    const chunks = [];
+    const records = [];
+    const seen = new Map();
+    let offset = 0;
+    const stamp = U._zipDateParts(new Date());
+
+    for (const file of list) {
+      const blob = await U._blobForExportFile(file);
+      const bytes = new Uint8Array(await blob.arrayBuffer());
+      let path = U._zipSafePath(file.path);
+      const used = seen.get(path) || 0;
+      seen.set(path, used + 1);
+      if (used) {
+        const dot = path.lastIndexOf('.');
+        path = dot > 0 ? path.slice(0, dot) + '-' + (used + 1) + path.slice(dot) : path + '-' + (used + 1);
+      }
+      const nameBytes = enc.encode(path);
+      const crc = U._crc32(bytes);
+      const local = new Uint8Array(30 + nameBytes.length);
+      const lv = new DataView(local.buffer);
+      lv.setUint32(0, 0x04034b50, true);
+      lv.setUint16(4, 20, true);
+      lv.setUint16(6, 0x0800, true);
+      lv.setUint16(8, 0, true);
+      lv.setUint16(10, stamp.time, true);
+      lv.setUint16(12, stamp.date, true);
+      lv.setUint32(14, crc, true);
+      lv.setUint32(18, bytes.length, true);
+      lv.setUint32(22, bytes.length, true);
+      lv.setUint16(26, nameBytes.length, true);
+      local.set(nameBytes, 30);
+      chunks.push(local, bytes);
+      records.push({ nameBytes, crc, size: bytes.length, offset, stamp });
+      offset += local.length + bytes.length;
+    }
+
+    const centralStart = offset;
+    for (const rec of records) {
+      const central = new Uint8Array(46 + rec.nameBytes.length);
+      const cv = new DataView(central.buffer);
+      cv.setUint32(0, 0x02014b50, true);
+      cv.setUint16(4, 20, true);
+      cv.setUint16(6, 20, true);
+      cv.setUint16(8, 0x0800, true);
+      cv.setUint16(10, 0, true);
+      cv.setUint16(12, rec.stamp.time, true);
+      cv.setUint16(14, rec.stamp.date, true);
+      cv.setUint32(16, rec.crc, true);
+      cv.setUint32(20, rec.size, true);
+      cv.setUint32(24, rec.size, true);
+      cv.setUint16(28, rec.nameBytes.length, true);
+      cv.setUint32(42, rec.offset, true);
+      central.set(rec.nameBytes, 46);
+      chunks.push(central);
+      offset += central.length;
+    }
+
+    const centralSize = offset - centralStart;
+    const end = new Uint8Array(22);
+    const ev = new DataView(end.buffer);
+    ev.setUint32(0, 0x06054b50, true);
+    ev.setUint16(8, records.length, true);
+    ev.setUint16(10, records.length, true);
+    ev.setUint32(12, centralSize, true);
+    ev.setUint32(16, centralStart, true);
+    chunks.push(end);
+    return new Blob(chunks, { type: 'application/zip' });
   },
 
   async _writeDirectoryHandleFile(root, parts, blob) {
@@ -280,16 +500,15 @@ const U = {
   },
 
   async _plusWriteExportFile(root, baseDir, parts, blob) {
-    const dir = await U._plusGetDir(root, ['wepchat', baseDir].concat(parts.slice(0, -1)));
-    await new Promise((resolve, reject) => {
-      dir.getFile(parts[parts.length - 1] || 'file', { create: true }, entry => {
-        entry.createWriter(writer => {
-          writer.onwrite = resolve;
-          writer.onerror = reject;
-          writer.write(blob);
-        }, reject);
-      }, reject);
-    });
+    await U._plusWriteBlobAt(root, ['wepchat', baseDir].concat(parts), blob);
+  },
+
+  async exportFilesAsZip(files, filename, opts) {
+    const list = Array.isArray(files) ? files : [];
+    if (!list.length) return null;
+    const zipName = U._safeExportName(filename || ('workspace-' + new Date().toISOString().slice(0, 10) + '.zip'));
+    const blob = await U.zipFilesBlob(list);
+    return U.saveBlobFile(zipName, blob, Object.assign({ picker: true }, opts || {}, { mime: 'application/zip' }));
   },
 
   async exportFilesToDirectory(files, opts) {
@@ -313,14 +532,15 @@ const U = {
     if (U.isPlus()) {
       const baseDir = U._safeExportName((opts && opts.baseDir) || ('workspace-' + new Date().toISOString().slice(0, 10)));
       const root = await new Promise((resolve, reject) => {
-        plus.io.requestFileSystem(plus.io.PUBLIC_DOCUMENTS, fs => resolve(fs.root), reject);
+        const fsType = plus.io.PUBLIC_DOWNLOADS != null ? plus.io.PUBLIC_DOWNLOADS : plus.io.PUBLIC_DOCUMENTS;
+        plus.io.requestFileSystem(fsType, fs => resolve(fs.root), reject);
       });
       for (const file of list) {
         const parts = U._safePathParts(file.path);
         const blob = await U._blobForExportFile(file);
         await U._plusWriteExportFile(root, baseDir, parts, blob);
       }
-      return { count: list.length, path: '文档/wepchat/' + baseDir };
+      return { count: list.length, path: '下载/wepchat/' + baseDir };
     }
     for (const file of list) {
       const blob = await U._blobForExportFile(file);

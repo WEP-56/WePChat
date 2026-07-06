@@ -27,7 +27,15 @@ const API = (() => {
     if (base.endsWith('#')) return base.slice(0, -1);
     try {
       const u = new URL(base);
-      if ((u.pathname === '' || u.pathname === '/') && (opts && opts.autoV1)) base = base + '/v1';
+      let p = u.pathname.replace(/\/+$/, '');
+      p = p.replace(/\/(?:v\d+\/)?(?:images\/generations|images\/edits|chat\/completions|responses|models|completions|messages)$/i, m => {
+        return m.toLowerCase().startsWith('/v') ? m.split('/').slice(0, 2).join('/') : '';
+      });
+      if ((p === '' || p === '/') && (opts && opts.autoV1)) p = '/v1';
+      u.pathname = p || '/';
+      u.search = '';
+      u.hash = '';
+      base = u.toString().replace(/\/+$/, '');
     } catch (e) {}
     return base + path;
   }
@@ -123,7 +131,9 @@ const API = (() => {
     let text = msg.content || '';
     (msg.attachments || []).forEach(a => {
       if (a.kind === 'text') {
-        text += '\n\n[附件文件 ' + a.name + ']\n```\n' + a.content + '\n```';
+        text += '\n\n[附件文件 ' + a.name + (a.path ? '，工作区路径 ' + a.path : '') + ']\n```\n' + a.content + '\n```';
+      } else if (a.kind === 'image' && a.path) {
+        text += '\n\n[附件图片 ' + (a.name || 'image') + '，工作区路径 ' + a.path + ']';
       }
     });
     return text;
@@ -411,7 +421,7 @@ const API = (() => {
     }
   }
 
-  async function listModels(provider) {
+  async function listModelsDetailed(provider) {
     let url, headers;
     if (provider.api === 'anthropic') {
       const base = normBase(provider.baseUrl);
@@ -422,11 +432,20 @@ const API = (() => {
       headers = authHeaders(provider);
     }
     const res = await plainRequest('GET', url, headers);
-    const arr = (res && res.data) || [];
-    return arr.map(m => m.id).filter(Boolean).sort();
+    const arr = Array.isArray(res) ? res : ((res && (res.data || res.models)) || []);
+    return arr.slice().sort((a, b) => {
+      const ai = typeof a === 'string' ? a : (a && (a.id || a.name || a.model)) || '';
+      const bi = typeof b === 'string' ? b : (b && (b.id || b.name || b.model)) || '';
+      return String(ai).localeCompare(String(bi));
+    });
   }
 
-  return { API_TYPES, send, listModels, supportsTools: p => p.api !== 'openai-completions' };
+  async function listModels(provider) {
+    const arr = await listModelsDetailed(provider);
+    return arr.map(m => typeof m === 'string' ? m : (m && (m.id || m.name || m.model))).filter(Boolean);
+  }
+
+  return { API_TYPES, send, listModels, listModelsDetailed, supportsTools: p => p.api !== 'openai-completions' };
 })();
 
 window.API = API;

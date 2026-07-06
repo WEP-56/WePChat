@@ -22,6 +22,17 @@ const Store = {
         services: 'ask',
         web_fetch: 'ask'
       },
+      imageProviderId: '',
+      imageModel: '',
+      imageEditModel: '',
+      imageDefaultSize: '1024x1024',
+      imageDefaultCount: 1,
+      imagePermission: 'ask',        // ask | always | never
+      imageOutputFormat: 'png',
+      imageApiMode: 'images',        // images | auto | chat | responses
+      imageEndpointPath: '',         // optional override, e.g. /v1/images/generations
+      imageEditEndpointPath: '',     // optional override, e.g. /v1/images/edits
+      appMode: 'chat',               // chat | image
       maxToolRounds: 8,
       maxToolCalls: 24,
       systemPrompt: '',
@@ -83,6 +94,7 @@ const Store = {
       title: '',
       createdAt: U.now(),
       updatedAt: U.now(),
+      mode: 'chat',    // chat | image
       providerId: '',
       model: '',
       messages: [],

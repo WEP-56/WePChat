@@ -20,10 +20,10 @@
       <button class="icon-btn" @click="drawerOpen = true" aria-label="菜单">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 7h16M4 12h10"/></svg>
       </button>
-      <button class="model-pill" @click="sheet = 'model'">
+      <button class="model-pill" @click="sheet = appMode === 'image' ? 'imageWorkbench' : 'model'">
         <span class="mp-col">
-          <span class="mp-name">{{ currentModelLabel }}</span>
-          <span class="mp-sub" v-if="currentProvider">{{ currentProvider.name }}</span>
+          <span class="mp-name">{{ topModelLabel }}</span>
+          <span class="mp-sub" v-if="topProviderLabel">{{ topProviderLabel }}</span>
         </span>
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M8 10l4 4 4-4"/></svg>
       </button>
@@ -34,19 +34,18 @@
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3H6a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2h13a2 2 0 0 0 2-2v-6"/><path d="M18.4 2.6a2.1 2.1 0 0 1 3 3L13 14l-4 1 1-4 8.4-8.4z"/></svg>
       </button>
     </div>
-
     <div class="chat-body">
       <!-- 空状态 -->
       <div class="empty-state" v-if="!session.messages.length">
         <div class="empty-logo">W</div>
-        <div class="empty-title">有问题，尽管问</div>
+        <div class="empty-title">{{ appMode === 'image' ? '描述一张图片' : '有问题，尽管问' }}</div>
         <div class="empty-sub" v-if="!providers.length">先在设置里添加一个模型提供商</div>
-        <div class="empty-sub" v-else>{{ currentModelLabel }}</div>
+        <div class="empty-sub" v-else>{{ appMode === 'image' ? (imageModelId || '未配置生图模型') : currentModelLabel }}</div>
         <div class="sugg-list" v-if="!providers.length">
           <button class="sugg" @click="openSettings()"><b>添加提供商</b>配置 API 地址与密钥，开始对话</button>
         </div>
         <div class="sugg-list" v-else>
-          <button class="sugg" v-for="s in suggestions" @click="input = s.q; sendMessage()"><b>{{ s.t }}</b>{{ s.q }}</button>
+          <button class="sugg" v-for="s in emptySuggestions" @click="input = s.q; sendMessage()"><b>{{ s.t }}</b>{{ s.q }}</button>
         </div>
       </div>
 
@@ -107,7 +106,13 @@
 
               <!-- 正文 -->
               <div class="md" v-if="m.content" v-html="renderMd(m)"></div>
-              <span class="typing-dot" v-else-if="m.status === 'streaming' && !m.reasoning && !(m.toolCalls && m.toolCalls.length)"></span>
+              <div class="image-grid" v-if="m.images && m.images.length">
+                <button class="gen-img" v-for="img in m.images" :key="img.path" @click="viewFile(img.path)">
+                  <img :src="img.dataUrl">
+                  <span>{{ img.path }}</span>
+                </button>
+              </div>
+              <span class="typing-dot" v-else-if="m.status === 'streaming' && !m.content && !m.reasoning && !(m.toolCalls && m.toolCalls.length)"></span>
 
               <div class="err-box" v-if="m.error">{{ m.error }}<button class="err-retry" @click="regenerate(mi)">重试</button></div>
 
@@ -129,6 +134,28 @@
       </transition>
     </div>
 
+    <div class="token-widget" :class="{open: tokenPanelOpen, warn: tokenStats.warn, danger: tokenStats.danger}" v-if="currentProvider && currentModelId">
+      <button class="token-orb" :style="tokenRingStyle" @click="tokenPanelOpen = !tokenPanelOpen" aria-label="上下文用量">
+        <span></span>
+      </button>
+      <div class="token-panel" v-if="tokenPanelOpen">
+        <div class="tp-head">
+          <span>上下文估算</span>
+          <button @click="tokenPanelOpen = false">×</button>
+        </div>
+        <div class="tp-grid">
+          <span>已用</span><b>{{ MODEL_META.fmtTokens(tokenStats.used) }}</b>
+          <span>剩余</span><b>{{ MODEL_META.fmtTokens(tokenStats.remaining) }}</b>
+          <span>容量</span><b>{{ MODEL_META.fmtTokens(tokenStats.context) }}</b>
+          <span>最大输出</span><b>{{ MODEL_META.fmtTokens(tokenStats.maxOut) }}</b>
+        </div>
+        <div class="tp-warn" v-if="tokenStats.warn">
+          上下文接近上限，建议开启新会话或删减早期内容。
+        </div>
+        <div class="tp-foot">{{ currentModelLabel }} · {{ currentModelCaps.join(' / ') }}</div>
+      </div>
+    </div>
+
     <!-- 输入区 -->
     <div class="composer-wrap">
       <div class="composer">
@@ -141,10 +168,11 @@
           </span>
         </div>
         <div class="comp-row">
+          <button class="wb-btn" v-if="appMode === 'image'" @click="sheet = 'imageWorkbench'">工作台</button>
           <button class="plus-btn" @click="sheet = 'attach'" aria-label="添加附件">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
           </button>
-          <textarea class="comp-input" ref="inputEl" v-model="input" rows="1" placeholder="有问题，尽管问"
+          <textarea class="comp-input" ref="inputEl" v-model="input" rows="1" :placeholder="composerPlaceholder"
             @input="growInput" enterkeyhint="send"></textarea>
           <button class="send-btn" v-if="generating" @click="stopGenerate()" aria-label="停止">
             <svg viewBox="0 0 24 24"><rect x="7" y="7" width="10" height="10" rx="2" fill="currentColor"/></svg>
@@ -164,7 +192,7 @@
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
       <input v-model="searchQ" placeholder="搜索会话">
     </div>
-    <button class="dr-new" @click="newSession(); drawerOpen = false">
+    <button class="dr-new" @click="newSession()">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3H6a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2h13a2 2 0 0 0 2-2v-6"/><path d="M18.4 2.6a2.1 2.1 0 0 1 3 3L13 14l-4 1 1-4 8.4-8.4z"/></svg>
       新聊天
     </button>
@@ -207,7 +235,10 @@
             <div class="prov-group-name">{{ p.name }}</div>
             <button class="model-item" v-for="md in (p.models.length ? p.models : [''])" :key="md"
               @click="pickModel(p, md)">
-              {{ md || '(默认模型，请在提供商里配置)' }}
+              <span class="model-main">
+                <span class="model-name">{{ md || '(默认模型，请在提供商里配置)' }}</span>
+                <span class="model-sub" v-if="md">{{ modelSummary(p, md) }}</span>
+              </span>
               <svg class="check" v-if="p.id === settings.activeProviderId && md === settings.activeModel" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12.5l5 5L20 6.5"/></svg>
             </button>
           </div>
@@ -230,6 +261,61 @@
           <button class="act-item danger" @click="deleteSessionAsk(sessionMenuFor)">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg>删除会话
           </button>
+        </div>
+      </template>
+
+      <!-- 附件菜单 -->
+      <template v-else-if="sheet === 'imageWorkbench'">
+        <div class="sheet-title">生图工作台</div>
+        <div class="sheet-body">
+          <div class="card">
+            <div class="row static">
+              <span class="row-label">模型<span class="rl-sub">{{ imageModelId || '未配置生图模型' }}</span></span>
+              <select v-model="settings.imageModel" @change="persistSettings()" style="text-align:right;flex:1;direction:rtl">
+                <option value="">自动选择</option>
+                <option v-for="md in imageModelOptions" :value="md">{{ md }}</option>
+              </select>
+            </div>
+            <div class="row static">
+              <span class="row-label">尺寸</span>
+              <select v-model="settings.imageDefaultSize" @change="persistSettings()" style="text-align:right;flex:1;direction:rtl">
+                <option value="1024x1024">1024x1024</option>
+                <option value="1024x1536">1024x1536</option>
+                <option value="1536x1024">1536x1024</option>
+                <option value="auto">auto</option>
+              </select>
+            </div>
+            <div class="row static">
+              <span class="row-label">数量</span>
+              <input type="text" inputmode="numeric" style="width:80px" :value="settings.imageDefaultCount || 1" @change="setImageCount($event.target.value)">
+            </div>
+            <div class="row static">
+              <span class="row-label">格式</span>
+              <select v-model="settings.imageOutputFormat" @change="persistSettings()" style="text-align:right;flex:1;direction:rtl">
+                <option value="png">PNG</option>
+                <option value="jpeg">JPEG</option>
+                <option value="webp">WebP</option>
+              </select>
+            </div>
+            <div class="row static">
+              <span class="row-label">协议<span class="rl-sub">官方和中转推荐 OpenAI Images</span></span>
+              <select v-model="settings.imageApiMode" @change="persistSettings()" style="text-align:right;flex:1;direction:rtl">
+                <option value="images">OpenAI Images</option>
+                <option value="auto">自动诊断</option>
+                <option value="chat">Chat 兼容</option>
+                <option value="responses">Responses 兼容</option>
+              </select>
+            </div>
+            <div class="row static">
+              <span class="row-label">生图路径<span class="rl-sub">留空自动，支持完整 URL</span></span>
+              <input type="text" style="width:180px" v-model="settings.imageEndpointPath" placeholder="/v1/images/generations" @change="persistSettings()">
+            </div>
+            <div class="row static">
+              <span class="row-label">图像编辑路径<span class="rl-sub">留空自动，支持完整 URL</span></span>
+              <input type="text" style="width:180px" v-model="settings.imageEditEndpointPath" placeholder="/v1/images/edits" @change="persistSettings()">
+            </div>
+          </div>
+          <div class="hint">生成结果会保存到当前会话工作区 images/，点击消息中的图片可查看和导出。</div>
         </div>
       </template>
 
@@ -269,7 +355,14 @@
           <div class="model-none" v-if="!fileCount && !folderCount">工作区为空<br>AI 写入的代码、你新建或上传的文件会出现在这里</div>
           <div class="card file-tree" v-else>
             <div class="file-row tree-row" v-for="row in workspaceRows" :key="row.type + ':' + row.path" :style="{paddingLeft: (10 + row.depth * 18) + 'px'}">
-              <button class="file-main" @click="row.type === 'folder' ? toggleFolder(row.path) : viewFile(row.path)">
+              <button class="file-main"
+                @click="openWorkspaceRow(row)"
+                @pointerdown="startWorkspaceFilePress(row, $event)"
+                @pointermove="moveWorkspaceFilePress($event)"
+                @pointerup="cancelWorkspaceFilePress()"
+                @pointercancel="cancelWorkspaceFilePress()"
+                @pointerleave="cancelWorkspaceFilePress()"
+                @contextmenu.prevent="showWorkspaceFileContext(row)">
                 <span class="file-ic" :class="'kind-' + (row.type === 'folder' ? 'folder' : row.kind)">
                   <svg v-if="row.type === 'folder'" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z"/></svg>
                   <svg v-else-if="row.kind === 'image'" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="18" height="18" rx="3"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5-11 11"/></svg>
@@ -309,6 +402,11 @@
         <button class="row setting-entry" @click="pushPage('settings-tools')">
           <span class="setting-ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14.7 6.3a4.5 4.5 0 0 0-6 6L3 18l3 3 5.7-5.7a4.5 4.5 0 0 0 6-6L14 13l-3-3 3.7-3.7z"/></svg></span>
           <span class="row-label">工具<span class="rl-sub">Agent 工具权限与调用限制</span></span>
+          <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 6l6 6-6 6"/></svg>
+        </button>
+        <button class="row setting-entry" @click="pushPage('settings-image')">
+          <span class="setting-ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="18" height="18" rx="3"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5-11 11"/></svg></span>
+          <span class="row-label">图片生成<span class="rl-sub">首选生图模型、默认尺寸与智能路由</span></span>
           <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 6l6 6-6 6"/></svg>
         </button>
         <button class="row setting-entry" @click="pushPage('settings-general')">
@@ -421,6 +519,14 @@
             <button :class="{on: toolPermission('web_fetch') === 'never'}" @click="setToolPermission('web_fetch', 'never')">禁止</button>
           </div>
         </div>
+        <div class="row static">
+          <span class="row-label">图片生成 (image_go)<span class="rl-sub">常规模式由模型判断意图后转交生图模型</span></span>
+          <div class="seg" style="width:190px">
+            <button :class="{on: toolPermission('image_go') === 'ask'}" @click="setToolPermission('image_go', 'ask')">询问</button>
+            <button :class="{on: toolPermission('image_go') === 'always'}" @click="setToolPermission('image_go', 'always')">允许</button>
+            <button :class="{on: toolPermission('image_go') === 'never'}" @click="setToolPermission('image_go', 'never')">禁止</button>
+          </div>
+        </div>
       </div>
 
       <div class="sec-label">执行限制</div>
@@ -434,6 +540,82 @@
           <input type="text" inputmode="numeric" style="width:80px" :value="settings.maxToolCalls || 24" @change="setMaxToolCalls($event.target.value)">
         </div>
       </div>
+    </div>
+  </div>
+
+  <div class="page" v-if="pageIs('settings-image')">
+    <div class="page-head">
+      <button class="icon-btn" @click="closePage()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M15 5l-7 7 7 7"/></svg></button>
+      <div class="page-title">图片生成</div>
+    </div>
+    <div class="page-body">
+      <div class="sec-label">首选模型</div>
+      <div class="card">
+        <div class="row static">
+          <span class="row-label">提供商</span>
+          <select v-model="settings.imageProviderId" @change="settings.imageModel=''; persistSettings()" style="text-align:right;flex:1;direction:rtl">
+            <option value="">跟随当前</option>
+            <option v-for="p in providers" :value="p.id">{{ p.name }}</option>
+          </select>
+        </div>
+        <div class="row static">
+          <span class="row-label">生成模型<span class="rl-sub">{{ imageModelId ? modelSummary(imageProvider, imageModelId) : '请选择模型' }}</span></span>
+          <select v-model="settings.imageModel" @change="persistSettings()" style="text-align:right;flex:1;direction:rtl">
+            <option value="">自动选择</option>
+            <option v-for="md in imageModelOptions" :value="md">{{ md }}</option>
+          </select>
+        </div>
+        <div class="row static">
+          <span class="row-label">编辑模型<span class="rl-sub">首版预留，后续用于图片对话编辑</span></span>
+          <select v-model="settings.imageEditModel" @change="persistSettings()" style="text-align:right;flex:1;direction:rtl">
+            <option value="">跟随生成模型</option>
+            <option v-for="md in imageModelOptions" :value="md">{{ md }}</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="sec-label">默认参数</div>
+      <div class="card">
+        <div class="row static">
+          <span class="row-label">尺寸</span>
+          <select v-model="settings.imageDefaultSize" @change="persistSettings()" style="text-align:right;flex:1;direction:rtl">
+            <option value="1024x1024">1024x1024</option>
+            <option value="1024x1536">1024x1536</option>
+            <option value="1536x1024">1536x1024</option>
+            <option value="auto">auto</option>
+          </select>
+        </div>
+        <div class="row static">
+          <span class="row-label">数量</span>
+          <input type="text" inputmode="numeric" style="width:80px" :value="settings.imageDefaultCount || 1" @change="setImageCount($event.target.value)">
+        </div>
+        <div class="row static">
+          <span class="row-label">输出格式</span>
+          <select v-model="settings.imageOutputFormat" @change="persistSettings()" style="text-align:right;flex:1;direction:rtl">
+            <option value="png">PNG</option>
+            <option value="jpeg">JPEG</option>
+            <option value="webp">WebP</option>
+          </select>
+        </div>
+        <div class="row static">
+          <span class="row-label">协议<span class="rl-sub">官方和中转推荐 OpenAI Images</span></span>
+          <select v-model="settings.imageApiMode" @change="persistSettings()" style="text-align:right;flex:1;direction:rtl">
+            <option value="images">OpenAI Images</option>
+            <option value="auto">自动诊断</option>
+            <option value="chat">Chat 兼容</option>
+            <option value="responses">Responses 兼容</option>
+          </select>
+        </div>
+        <div class="row static">
+          <span class="row-label">生图路径<span class="rl-sub">留空自动；可填 /v1/images/generations 或完整 URL</span></span>
+          <input type="text" style="width:180px" v-model="settings.imageEndpointPath" placeholder="/v1/images/generations" @change="persistSettings()">
+        </div>
+        <div class="row static">
+          <span class="row-label">图像编辑路径<span class="rl-sub">留空自动；可填 /v1/images/edits 或完整 URL</span></span>
+          <input type="text" style="width:180px" v-model="settings.imageEditEndpointPath" placeholder="/v1/images/edits" @change="persistSettings()">
+        </div>
+      </div>
+      <div class="hint">生成结果会自动写入当前会话工作区的 images/ 文件夹。可以在图片查看器里导出，也可以从工作区导出。</div>
     </div>
   </div>
 
@@ -484,7 +666,56 @@
           <span class="row-label" style="color:var(--danger)">清空全部数据</span>
         </button>
       </div>
+      <div class="sec-label">存储管理</div>
+      <div class="card">
+        <button class="row" @click="pushPage('settings-sessions')">
+          <span class="row-label">会话管理<span class="rl-sub">查看会话占用、工作区文件，并执行明确删除</span></span>
+          <span class="row-value">{{ index.length }} 个</span>
+          <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 6l6 6-6 6"/></svg>
+        </button>
+      </div>
       <div class="hint">已用本地存储约 {{ U.fmtSize(storageUsed) }}</div>
+    </div>
+  </div>
+
+  <div class="page" v-if="pageIs('settings-sessions')">
+    <div class="page-head">
+      <button class="icon-btn" @click="closePage()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M15 5l-7 7 7 7"/></svg></button>
+      <div class="page-title">会话管理</div>
+    </div>
+    <div class="page-body">
+      <div class="hint">这里的删除会直接移除本地数据。只删除工作区文件不会删除聊天记录。</div>
+      <div class="model-none" v-if="!sessionManagerItems.length">暂无会话</div>
+      <div class="session-admin-list" v-else>
+        <div class="session-admin-item" v-for="it in sessionManagerItems" :key="it.id">
+          <button class="session-admin-main" @click="toggleManagedSession(it.id)">
+            <span class="session-admin-copy">
+              <span class="session-admin-title">{{ it.title }}</span>
+              <span class="session-admin-meta">
+                {{ it.modeLabel }} · {{ it.messageCount }} 条消息 · {{ it.fileCount }} 个文件 · {{ U.fmtSize(it.workspaceSize) }}
+              </span>
+              <span class="session-admin-meta">{{ U.fmtFull(it.updatedAt) }}</span>
+            </span>
+            <span class="session-admin-current" v-if="it.isCurrent">当前</span>
+            <svg class="chev folder-chev" :class="{open: sessionManagerOpen[it.id]}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 6l6 6-6 6"/></svg>
+          </button>
+          <div class="session-admin-actions">
+            <button @click.stop="renameManagedSession(it)">重命名</button>
+            <button :disabled="!it.fileCount" @click.stop="clearManagedSessionFiles(it)">清空工作区</button>
+            <button class="danger" @click.stop="deleteManagedSession(it)">删除会话</button>
+          </div>
+          <div class="session-admin-files" v-if="sessionManagerOpen[it.id]">
+            <div class="session-admin-empty" v-if="!it.fileCount">工作区为空</div>
+            <div class="session-admin-file" v-for="f in it.files" :key="f.path">
+              <span class="file-ext">{{ fileExt(f.path) }}</span>
+              <span class="session-admin-file-main">
+                <span class="session-admin-file-name">{{ f.path }}</span>
+                <span class="session-admin-meta">{{ U.fmtSize(f.size) }} · {{ U.fmtFull(f.mtime) }}</span>
+              </span>
+            </div>
+          </div>
+        </div>
+      </div>
     </div>
   </div>
 
@@ -512,7 +743,7 @@
         <div class="about-logo">W</div>
         <div class="about-copy">
           <div class="about-title">WepChat</div>
-          <div class="about-sub">v1.0</div>
+          <div class="about-sub">v1.0.1</div>
         </div>
       </div>
       <div class="card about-card">
@@ -551,10 +782,64 @@
       </div>
       <div class="hint">地址只填域名时自动补 /v1；以 # 结尾表示按原样使用完整地址。</div>
 
-      <div class="sec-label">模型列表（每行一个）</div>
-      <textarea class="textarea-block" style="font-family:ui-monospace,Menlo,monospace;font-size:13px" v-model="provForm.modelsText" placeholder="gpt-4o-mini&#10;gpt-4o"></textarea>
+      <div class="sec-label">文本模型列表（每行一个）</div>
+      <textarea class="textarea-block" style="font-family:ui-monospace,Menlo,monospace;font-size:13px" v-model="provForm.modelsText" @input="syncProvModelsFromText()" placeholder="gpt-5.6-sol&#10;gpt-5.5"></textarea>
       <button class="big-btn plain" :disabled="provForm.fetching" @click="fetchModels()">{{ provForm.fetching ? '获取中…' : '从接口获取模型列表' }}</button>
       <button class="big-btn plain" :disabled="provForm.testing" @click="testProvider()">{{ provForm.testing ? '测试中…' : '测试连接' }}</button>
+
+      <div class="sec-label">图像生成</div>
+      <div class="card">
+        <div class="row static"><span class="row-label" style="flex:none">图像 API 地址<span class="rl-sub">留空复用上方地址</span></span><input type="url" v-model="provForm.data.imageBaseUrl" placeholder="https://api.openai.com/v1"></div>
+        <div class="row static"><span class="row-label" style="flex:none">图像 API Key<span class="rl-sub">留空复用上方 Key</span></span><input :type="provForm.showKey ? 'text' : 'password'" v-model="provForm.data.imageApiKey" placeholder="sk-..." @focus="provForm.showKey = true" @blur="provForm.showKey = false"></div>
+        <div class="row static"><span class="row-label" style="flex:none">生图路径<span class="rl-sub">留空自动拼 /images/generations</span></span><input type="text" v-model="provForm.data.imageEndpointPath" placeholder="/v1/images/generations"></div>
+        <div class="row static"><span class="row-label" style="flex:none">图像编辑路径<span class="rl-sub">留空自动拼 /images/edits</span></span><input type="text" v-model="provForm.data.imageEditEndpointPath" placeholder="/v1/images/edits"></div>
+      </div>
+      <textarea class="textarea-block" style="font-family:ui-monospace,Menlo,monospace;font-size:13px" v-model="provForm.imageModelsText" @input="syncProvImageModelsFromText()" placeholder="gpt-image-2&#10;gpt-image-1"></textarea>
+
+      <div class="sec-label" v-if="provForm.data && provForm.data.models && provForm.data.models.length">模型元数据</div>
+      <div class="card" v-if="provForm.data && provForm.data.models && provForm.data.models.length">
+        <div class="row static">
+          <span class="row-label">当前模型</span>
+          <select v-model="provForm.selectedModel" style="text-align:right;flex:1;direction:rtl">
+            <option v-for="md in provForm.data.models" :value="md">{{ md }}</option>
+          </select>
+        </div>
+        <template v-if="provSelectedMeta">
+          <div class="row static">
+            <span class="row-label">上下文容量<span class="rl-sub">用于 token 圆环和快满提醒</span></span>
+            <input type="text" inputmode="numeric" style="width:96px" :value="provSelectedMeta.contextWindow || ''" @change="setSelectedModelNumber('contextWindow', $event.target.value)">
+          </div>
+          <div class="row static">
+            <span class="row-label">最大输出 tokens</span>
+            <input type="text" inputmode="numeric" style="width:96px" :value="provSelectedMeta.maxOutputTokens || ''" @change="setSelectedModelNumber('maxOutputTokens', $event.target.value)">
+          </div>
+          <div class="row static">
+            <span class="row-label">视觉输入<span class="rl-sub">图片理解、多模态输入</span></span>
+            <button class="switch" :class="{on: provSelectedMeta.capabilities.vision}" @click="toggleSelectedModelCap('vision')"></button>
+          </div>
+          <div class="row static">
+            <span class="row-label">思考 / 推理<span class="rl-sub">reasoning、thinking、R 系列能力</span></span>
+            <button class="switch" :class="{on: provSelectedMeta.capabilities.reasoning}" @click="toggleSelectedModelCap('reasoning')"></button>
+          </div>
+          <div class="row static">
+            <span class="row-label">工具调用</span>
+            <button class="switch" :class="{on: provSelectedMeta.capabilities.tools}" @click="toggleSelectedModelCap('tools')"></button>
+          </div>
+          <div class="row static">
+            <span class="row-label">结构化输出</span>
+            <button class="switch" :class="{on: provSelectedMeta.capabilities.structuredOutput}" @click="toggleSelectedModelCap('structuredOutput')"></button>
+          </div>
+          <div class="row static">
+            <span class="row-label">图像生成</span>
+            <button class="switch" :class="{on: provSelectedMeta.capabilities.imageGeneration}" @click="toggleSelectedModelCap('imageGeneration')"></button>
+          </div>
+          <div class="row static">
+            <span class="row-label">图像编辑</span>
+            <button class="switch" :class="{on: provSelectedMeta.capabilities.imageEdit}" @click="toggleSelectedModelCap('imageEdit')"></button>
+          </div>
+        </template>
+      </div>
+      <div class="hint" v-if="provForm.data && provForm.data.models && provForm.data.models.length">接口返回的 context/capabilities 会优先写入；缺失时使用内置模型库和名称推断。</div>
       <button class="big-btn danger" v-if="!provForm.isNew" @click="deleteProviderAsk()">删除提供商</button>
     </div>
   </div>
@@ -591,6 +876,12 @@
           <div class="pv-log" v-for="(l, i) in viewer.logs" :key="i" :class="l.level">{{ l.text }}</div>
         </div>
       </template>
+    </div>
+    <div class="viewer-editbar" v-if="viewer.isImage && appMode === 'image'">
+      <textarea v-model="viewer.editPrompt" rows="1" placeholder="描述要怎么修改这张图片" @input="growViewerEdit"></textarea>
+      <button class="send-btn" :disabled="generating || !viewer.editPrompt.trim()" @click="sendViewerImageEdit()" aria-label="编辑图片">
+        <svg viewBox="0 0 24 24"><path d="M4 12l14-8-4 16-3-6-7-2z" fill="currentColor"/></svg>
+      </button>
     </div>
   </div>
 
@@ -636,7 +927,9 @@
 <script src="js/util.js"></script>
 <script src="js/store.js"></script>
 <script src="js/markdown.js"></script>
+<script src="js/model-metadata.js"></script>
 <script src="js/api.js"></script>
+<script src="js/image-api.js"></script>
 <script src="js/tools.js"></script>
 <script src="js/app.js"></script>
 </body>

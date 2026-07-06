@@ -338,12 +338,30 @@ const Tools = (() => {
       name: 'web_fetch',
       description: '抓取一个网页/接口的文本内容（GET）。HTML 会转为纯文本。需要用户授权。',
       parameters: { type: 'object', properties: { url: { type: 'string', description: '完整的 http/https 地址' } }, required: ['url'] }
+    },
+    {
+      name: 'image_go',
+      description: '当用户明确想生成或改图时，整理用户意图并交给图片模型。没有参考图时用 generate；用户上传/提到工作区图片并要求修改时用 edit，并把图片工作区路径填入 referenceFiles。不要用于单纯图片分析或提示词建议。',
+      parameters: {
+        type: 'object',
+        properties: {
+          prompt: { type: 'string', description: '完整图片提示词，保留用户关键要求并补充必要视觉细节' },
+          mode: { type: 'string', enum: ['generate', 'edit'], description: 'generate 文生图；edit 基于 referenceFiles 中的工作区图片调用 /v1/images/edits。' },
+          size: { type: 'string', description: '图片尺寸，例如 1024x1024、1024x1536、1536x1024；未知用 auto 或留空' },
+          count: { type: 'integer', description: '生成数量，通常 1' },
+          style: { type: 'string', description: '可选风格，例如 克制、写实、图标、海报、UI mockup' },
+          referenceFiles: { type: 'array', items: { type: 'string' }, description: 'edit 时必填，当前工作区中的参考图片路径，例如 attachments/photo.png 或 images/result.png' },
+          targetFile: { type: 'string', description: '可选，期望保存到工作区的文件名或路径' },
+          reason: { type: 'string', description: '为什么判断需要生图' }
+        },
+        required: ['prompt']
+      }
     }
   ];
 
   const SYSTEM_HINT = [
     '当前对话默认拥有一个“工作区”，可以保存 HTML、CSS、JavaScript、Markdown、JSON 等文件。用户可以在工作区里打开文件、预览 HTML/Markdown、编辑源码、查看控制台并导出文件。',
-    '你可以使用以下工具：run_js（沙盒执行 JavaScript，适合精确计算、数据转换、编码解码）、preview_html（生成一次性可交互 HTML 页面）、read_file/write_file/edit_file/delete_file/list_files（当前会话工作区文件）、web_fetch（抓取网页文本）。',
+    '你可以使用以下工具：run_js（沙盒执行 JavaScript，适合精确计算、数据转换、编码解码）、preview_html（生成一次性可交互 HTML 页面）、read_file/write_file/edit_file/delete_file/list_files（当前会话工作区文件）、web_fetch（抓取网页文本）、image_go（用户明确需要生成或编辑位图时调用图片模型；有参考图片路径时用 edit，无参考图时用 generate）。',
     '简单问题直接回答；只在需要精确计算、验证、数据处理、生成可交互页面或操作文件时调用工具。',
     '当用户要你写网页、小工具、代码示例、临时项目或需要多文件协作时，优先把代码写入工作区文件，例如 index.html、style.css、script.js；不要把大段完整代码只堆在聊天正文里。',
     '修改已有文件前，先 list_files 或 read_file 了解当前内容；小改动优先用 edit_file，整文件重写才用 write_file。',
@@ -384,6 +402,11 @@ const Tools = (() => {
         case 'run_service': return fRunService(ctx.session, args, ctx);
         case 'stop_service': return fStopService(ctx.session, args);
         case 'list_services': return fListServices(ctx.session);
+        case 'image_go':
+        case 'image_generation': {
+          if (!ctx.imageGo) return '错误：当前环境未启用图片生成';
+          return await ctx.imageGo(args);
+        }
         case 'web_fetch': {
           if (ctx.webFetchMode === 'never') return '错误：用户已禁止网络访问';
           if (ctx.webFetchMode !== 'always') {
