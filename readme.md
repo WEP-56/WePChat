@@ -1,188 +1,123 @@
-﻿# WepChat 项目设想
+# WepChat
 
-WepChat 计划做成一个面向 Android 的轻量 LLM 聊天应用。主项目优先使用 uni-app / uni-app x / HBuilderX 开发，目标是保留跨端开发效率，同时尽量做出接近 Android 原生应用的体验，避免明显的网页套壳感。
+WepChat 是一个本地优先的轻量移动端 AI 聊天应用，当前以静态 Vue/H5 为主体，按 HBuilderX / HTML5+ Android App 方向推进。
 
-## 产品方向
+项目目标是做一个克制、快速、适合日常使用的 LLM 客户端：对话、Markdown 阅读、文件工作区、轻量代码/网页生成、图片生成与编辑。它不是 ComfyUI、Midjourney 或移动开发环境，也不追求内置完整 Linux。
 
-核心目标是做一个美观、简单、高效、功能完整的移动端 LLM 客户端，参考 ChatGPT、Claude 网页端，以及 Cherry Studio、Chatbox 这类客户端的思路，但移动端交互要更克制、更轻。
+## 当前能力
 
-支持的能力：
+- 多会话管理，支持常规对话和生图会话。
+- 多模型提供商配置，支持 OpenAI-compatible、Responses、Completions、Messages 等常见接口形态。
+- 模型元数据管理，记录上下文、输出上限、视觉、工具、结构化输出、图像生成/编辑等能力。
+- Markdown 渲染、代码块复制、链接打开、图片展示。
+- 当前会话工作区，支持文件树、新建、上传、编辑、删除、导出和 HTML 运行预览。
+- IndexedDB + 内存缓存持久化，避免 Android WebView `localStorage` 配额过小导致大文本和图片丢失。
+- Agent 工具调用可视化，工具参数流式生成时提前显示工具卡片。
+- 轻量 JavaScript 沙盒，用于计算、文本/JSON/CSV 处理、编码解码和数据转换。
+- 工作区文件工具，包括读取片段、写入、精确/正则/忽略空白编辑、目录创建、移动/重命名、批量删除和路径检查。
+- HTML 多页面预览，支持工作区内相对链接跳转、地址栏、前进、后退、刷新和外链跳转。
+- 图片生成工作台，支持尺寸、质量、格式、背景和风格预设。
+- 常规对话中的 `image_go` 工具，可由文本模型判断是否需要转交图片模型。
+- 数据导入导出、单文件导出、整工作区 ZIP 导出。
+- Android/HBuilderX 环境下的相册保存、系统分享、公共下载目录写入和后台运行通知提醒。
+- 关于页可检查 GitHub Release，展示更新日志并跳转到 Releases 页面；不会自动下载或安装更新。
 
-- 多会话管理
-- 会话文件管理
-- Markdown 渲染
-- 链接识别与预览
-- HTML 预览
-- 文件上传
-- 数据导入导出
-- 用户自定义模型提供商
-- OpenAI-compatible、Responses、Completions、Messages 等常见接口适配
-- 轻量 Agent 工具调用
-- 本地 JavaScript 沙盒执行
-- 可执行 HTML/CSS/JS 预览
+## 技术路线
 
-## 技术判断
+WepChat 当前是静态前端项目：
 
-第一阶段不做完整 Linux 实例，也不做 Termux/PRoot 级别的运行环境。
+- 入口：`index.html`
+- 样式：`css/app.css`
+- 主逻辑：`js/app.js`
+- 模型 API：`js/api.js`
+- 图片 API：`js/image-api.js`
+- Agent 工具：`js/tools.js`
+- 本地存储：`js/store.js`
+- 通用能力：`js/util.js`
+- HBuilderX 配置：`manifest.json`
 
-原因：
+核心运行方式是 H5 + HTML5+。Android App 侧能力依赖 HBuilderX/HTML5+ 的 `plus.*` API，例如文件、相册、分享、压缩、通知和外部浏览器打开。
 
-- 移动端维护完整 Linux 运行环境成本高。
-- Android 对本地可执行文件、进程、权限和文件系统有额外限制。
-- 当前需求只是让 Agent 做简单计算、文本处理、加解密、数据转换和小工具预览，不需要真实 shell、包管理器、编译器或完整 rootfs。
-- 完整 Linux 会把项目复杂度从“聊天客户端”推向“移动开发环境”，不适合作为第一版核心。
+## Agent 工具边界
 
-因此第一版采用更轻的方案：**JavaScript 沙盒 + HTML 预览 + 受控文件工作区**。
+WepChat 的 Agent 工具是受控的轻量工具集，不提供真实 shell、Node.js 包管理器、Python 环境或完整 Linux。
 
-## Agent 沙盒设计
+当前模型可见工具包括：
 
-Agent 不需要内置 Linux，只需要有限、明确、可控的工具。
+- `run_js`：隔离 JavaScript 沙盒。需要读取工作区文件时，必须通过 `inputFiles` 显式挂载。
+- `list_files` / `read_file` / `write_file` / `edit_file`：工作区文件查看、读取、写入和修改。
+- `create_folder` / `move_path` / `path_exists` / `delete_file`：文件夹和路径管理。
+- `preview_file`：打开已有 HTML 文件预览。
+- `web_fetch`：GET/POST 抓取网页或接口文本，POST 会额外确认。
+- `image_go`：生成或编辑图片。
 
-建议第一版工具：
+工具说明和系统提示词快照见 `docs/tools.md`。
 
-```ts
-run_js(code: string): Promise<{
-  stdout: string
-  stderr: string
-  result?: unknown
-}>
+## 本地运行
 
-preview_html(input: {
-  html: string
-  css?: string
-  js?: string
-  files?: Record<string, string>
-}): Promise<void>
+项目是静态页面，直接启动一个静态服务器即可预览：
 
-read_file(path: string): Promise<string>
-
-write_file(path: string, content: string): Promise<void>
-
-list_files(path?: string): Promise<string[]>
-
-web_fetch(url: string): Promise<string>
+```bash
+python -m http.server 8765
 ```
 
-这些工具足够覆盖：
-
-- 数学计算
-- JSON/CSV/文本处理
-- 正则提取
-- hash、base64、简单加解密
-- 小型数据分析
-- 生成可交互 HTML 工具
-- 生成图表、表格、计算器、小页面、小 demo
-- 处理用户上传的文本类文件
-
-## JavaScript 执行
-
-`run_js` 不应直接在主 UI 环境里执行 `eval`。推荐隔离执行环境：
+然后打开：
 
 ```text
-主 WebView
-  - 聊天 UI
-  - 会话管理
-  - 设置
-  - 文件管理
-
-Sandbox WebView / Worker
-  - 执行 Agent 生成的 JavaScript
-  - 捕获 console 输出
-  - 限制运行时间
-  - 限制输出大小
-  - 不暴露 API Key
-  - 不直接访问真实文件系统
+http://127.0.0.1:8765/
 ```
 
-执行策略：
+也可以使用任意静态服务器。部分 Android/HTML5+ 能力只在 HBuilderX App 环境中可用，浏览器环境会降级为普通 H5 行为。
 
-- 每次执行使用独立上下文，避免污染主应用状态。
-- 设置超时，例如 3-10 秒。
-- 限制 stdout/stderr 最大长度。
-- 禁止访问主应用敏感对象。
-- 文件读写只能通过受控工具完成。
-- 网络访问默认关闭，或由用户显式授权。
+## Android 打包
 
-## HTML 预览
+使用 HBuilderX 打开项目目录，按 `manifest.json` 配置打包 Android App。
 
-HTML 预览不只是静态渲染，而是允许执行局部 JavaScript，用于快速生成交互式小工具。
+当前 `manifest.json` 中已配置常用权限，包括文件、相册、分享、压缩、网络、语音、通知等。不同 Android 版本和 ROM 对公共下载目录、相册保存、系统分享和后台行为的限制不同，实机回归仍然必要。
 
-典型用法：
+## 发布与更新
+
+Release tag 使用：
 
 ```text
-用户：帮我做一个贷款计算器
-Agent：生成 HTML/CSS/JS
-App：调用 preview_html 展示可交互页面
+vX.Y.Z
 ```
 
-预览面板建议提供：
-
-- 预览
-- 源码
-- 控制台输出
-- 保存到会话文件
-- 导出 HTML
-- 重新运行
-
-HTML 预览同样应运行在隔离 WebView 中，不能直接读取真实文件、Provider Key 或应用内部配置。
-
-## 安全边界
-
-Agent 工具必须默认最小权限。
-
-建议规则：
-
-- Agent 只能访问当前会话的 workspace。
-- 任何跨会话文件访问都需要用户确认。
-- 网络请求默认关闭，或首次请求时弹窗确认。
-- 不向沙盒暴露 API Key、用户隐私配置、系统路径。
-- 所有工具调用都记录在会话中。
-- 长时间运行自动中断。
-- 大输出自动截断，并提示用户。
-- 文件写入前可以显示 diff 或写入摘要。
-
-## System Prompt 思路
-
-Agent 的系统提示可以明确告诉模型：
+仓库地址：
 
 ```text
-你可以使用 JavaScript 工具解决需要精确计算、文本处理、数据转换、编码解码、简单加解密的问题。
-
-当需要制作可交互预览时，你可以生成 HTML/CSS/JS，并调用 HTML 预览工具。
-
-不要访问用户未授权的文件。不要请求外部网络，除非用户明确要求。不要在代码中包含或读取 Provider API Key。
-
-对于简单问题优先直接回答；只有在计算、验证、转换、生成可交互页面或处理文件时才调用工具。
+https://github.com/WEP-56/WePChat
 ```
 
-## 第一版建议
+应用内关于页会请求 GitHub latest release，比对本地版本 tag 与最新 release tag，并展示更新日志和跳转链接。自动检查默认关闭；开启后每次启动静默检查。无法连接 GitHub 时不会弹错误提示。
 
-第一版先做下面这些功能：
+当前只做版本检查、更新日志展示和跳转，不做 APK 自动下载或安装。
 
-1. 聊天主界面
-2. Provider 配置
-3. OpenAI-compatible Chat Completions 接口
-4. 会话列表与本地持久化
-5. Markdown 渲染
-6. 文件上传与会话文件
-7. `run_js`
-8. `preview_html`
-9. 工具调用 UI
-10. 数据导入导出
+## 设计取舍
 
-暂时不做：
+WepChat 刻意保持轻量：
 
-- 完整 Linux
-- 真实 shell
-- Python 运行时
-- Node.js 包管理
-- git / 编译器
-- 长时间后台任务
+- 不内置完整 Linux。
+- 不提供真实 shell。
+- 不做长期后台执行承诺。
+- 不把图片生成做成重型工作站。
+- 不把 HTML 预览做成完整浏览器。
 
-后续如果产品验证成功，再考虑加入 MicroPython、远程沙盒或 Android 原生插件。
+短期重点是让日常对话、文件流转、轻量生成和移动端验证体验足够稳定。
 
-## 当前结论
+## 开发检查
 
-对于当前目标，uni-app / HBuilderX 可以继续作为主技术路线。
+常用语法检查：
 
-只要第一版把 Agent 能力定义为“轻量 JavaScript 沙盒 + 可执行 HTML 预览 + 受控文件工具”，就不需要 Kotlin 原生主项目，也不需要 Flutter，更不需要内置完整 Linux。
+```bash
+node --check js/app.js
+node --check js/api.js
+node --check js/image-api.js
+node --check js/tools.js
+node --check js/store.js
+node --check js/util.js
+node --check js/model-metadata.js
+git diff --check
+```
+
+更多当前状态、风险和下一阶段计划见 `docs/handoff.md`。

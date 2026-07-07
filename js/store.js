@@ -112,6 +112,7 @@ const Store = {
       activeProviderId: '',
       activeModel: '',
       agentEnabled: true,            // 是否给模型配置工具
+      updateAutoCheck: false,        // 启动时自动检查 GitHub Release
       webFetch: 'ask',               // ask | always | never
       toolPermissions: {
         run_js: 'ask',

@@ -167,6 +167,50 @@
   function isMarkdownName(name) { return /\.(md|markdown)$/i.test(name || ''); }
   function isImageName(name) { return /\.(png|jpe?g|webp|gif|bmp)$/i.test(name || ''); }
 
+  const APP_VERSION = '1.0.3';
+  const APP_TAG = 'v' + APP_VERSION;
+  const RELEASES_URL = 'https://github.com/WEP-56/WePChat/releases';
+  const LATEST_RELEASE_API = 'https://api.github.com/repos/WEP-56/WePChat/releases/latest';
+
+  function parseReleaseTag(tag) {
+    const m = String(tag || '').trim().match(/^v(\d+)\.(\d+)\.(\d+)$/i);
+    return m ? [parseInt(m[1], 10), parseInt(m[2], 10), parseInt(m[3], 10)] : null;
+  }
+
+  function compareReleaseTags(a, b) {
+    const va = parseReleaseTag(a);
+    const vb = parseReleaseTag(b);
+    if (!va || !vb) return 0;
+    for (let i = 0; i < 3; i++) {
+      if (va[i] !== vb[i]) return va[i] > vb[i] ? 1 : -1;
+    }
+    return 0;
+  }
+
+  function formatReleaseDate(value) {
+    if (!value) return '';
+    const d = new Date(value);
+    if (Number.isNaN(d.getTime())) return '';
+    return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+  }
+
+  function fetchLatestRelease() {
+    return new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open('GET', LATEST_RELEASE_API, true);
+      xhr.timeout = 12000;
+      xhr.setRequestHeader('Accept', 'application/vnd.github+json');
+      xhr.onload = () => {
+        if (xhr.status < 200 || xhr.status >= 300) return reject(new Error('HTTP ' + xhr.status));
+        try { resolve(JSON.parse(xhr.responseText || '{}')); }
+        catch (e) { reject(e); }
+      };
+      xhr.onerror = () => reject(new Error('network'));
+      xhr.ontimeout = () => reject(new Error('timeout'));
+      xhr.send();
+    });
+  }
+
   function normalizeStylePreset(p) {
     p = p || {};
     const id = String(p.id || '').trim() || ('style_' + U.uuid().slice(0, 8));
@@ -439,6 +483,8 @@
         U,
         API,
         MODEL_META,
+        appVersion: APP_VERSION,
+        appTag: APP_TAG,
         settings,
         providers,
         index,
@@ -517,6 +563,14 @@
         tokenPanelOpen: false,
         sessionManagerOpen: {},
         storageUsed: Store.usage(),
+        updateCheck: {
+          checking: false,
+          checked: false,
+          failed: false,
+          latest: null,
+          hasUpdate: false,
+          lastCheckedAt: 0
+        },
         persistTimer: null,
         lastStreamPersistAt: 0,
         runningNotifyShown: false,
@@ -615,6 +669,20 @@
         return (Array.isArray(this.settings.imageStylePresets) ? this.settings.imageStylePresets : [])
           .map(normalizeStylePreset)
           .filter(Boolean);
+      },
+      latestRelease() {
+        return this.updateCheck && this.updateCheck.latest || null;
+      },
+      updateStatusText() {
+        if (this.updateCheck.checking) return '正在检查 GitHub Release';
+        if (this.latestRelease && this.updateCheck.hasUpdate) return '发现新版本 ' + this.latestRelease.tag;
+        if (this.latestRelease) return '已是最新版本';
+        if (this.updateCheck.failed) return '暂时无法获取 Release 信息';
+        return '未检查';
+      },
+      updateReleaseNote() {
+        const body = this.latestRelease && this.latestRelease.body || '';
+        return U.truncate(String(body).trim(), 2400);
       },
       selectedImageStylePreset() {
         return this.imageStylePresetById(this.settings.imageStylePresetId);
@@ -845,6 +913,7 @@
         this.growInput();
         this.scrollToBottom(true);
       });
+      if (this.settings.updateAutoCheck) this.checkReleaseUpdate({ silent: true });
     },
 
     methods: {
@@ -904,6 +973,45 @@
         Store.saveSettings(this.settings);
         this.storageUsed = Store.usage();
         this.applyTheme();
+      },
+      setUpdateAutoCheck(on) {
+        this.settings.updateAutoCheck = !!on;
+        this.persistSettings();
+      },
+      async checkReleaseUpdate(opts) {
+        opts = opts || {};
+        if (this.updateCheck.checking) return;
+        this.updateCheck.checking = true;
+        this.updateCheck.failed = false;
+        try {
+          const release = await fetchLatestRelease();
+          const tag = String(release.tag_name || '').trim();
+          const latest = {
+            tag,
+            name: String(release.name || tag || 'GitHub Release'),
+            body: String(release.body || ''),
+            url: String(release.html_url || RELEASES_URL),
+            publishedAt: release.published_at || release.created_at || ''
+          };
+          const hasUpdate = compareReleaseTags(tag, APP_TAG) > 0;
+          this.updateCheck.latest = latest;
+          this.updateCheck.hasUpdate = hasUpdate;
+          this.updateCheck.checked = true;
+          this.updateCheck.lastCheckedAt = Date.now();
+          this.updateCheck.failed = false;
+          if (!opts.silent && hasUpdate) U.toast('发现新版本 ' + tag);
+        } catch (e) {
+          this.updateCheck.failed = true;
+          if (!opts.silent) this.updateCheck.checked = true;
+        } finally {
+          this.updateCheck.checking = false;
+        }
+      },
+      openReleasePage(url) {
+        U.openExternal(url || (this.latestRelease && this.latestRelease.url) || RELEASES_URL);
+      },
+      releaseDateText(value) {
+        return formatReleaseDate(value);
       },
       persistProviders() {
         this.providers = this.providers.map(p => MODEL_META.normalizeProvider(p));

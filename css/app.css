@@ -466,6 +466,10 @@ html.plus-app .page-head { padding-top: 6px; }
 .about-title { font-size: 20px; font-weight: 750; line-height: 1.2; }
 .about-sub { color: var(--text3); font-size: 13px; margin-top: 4px; }
 .about-card { margin-bottom: 18px; }
+.about-release-note {
+  padding: 0 15px 14px; color: var(--text2); font-size: 13px; line-height: 1.6;
+  white-space: pre-wrap; word-break: break-word; user-select: text; -webkit-user-select: text;
+}
 
 /* 开关 */
 .switch {

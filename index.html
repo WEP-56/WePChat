@@ -418,7 +418,7 @@
           <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 6l6 6-6 6"/></svg>
         </button>
       </div>
-      <div class="hint">WepChat v1.0 · 本地存储 {{ U.fmtSize(storageUsed) }}</div>
+      <div class="hint">WepChat v{{ appVersion }} · 本地存储 {{ U.fmtSize(storageUsed) }}</div>
     </div>
   </div>
 
@@ -698,7 +698,7 @@
         <div class="about-logo">W</div>
         <div class="about-copy">
           <div class="about-title">WepChat</div>
-          <div class="about-sub">v1.0.1</div>
+          <div class="about-sub">{{ appTag }}</div>
         </div>
       </div>
       <div class="card about-card">
@@ -709,9 +709,22 @@
           <span class="row-label">隐私声明<span class="rl-sub">会话、设置与工作区文件默认保存在本机；模型请求会发送给你配置的提供商</span></span>
         </div>
         <div class="row static">
-          <span class="row-label">更新<span class="rl-sub">当前版本暂未接入自动更新</span></span>
+          <span class="row-label">启动时检查更新<span class="rl-sub">开启后每次启动静默检查 GitHub Release</span></span>
+          <button class="switch" :class="{on: settings.updateAutoCheck}" @click="setUpdateAutoCheck(!settings.updateAutoCheck)"></button>
+        </div>
+        <div class="row static">
+          <span class="row-label">Release<span class="rl-sub">{{ updateStatusText }}</span></span>
         </div>
       </div>
+      <button class="big-btn plain" :disabled="updateCheck.checking" @click="checkReleaseUpdate()">{{ updateCheck.checking ? '检查中…' : '检查更新' }}</button>
+      <button class="big-btn plain" @click="openReleasePage(latestRelease && latestRelease.url)">打开 GitHub Releases</button>
+      <div class="card about-card" v-if="latestRelease">
+        <div class="row static">
+          <span class="row-label">{{ latestRelease.name || latestRelease.tag }}<span class="rl-sub">{{ latestRelease.tag }}<template v-if="releaseDateText(latestRelease.publishedAt)"> · {{ releaseDateText(latestRelease.publishedAt) }}</template></span></span>
+        </div>
+        <div class="about-release-note" v-if="updateReleaseNote">{{ updateReleaseNote }}</div>
+      </div>
+      <div class="hint">这里只做版本检查、更新日志展示和跳转，不会自动下载或安装应用。无法连接 GitHub 时会静默跳过。</div>
     </div>
   </div>
 
