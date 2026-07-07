@@ -1186,28 +1186,27 @@
       },
       toolPermissionKey(name) {
         if (name === 'run_js') return 'run_js';
-        if (name === 'preview_html') return 'preview_html';
         if (name === 'web_fetch') return 'web_fetch';
         if (name === 'image_go' || name === 'image_generation') return 'image_go';
         if (name === 'delete_file') return 'delete_files';
         if (name === 'run_service' || name === 'stop_service' || name === 'list_services') return 'services';
-        if (name === 'read_file' || name === 'write_file' || name === 'edit_file' || name === 'list_files' || name === 'create_workspace') return 'files';
+        if (name === 'read_file' || name === 'write_file' || name === 'edit_file' || name === 'list_files' ||
+          name === 'create_folder' || name === 'move_path' || name === 'path_exists' || name === 'preview_file' || name === 'create_workspace') return 'files';
         return 'files';
       },
       toolPermissionLabel(name) {
         const map = {
           run_js: 'JavaScript 沙盒',
-          preview_html: 'HTML 预览',
           web_fetch: '网页访问',
           image_go: '图片生成',
-          delete_files: '删除工作区文件',
+          delete_files: '删除工作区文件/文件夹',
           services: '工作区服务',
           files: '工作区文件'
         };
         return map[this.toolPermissionKey(name)] || this.toolLabel(name);
       },
       toolPermission(nameOrKey) {
-        const key = ['run_js', 'preview_html', 'files', 'delete_files', 'services', 'web_fetch', 'image_go'].includes(nameOrKey)
+        const key = ['run_js', 'files', 'delete_files', 'services', 'web_fetch', 'image_go'].includes(nameOrKey)
           ? nameOrKey
           : this.toolPermissionKey(nameOrKey);
         const perms = this.settings.toolPermissions || {};
@@ -1684,12 +1683,15 @@
       toolLabel(name) {
         const map = {
           run_js: 'JavaScript 沙盒',
-          preview_html: 'HTML 预览',
           read_file: '读取文件',
           write_file: '写入文件',
           edit_file: '修改文件',
           delete_file: '删除文件',
           list_files: '列出文件',
+          create_folder: '创建文件夹',
+          move_path: '移动路径',
+          path_exists: '检查路径',
+          preview_file: '预览 HTML',
           create_workspace: '创建工作区',
           run_service: '启动预览',
           stop_service: '停止预览',
@@ -2099,6 +2101,7 @@
         const maxToolRounds = U.clamp(parseInt(this.settings.maxToolRounds || 8, 10), 1, 32);
         const maxToolCalls = U.clamp(parseInt(this.settings.maxToolCalls || 24, 10), 1, 128);
         let totalToolCalls = 0;
+        const previousToolResults = [];
 
         try {
           for (let step = 0; step <= maxToolRounds; step++) {
@@ -2165,6 +2168,7 @@
               const out = denied || await Tools.execute(t.name, t.arguments, {
                 session: this.session,
                 webFetchMode: 'always',
+                previousResults: previousToolResults,
                 confirm: msg => this.confirm(msg, '工具授权'),
                 openPreview: payload => this.openPreview(payload),
                 openService: serviceId => this.openServicePreview(serviceId),
@@ -2172,6 +2176,7 @@
               });
               t.result = out;
               t.status = String(out).startsWith('错误：') ? 'error' : 'done';
+              previousToolResults.push({ name: t.name, result: out });
               workingMessages.push({ role: 'tool', toolCallId: t.id, content: out });
               this.persistSession();
               nextTick(() => this.scrollToBottom(false));

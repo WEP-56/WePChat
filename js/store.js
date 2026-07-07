@@ -115,7 +115,6 @@ const Store = {
       webFetch: 'ask',               // ask | always | never
       toolPermissions: {
         run_js: 'ask',
-        preview_html: 'ask',
         files: 'ask',
         delete_files: 'ask',
         services: 'ask',

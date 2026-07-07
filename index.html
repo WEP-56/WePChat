@@ -465,7 +465,7 @@
       <div class="sec-label">Agent 工具</div>
       <div class="card">
         <div class="row static">
-          <span class="row-label">启用工具调用<span class="rl-sub">JS 沙盒 / HTML 预览 / 工作区文件 / 抓取网页</span></span>
+          <span class="row-label">启用工具调用<span class="rl-sub">JS 沙盒 / 工作区文件 / 抓取网页 / 图片生成</span></span>
           <button class="switch" :class="{on: settings.agentEnabled}" @click="settings.agentEnabled = !settings.agentEnabled; persistSettings()"></button>
         </div>
         <div class="row static">
@@ -477,14 +477,6 @@
           </div>
         </div>
         <div class="row static">
-          <span class="row-label">HTML 预览</span>
-          <div class="seg" style="width:190px">
-            <button :class="{on: toolPermission('preview_html') === 'ask'}" @click="setToolPermission('preview_html', 'ask')">询问</button>
-            <button :class="{on: toolPermission('preview_html') === 'always'}" @click="setToolPermission('preview_html', 'always')">允许</button>
-            <button :class="{on: toolPermission('preview_html') === 'never'}" @click="setToolPermission('preview_html', 'never')">禁止</button>
-          </div>
-        </div>
-        <div class="row static">
           <span class="row-label">工作区文件</span>
           <div class="seg" style="width:190px">
             <button :class="{on: toolPermission('files') === 'ask'}" @click="setToolPermission('files', 'ask')">询问</button>
@@ -493,7 +485,7 @@
           </div>
         </div>
         <div class="row static">
-          <span class="row-label">删除工作区文件</span>
+          <span class="row-label">删除工作区文件/文件夹</span>
           <div class="seg" style="width:130px">
             <button :class="{on: toolPermission('delete_files') === 'ask'}" @click="setToolPermission('delete_files', 'ask')">询问</button>
             <button :class="{on: toolPermission('delete_files') === 'never'}" @click="setToolPermission('delete_files', 'never')">禁止</button>
