@@ -10,6 +10,7 @@ const Store = {
   /* 内存缓存：key -> 原始 JSON 字符串。读取全部走缓存，保证同步 API 不变 */
   _cache: new Map(),
   _db: null,
+  _pendingWrites: new Set(),
 
   /* 应用挂载前必须 await：打开 IndexedDB、预热缓存、迁移 localStorage 旧数据。
      localStorage 在 Android WebView 只有约 5MB 配额，存 base64 图片很容易触发
@@ -123,10 +124,45 @@ const Store = {
       imageProviderId: '',
       imageModel: '',
       imageEditModel: '',
-      imageDefaultSize: '1024x1024',
+      imageDefaultSize: 'auto',
+      imageQuality: 'auto',           // auto | high | medium | low
+      imageBackground: 'auto',        // auto | transparent | opaque
       imageDefaultCount: 1,
       imagePermission: 'ask',        // ask | always | never
       imageOutputFormat: 'png',
+      imageStylePresetId: '',
+      imageStylePresets: [
+        {
+          id: 'cinematic-realistic',
+          name: '电影感写实',
+          prompt: 'Cinematic realistic photography, natural light, subtle film grain, rich but controlled color grading, soft shadows, professional composition, high detail.'
+        },
+        {
+          id: 'commerce-hero',
+          name: '电商主图',
+          prompt: 'Clean commercial product photography, premium studio lighting, crisp edges, realistic materials, neutral background, catalog-ready composition, high detail.'
+        },
+        {
+          id: 'anime-illustration',
+          name: '动漫插画',
+          prompt: 'Polished anime illustration style, expressive character design, clean line art, soft cel shading, luminous color accents, detailed atmosphere.'
+        },
+        {
+          id: 'flat-icon',
+          name: '扁平图标',
+          prompt: 'Modern flat vector icon style, geometric shapes, simple silhouette, balanced negative space, clean edges, limited color palette, app-icon ready.'
+        },
+        {
+          id: 'minimal-ui',
+          name: '极简 UI',
+          prompt: 'Minimal modern UI visual style, clean hierarchy, generous spacing, precise alignment, neutral surfaces, subtle accents, crisp readable details.'
+        },
+        {
+          id: 'watercolor',
+          name: '水彩手绘',
+          prompt: 'Soft watercolor illustration, gentle paper texture, translucent layered pigments, delicate brush edges, airy composition, calm natural color palette.'
+        }
+      ],
       imageApiMode: 'images',        // images | auto | chat | responses
       imageEndpointPath: '',         // optional override, e.g. /v1/images/generations
       imageEditEndpointPath: '',     // optional override, e.g. /v1/images/edits
@@ -155,9 +191,11 @@ const Store = {
     try { raw = JSON.stringify(val); } catch (e) { return false; }
     this._cache.set(key, raw);
     if (this._db) {
-      this._idbPut(key, raw).catch(() => {
-        U.toast('保存失败：应用存储写入异常');
-      });
+      let p;
+      p = this._idbPut(key, raw)
+        .catch(() => { U.toast('保存失败：应用存储写入异常'); })
+        .finally(() => { this._pendingWrites.delete(p); });
+      this._pendingWrites.add(p);
       return true;
     }
     /* IndexedDB 不可用时的降级路径 */
@@ -168,6 +206,17 @@ const Store = {
       U.toast('应用本地存储已满，写入失败');
       return false;
     }
+  },
+
+  flush(timeoutMs) {
+    const jobs = Array.from(this._pendingWrites);
+    if (!jobs.length) return Promise.resolve();
+    const done = Promise.allSettled(jobs);
+    if (!timeoutMs) return done;
+    return Promise.race([
+      done,
+      new Promise(resolve => setTimeout(resolve, timeoutMs))
+    ]);
   },
 
   _remove(key) {

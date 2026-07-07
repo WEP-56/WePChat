@@ -167,6 +167,14 @@
   function isMarkdownName(name) { return /\.(md|markdown)$/i.test(name || ''); }
   function isImageName(name) { return /\.(png|jpe?g|webp|gif|bmp)$/i.test(name || ''); }
 
+  function normalizeStylePreset(p) {
+    p = p || {};
+    const id = String(p.id || '').trim() || ('style_' + U.uuid().slice(0, 8));
+    const name = U.truncate(String(p.name || '').replace(/\s+/g, ' ').trim(), 32);
+    const prompt = String(p.prompt || '').trim();
+    return name && prompt ? { id, name, prompt } : null;
+  }
+
   function isEditableName(name, file) {
     if (file && file.dataUrl && !file.content) return false;
     return U.isTextFile(name, file && file.mime);
@@ -306,6 +314,7 @@
       }
       const step = rest.length > 6000 ? 12 : rest.length > 2500 ? 6 : rest.length > 900 ? 3 : rest.length > 240 ? 2 : 1;
       viewMsg.content = cur + rest.slice(0, step);
+      if (vm && typeof vm.persistSessionSoon === 'function') vm.persistSessionSoon();
       nextTick(() => vm.scrollToBottom(false));
     }, 24);
     TextTimers.set(id, timer);
@@ -442,6 +451,7 @@
         sessionMenuFor: null,
 
         input: '',
+        imageWorkbenchPrompt: '',
         attachments: [],
         generating: false,
         abortCtl: null,
@@ -507,17 +517,11 @@
         tokenPanelOpen: false,
         sessionManagerOpen: {},
         storageUsed: Store.usage(),
-
-        suggestions: [
-          { t: '算一下', q: '用工具精确计算 123456789 * 987654321，并解释结果。' },
-          { t: '做个小工具', q: '做一个可以交互预览的 BMI 计算器，界面适合手机。' },
-          { t: '处理文本', q: '把下面这段文本整理成 Markdown 表格：姓名 年龄 城市；张三 28 上海；李四 31 深圳。' }
-        ],
-        imageSuggestions: [
-          { t: '头像草图', q: '生成一张 1:1 的二次元头像，干净背景，清晰五官，柔和光线。' },
-          { t: '产品概念', q: '生成一张极简风桌面小音箱产品概念图，白色背景，柔和阴影。' },
-          { t: '社媒配图', q: '生成一张适合社交媒体封面的温暖插画，城市夜晚，小雨，霓虹反光。' }
-        ]
+        persistTimer: null,
+        lastStreamPersistAt: 0,
+        runningNotifyShown: false,
+        pushHandlerReady: false,
+        notificationPermissionAsked: false
       };
     },
 
@@ -547,9 +551,6 @@
       },
       currentModelCaps() {
         return MODEL_META.capLabels(this.currentModelMeta);
-      },
-      emptySuggestions() {
-        return this.appMode === 'image' ? this.imageSuggestions : this.suggestions;
       },
       appMode() {
         return this.session && this.session.mode === 'image' ? 'image' : 'chat';
@@ -584,6 +585,39 @@
           if (MODEL_META.isImageGenerationMeta(meta) && !out.includes(id)) out.push(id);
         });
         return out;
+      },
+      imageSizeOptions() {
+        return ['auto', '1024x1024', '1536x864', '864x1536', '2048x2048', '2560x1440', '1440x2560', '3840x2160', '2160x3840', '2880x2880'];
+      },
+      imageQualityOptions() {
+        return [
+          { value: 'auto', label: '自动' },
+          { value: 'high', label: '高' },
+          { value: 'medium', label: '中' },
+          { value: 'low', label: '低' }
+        ];
+      },
+      imageFormatOptions() {
+        return [
+          { value: 'png', label: 'PNG' },
+          { value: 'webp', label: 'WebP' },
+          { value: 'jpeg', label: 'JPEG' }
+        ];
+      },
+      imageBackgroundOptions() {
+        return [
+          { value: 'auto', label: '自动' },
+          { value: 'transparent', label: '透明' },
+          { value: 'opaque', label: '不透明' }
+        ];
+      },
+      imageStylePresets() {
+        return (Array.isArray(this.settings.imageStylePresets) ? this.settings.imageStylePresets : [])
+          .map(normalizeStylePreset)
+          .filter(Boolean);
+      },
+      selectedImageStylePreset() {
+        return this.imageStylePresetById(this.settings.imageStylePresetId);
       },
       tokenStats() {
         const meta = this.currentModelMeta || {};
@@ -795,6 +829,10 @@
       this.applyTheme();
       this.persistSettings();
       window.addEventListener('message', this.onPreviewMessage);
+      window.addEventListener('pagehide', this.flushSessionPersist);
+      document.addEventListener('visibilitychange', this.handleVisibilityPersist);
+      document.addEventListener('pause', this.handleAppPause, false);
+      document.addEventListener('resume', this.handleAppResume, false);
       document.addEventListener('plusready', this.initPlusApp, false);
       if (window.plus) this.initPlusApp();
       const mq = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)');
@@ -814,12 +852,13 @@
         if (this.plusReady || !window.plus) return;
         this.plusReady = true;
         document.documentElement.classList.add('plus-app');
+        this.initPushHandlers();
         if (plus.key && !this.backHandler) {
           this.backHandler = () => this.handleBackButton();
           plus.key.addEventListener('backbutton', this.backHandler, false);
         }
       },
-      handleBackButton() {
+      async handleBackButton() {
         if (this.dlg) {
           this.lastBackAt = 0;
           this.dlgAnswer(null);
@@ -842,13 +881,26 @@
         }
         const now = Date.now();
         if (now - this.lastBackAt < 1800) {
+          await this.flushSessionPersist(900);
           if (window.plus && plus.runtime && plus.runtime.quit) plus.runtime.quit();
           return;
         }
         this.lastBackAt = now;
         U.toast('再次返回退出应用');
       },
+      normalizeImageSettings() {
+        const presets = this.imageStylePresets;
+        this.settings.imageStylePresets = presets;
+        if (this.settings.imageStylePresetId && !presets.some(p => p.id === this.settings.imageStylePresetId)) {
+          this.settings.imageStylePresetId = '';
+        }
+        if (!this.imageSizeOptions.includes(this.settings.imageDefaultSize)) this.settings.imageDefaultSize = 'auto';
+        if (!this.imageQualityOptions.some(x => x.value === this.settings.imageQuality)) this.settings.imageQuality = 'auto';
+        if (!this.imageFormatOptions.some(x => x.value === this.settings.imageOutputFormat)) this.settings.imageOutputFormat = 'png';
+        if (!this.imageBackgroundOptions.some(x => x.value === this.settings.imageBackground)) this.settings.imageBackground = 'auto';
+      },
       persistSettings() {
+        this.normalizeImageSettings();
         Store.saveSettings(this.settings);
         this.storageUsed = Store.usage();
         this.applyTheme();
@@ -863,6 +915,78 @@
         Store.saveSession(this.session);
         this.upsertIndex(this.session);
         this.storageUsed = Store.usage();
+      },
+      persistSessionSoon() {
+        if (this.persistTimer) return;
+        const now = Date.now();
+        const wait = Math.max(0, 900 - (now - (this.lastStreamPersistAt || 0)));
+        this.persistTimer = setTimeout(() => {
+          this.persistTimer = null;
+          this.lastStreamPersistAt = Date.now();
+          this.persistSession();
+        }, wait);
+      },
+      async flushSessionPersist(timeoutMs) {
+        const timeout = typeof timeoutMs === 'number' ? timeoutMs : 1200;
+        if (this.persistTimer) {
+          clearTimeout(this.persistTimer);
+          this.persistTimer = null;
+        }
+        if (this.session && this.session.id) this.persistSession();
+        if (Store.flush) await Store.flush(timeout);
+      },
+      handleVisibilityPersist() {
+        if (document.visibilityState === 'hidden') {
+          this.flushSessionPersist(1200);
+          this.showRunningNotification();
+        } else {
+          this.clearRunningNotification();
+        }
+      },
+      handleAppPause() {
+        this.flushSessionPersist(1200);
+        this.showRunningNotification();
+      },
+      handleAppResume() {
+        this.clearRunningNotification();
+      },
+      initPushHandlers() {
+        if (!window.plus || !plus.push || this.pushHandlerReady) return;
+        this.pushHandlerReady = true;
+        try {
+          plus.push.addEventListener('click', () => {
+            this.clearRunningNotification();
+          }, false);
+        } catch (e) {}
+      },
+      requestNotificationPermission() {
+        if (this.notificationPermissionAsked || !window.plus || !plus.android || !plus.android.requestPermissions) return;
+        const version = parseInt(plus.os && plus.os.version || '0', 10) || 0;
+        if (version < 13) return;
+        this.notificationPermissionAsked = true;
+        try {
+          plus.android.requestPermissions(['android.permission.POST_NOTIFICATIONS'], () => {}, () => {});
+        } catch (e) {}
+      },
+      showRunningNotification() {
+        if (!this.generating || this.runningNotifyShown || !window.plus || !plus.push || !plus.push.createMessage) return;
+        try {
+          plus.push.createMessage('正在生成回复，回到 WepChat 查看进度。', {
+            type: 'generation',
+            sessionId: this.session && this.session.id || ''
+          }, {
+            title: 'WepChat 正在运行',
+            cover: false
+          });
+          this.runningNotifyShown = true;
+        } catch (e) {}
+      },
+      clearRunningNotification() {
+        if (!this.runningNotifyShown) return;
+        try {
+          if (window.plus && plus.push && plus.push.clear) plus.push.clear();
+        } catch (e) {}
+        this.runningNotifyShown = false;
       },
       upsertIndex(sess) {
         const meta = {
@@ -915,6 +1039,62 @@
       setImageCount(v) {
         const n = parseInt(v, 10);
         this.settings.imageDefaultCount = Number.isFinite(n) ? U.clamp(n, 1, 8) : 1;
+        this.persistSettings();
+      },
+      imageStylePresetById(id) {
+        id = String(id || '');
+        return this.imageStylePresets.find(p => p.id === id) || null;
+      },
+      async addImageStylePreset() {
+        const name = await this.askText('新增风格预设', '', '预设名称');
+        if (name == null) return;
+        const cleanName = U.truncate(String(name || '').replace(/\s+/g, ' ').trim(), 32);
+        if (!cleanName) {
+          U.toast('请填写预设名称');
+          return;
+        }
+        const prompt = await this.askText('预设提示词', '', '用英文描述图片风格、光线、构图等', true);
+        if (prompt == null) return;
+        const preset = normalizeStylePreset({
+          id: 'style_' + U.uuid().slice(0, 8),
+          name: cleanName,
+          prompt
+        });
+        if (!preset) {
+          U.toast('请填写预设提示词');
+          return;
+        }
+        this.settings.imageStylePresets = this.imageStylePresets.concat([preset]);
+        this.settings.imageStylePresetId = preset.id;
+        this.persistSettings();
+      },
+      async editImageStylePreset(preset) {
+        preset = preset && this.imageStylePresetById(preset.id);
+        if (!preset) return;
+        const name = await this.askText('编辑风格名称', preset.name, '预设名称');
+        if (name == null) return;
+        const cleanName = U.truncate(String(name || '').replace(/\s+/g, ' ').trim(), 32);
+        if (!cleanName) {
+          U.toast('请填写预设名称');
+          return;
+        }
+        const prompt = await this.askText('编辑预设提示词', preset.prompt, '用英文描述图片风格、光线、构图等', true);
+        if (prompt == null) return;
+        const nextPreset = normalizeStylePreset({ id: preset.id, name: cleanName, prompt });
+        if (!nextPreset) {
+          U.toast('请填写预设提示词');
+          return;
+        }
+        this.settings.imageStylePresets = this.imageStylePresets.map(p => p.id === preset.id ? nextPreset : p);
+        this.persistSettings();
+      },
+      async deleteImageStylePreset(preset) {
+        preset = preset && this.imageStylePresetById(preset.id);
+        if (!preset) return;
+        const ok = await this.confirm('删除风格预设：' + preset.name, '删除预设');
+        if (!ok) return;
+        this.settings.imageStylePresets = this.imageStylePresets.filter(p => p.id !== preset.id);
+        if (this.settings.imageStylePresetId === preset.id) this.settings.imageStylePresetId = '';
         this.persistSettings();
       },
       modelMeta(provider, id) {
@@ -1080,6 +1260,21 @@
           ]
         });
       },
+      async confirmStopRunning(actionText) {
+        if (!this.generating) return true;
+        const ok = await this.dialog({
+          title: '任务正在运行',
+          msg: '当前会话正在生成回复。' + (actionText || '继续操作') + '会停止当前任务。',
+          buttons: [
+            { text: '继续等待', value: false },
+            { text: '停止并继续', value: true, style: 'primary' }
+          ]
+        });
+        if (!ok) return false;
+        this.stopGenerate();
+        await this.flushSessionPersist(900);
+        return true;
+      },
       async askText(title, value, placeholder, textarea) {
         return new Promise(resolve => {
           const dlg = {
@@ -1103,6 +1298,8 @@
       },
 
       async newSession() {
+        const canLeave = await this.confirmStopRunning('新建会话');
+        if (!canLeave) return;
         const mode = await this.dialog({
           title: '新建会话',
           msg: '选择这次会话的模式。创建后不可修改。',
@@ -1113,7 +1310,6 @@
           ]
         });
         if (!mode) return;
-        this.stopGenerate();
         this.session = Store.newSession();
         this.session.mode = mode === 'image' ? 'image' : 'chat';
         this.session.providerId = this.settings.activeProviderId || '';
@@ -1124,14 +1320,20 @@
         this.drawerOpen = false;
         nextTick(() => this.scrollToBottom(true));
       },
-      openSession(id) {
+      async openSession(id) {
+        if (id === this.session.id) {
+          this.drawerOpen = false;
+          return;
+        }
         const s = Store.loadSession(id);
         if (!s) {
           U.toast('会话不存在');
           return;
         }
-        this.stopGenerate();
+        const canLeave = await this.confirmStopRunning('切换会话');
+        if (!canLeave) return;
         this.session = normalizeSession(s);
+        this.drawerOpen = false;
         nextTick(() => this.scrollToBottom(true));
       },
       async renameSession(it) {
@@ -1165,6 +1367,10 @@
       async deleteSessionAsk(it) {
         const ok = await this.confirm('删除后无法恢复：\n' + (it.title || '新聊天'), '删除会话');
         if (!ok) return;
+        if (it && this.session.id === it.id) {
+          const canLeave = await this.confirmStopRunning('删除当前会话');
+          if (!canLeave) return;
+        }
         Store.deleteSession(it.id);
         this.index = this.index.filter(x => x.id !== it.id);
         Store.saveIndex(this.index);
@@ -1240,6 +1446,10 @@
           '真正删除会话'
         );
         if (!ok) return;
+        if (this.session.id === item.id) {
+          const canLeave = await this.confirmStopRunning('删除当前会话');
+          if (!canLeave) return;
+        }
         Store.deleteSession(item.id);
         this.index = this.index.filter(x => x.id !== item.id);
         Store.saveIndex(this.index);
@@ -1587,6 +1797,11 @@
       },
       imagePromptFromArgs(args) {
         const parts = [String(args.prompt || '').trim()];
+        const presetId = Object.prototype.hasOwnProperty.call(args, 'stylePresetId')
+          ? args.stylePresetId
+          : this.settings.imageStylePresetId;
+        const preset = this.imageStylePresetById(presetId);
+        if (preset) parts.push('风格预设（' + preset.name + '）：' + preset.prompt);
         if (args.style) parts.push('风格：' + args.style);
         return parts.filter(Boolean).join('\n');
       },
@@ -1646,9 +1861,14 @@
               model,
               providerId: provider.id,
               mode: args.mode || 'generate',
-              size: args.size || this.settings.imageDefaultSize || '1024x1024',
-              count: args.count || this.settings.imageDefaultCount || 1,
+              size: args.size || this.settings.imageDefaultSize || 'auto',
+              count: args.count || 1,
+              quality: args.quality || this.settings.imageQuality || 'auto',
+              background: args.background || this.settings.imageBackground || 'auto',
+              outputFormat: args.outputFormat || this.settings.imageOutputFormat || 'png',
               style: args.style || '',
+              stylePresetId: args.stylePresetId || '',
+              stylePresetName: args.stylePresetName || '',
               referenceFiles: args.referenceFiles || [],
               parentFile: args.parentFile || ''
             }
@@ -1660,10 +1880,18 @@
       },
       async runImageRequest(rawArgs, targetMsg) {
         const args = Object.assign({}, rawArgs || {});
+        if (!Object.prototype.hasOwnProperty.call(args, 'stylePresetId')) {
+          args.stylePresetId = this.settings.imageStylePresetId || '';
+        }
+        const preset = this.imageStylePresetById(args.stylePresetId);
+        args.stylePresetName = preset ? preset.name : '';
         args.prompt = this.imagePromptFromArgs(args);
         if (!args.prompt) throw new Error('缺少图片提示词');
-        args.size = args.size && args.size !== 'auto' ? args.size : (this.settings.imageDefaultSize || '1024x1024');
-        args.count = U.clamp(parseInt(args.count || this.settings.imageDefaultCount || 1, 10) || 1, 1, 8);
+        args.size = args.size || this.settings.imageDefaultSize || 'auto';
+        args.quality = args.quality || this.settings.imageQuality || 'auto';
+        args.background = args.background || this.settings.imageBackground || 'auto';
+        args.outputFormat = args.outputFormat || this.settings.imageOutputFormat || 'png';
+        args.count = U.clamp(parseInt(args.count || 1, 10) || 1, 1, 8);
         const { provider, model } = this.imageRequestModel();
         const meta = providerModelMeta(provider, model);
         const caps = meta && meta.capabilities || {};
@@ -1685,7 +1913,9 @@
           settings: {
             size: args.size,
             count: args.count,
-            outputFormat: this.settings.imageOutputFormat || 'png',
+            quality: args.quality,
+            background: args.background,
+            outputFormat: args.outputFormat,
             apiMode: this.settings.imageApiMode || 'images',
             endpointPath: this.settings.imageEndpointPath || provider.imageEndpointPath || '',
             editsEndpointPath: this.settings.imageEditEndpointPath || provider.imageEditEndpointPath || '',
@@ -1714,8 +1944,18 @@
         const saved = await this.runImageRequest(Object.assign({}, args, { source: 'image_go' }), targetMsg);
         return '已生成 ' + saved.length + ' 张图片并写入当前会话工作区：\n' + saved.map(x => '- ' + x.path).join('\n');
       },
-      async sendImageMessage() {
-        const content = this.input.trim();
+      async sendWorkbenchImageMessage() {
+        const content = String(this.imageWorkbenchPrompt || '').trim();
+        if (!content) {
+          U.toast('请先描述你想生成的图片');
+          return;
+        }
+        this.sheet = '';
+        await this.sendImageMessage(content);
+      },
+      async sendImageMessage(promptOverride) {
+        const usingOverride = promptOverride != null;
+        const content = String(usingOverride ? promptOverride : this.input).trim();
         if (!content) {
           U.toast('请先描述你想生成的图片');
           return;
@@ -1749,9 +1989,11 @@
         };
         this.session.messages.push(assistant);
         const assistantMsg = this.session.messages[this.session.messages.length - 1];
-        this.input = '';
+        if (usingOverride) this.imageWorkbenchPrompt = '';
+        else this.input = '';
         this.attachments = [];
         this.generating = true;
+        this.requestNotificationPermission();
         this.stopRequested = false;
         this.abortCtl = new AbortController();
         this.persistSession();
@@ -1774,7 +2016,8 @@
           this.generating = false;
           this.abortCtl = null;
           this.stopRequested = false;
-          this.persistSession();
+          this.clearRunningNotification();
+          await this.flushSessionPersist(1200);
           nextTick(() => this.scrollToBottom(false));
         }
       },
@@ -1850,6 +2093,7 @@
         const reqSettings = this.settingsForRequest(tools);
 
         this.generating = true;
+        this.requestNotificationPermission();
         this.stopRequested = false;
         this.abortCtl = new AbortController();
         const maxToolRounds = U.clamp(parseInt(this.settings.maxToolRounds || 8, 10), 1, 32);
@@ -1944,7 +2188,8 @@
           this.generating = false;
           this.abortCtl = null;
           this.stopRequested = false;
-          this.persistSession();
+          this.clearRunningNotification();
+          await this.flushSessionPersist(1200);
           nextTick(() => this.scrollToBottom(false));
         }
       },
@@ -2372,6 +2617,7 @@
         const assistantMsg = this.session.messages[this.session.messages.length - 1];
         this.viewer.editPrompt = '';
         this.generating = true;
+        this.requestNotificationPermission();
         this.stopRequested = false;
         this.abortCtl = new AbortController();
         this.persistSession();
@@ -2400,6 +2646,7 @@
           this.generating = false;
           this.abortCtl = null;
           this.stopRequested = false;
+          this.clearRunningNotification();
           this.persistSession();
         }
       },
@@ -2840,6 +3087,8 @@
         }
         const replace = await this.confirm('确定导入备份？\n\n选择“确定”将合并数据；如需覆盖，先清空全部数据。', '导入数据');
         if (!replace) return;
+        const canLeave = await this.confirmStopRunning('导入数据');
+        if (!canLeave) return;
         try {
           const res = Store.importAll(data, 'merge');
           this.settings = Store.loadSettings();
@@ -2856,6 +3105,8 @@
       async clearAllAsk() {
         const ok = await this.confirm('这会删除本地所有会话、提供商和设置，无法恢复。', '清空全部数据');
         if (!ok) return;
+        const canLeave = await this.confirmStopRunning('清空全部数据');
+        if (!canLeave) return;
         Store.clearAll();
         this.settings = Store.loadSettings();
         this.providers = [];

@@ -299,23 +299,53 @@ const ImageAPI = (() => {
     return { provider, model, settings, prompt, format: settings.outputFormat || 'png' };
   }
 
+  function setIfConcrete(target, key, value) {
+    value = String(value || '').trim();
+    if (value && value !== 'auto') target[key] = value;
+  }
+
+  function appendIfConcrete(form, key, value) {
+    value = String(value || '').trim();
+    if (value && value !== 'auto') form.append(key, value);
+  }
+
+  function removeAdvancedOptions(body) {
+    const out = Object.assign({}, body);
+    delete out.quality;
+    delete out.background;
+    return out;
+  }
+
   async function generateViaImages(ctx) {
     const { provider, model, settings, prompt, format } = requestBase(ctx);
     const baseBody = {
       model,
       prompt,
-      n: Math.max(1, Math.min(8, parseInt(ctx.count || settings.count || 1, 10) || 1)),
-      size: ctx.size || settings.size || '1024x1024'
+      n: Math.max(1, Math.min(8, parseInt(ctx.count || settings.count || 1, 10) || 1))
     };
+    setIfConcrete(baseBody, 'size', ctx.size || settings.size);
+    setIfConcrete(baseBody, 'quality', ctx.quality || settings.quality);
+    setIfConcrete(baseBody, 'background', ctx.background || settings.background);
+    const relaxedBody = (baseBody.quality || baseBody.background) ? removeAdvancedOptions(baseBody) : null;
     const variants = [];
     if (/^gpt-image/i.test(model)) {
       variants.push(Object.assign({}, baseBody, format ? { output_format: format } : {}));
       variants.push(Object.assign({}, baseBody));
       variants.push(Object.assign({}, baseBody, { response_format: 'b64_json' }));
+      if (relaxedBody) {
+        variants.push(Object.assign({}, relaxedBody, format ? { output_format: format } : {}));
+        variants.push(Object.assign({}, relaxedBody));
+        variants.push(Object.assign({}, relaxedBody, { response_format: 'b64_json' }));
+      }
     } else {
       variants.push(Object.assign({}, baseBody, { response_format: 'b64_json' }));
       variants.push(Object.assign({}, baseBody));
       if (format) variants.push(Object.assign({}, baseBody, { output_format: format }));
+      if (relaxedBody) {
+        variants.push(Object.assign({}, relaxedBody, { response_format: 'b64_json' }));
+        variants.push(Object.assign({}, relaxedBody));
+        if (format) variants.push(Object.assign({}, relaxedBody, { output_format: format }));
+      }
     }
 
     const url = endpointUrl(ctx, '/images/generations', 'imagesEndpointPath');
@@ -347,7 +377,11 @@ const ImageAPI = (() => {
     form.append('model', model);
     form.append('prompt', prompt);
     form.append('n', String(Math.max(1, Math.min(8, parseInt(ctx.count || settings.count || 1, 10) || 1))));
-    form.append('size', ctx.size || settings.size || '1024x1024');
+    appendIfConcrete(form, 'size', ctx.size || settings.size);
+    if (/^gpt-image/i.test(model)) {
+      appendIfConcrete(form, 'quality', ctx.quality || settings.quality);
+      appendIfConcrete(form, 'background', ctx.background || settings.background);
+    }
     if (format && /^gpt-image/i.test(model)) form.append('output_format', format);
     else form.append('response_format', 'b64_json');
     refs.forEach((ref, idx) => {

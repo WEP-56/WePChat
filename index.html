@@ -44,9 +44,6 @@
         <div class="sugg-list" v-if="!providers.length">
           <button class="sugg" @click="openSettings()"><b>添加提供商</b>配置 API 地址与密钥，开始对话</button>
         </div>
-        <div class="sugg-list" v-else>
-          <button class="sugg" v-for="s in emptySuggestions" @click="input = s.q; sendMessage()"><b>{{ s.t }}</b>{{ s.q }}</button>
-        </div>
       </div>
 
       <!-- 消息列表 -->
@@ -135,27 +132,27 @@
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M6 10l6 6 6-6"/></svg>
         </button>
       </transition>
-    </div>
 
-    <div class="token-widget" :class="{open: tokenPanelOpen, warn: tokenStats.warn, danger: tokenStats.danger}" v-if="currentProvider && currentModelId">
-      <button class="token-orb" :style="tokenRingStyle" @click="tokenPanelOpen = !tokenPanelOpen" aria-label="上下文用量">
-        <span></span>
-      </button>
-      <div class="token-panel" v-if="tokenPanelOpen">
-        <div class="tp-head">
-          <span>上下文估算</span>
-          <button @click="tokenPanelOpen = false">×</button>
+      <div class="token-widget" :class="{open: tokenPanelOpen, warn: tokenStats.warn, danger: tokenStats.danger}" v-if="appMode !== 'image' && currentProvider && currentModelId">
+        <button class="token-orb" :style="tokenRingStyle" @click="tokenPanelOpen = !tokenPanelOpen" aria-label="上下文用量">
+          <span></span>
+        </button>
+        <div class="token-panel" v-if="tokenPanelOpen">
+          <div class="tp-head">
+            <span>上下文估算</span>
+            <button @click="tokenPanelOpen = false">×</button>
+          </div>
+          <div class="tp-grid">
+            <span>已用</span><b>{{ MODEL_META.fmtTokens(tokenStats.used) }}</b>
+            <span>剩余</span><b>{{ MODEL_META.fmtTokens(tokenStats.remaining) }}</b>
+            <span>容量</span><b>{{ MODEL_META.fmtTokens(tokenStats.context) }}</b>
+            <span>最大输出</span><b>{{ MODEL_META.fmtTokens(tokenStats.maxOut) }}</b>
+          </div>
+          <div class="tp-warn" v-if="tokenStats.warn">
+            上下文接近上限，建议开启新会话或删减早期内容。
+          </div>
+          <div class="tp-foot">{{ currentModelLabel }} · {{ currentModelCaps.join(' / ') }}</div>
         </div>
-        <div class="tp-grid">
-          <span>已用</span><b>{{ MODEL_META.fmtTokens(tokenStats.used) }}</b>
-          <span>剩余</span><b>{{ MODEL_META.fmtTokens(tokenStats.remaining) }}</b>
-          <span>容量</span><b>{{ MODEL_META.fmtTokens(tokenStats.context) }}</b>
-          <span>最大输出</span><b>{{ MODEL_META.fmtTokens(tokenStats.maxOut) }}</b>
-        </div>
-        <div class="tp-warn" v-if="tokenStats.warn">
-          上下文接近上限，建议开启新会话或删减早期内容。
-        </div>
-        <div class="tp-foot">{{ currentModelLabel }} · {{ currentModelCaps.join(' / ') }}</div>
       </div>
     </div>
 
@@ -204,7 +201,7 @@
       <template v-for="g in groupedIndex">
         <div class="dr-group">{{ g.name }}</div>
         <div class="dr-item" v-for="it in g.items" :key="it.id" :class="{cur: it.id === session.id}">
-          <button class="dr-item-main" @click="openSession(it.id); drawerOpen = false">
+          <button class="dr-item-main" @click="openSession(it.id)">
             <span class="t">{{ it.pinned ? '📌 ' : '' }}{{ it.title || '新聊天' }}</span>
           </button>
           <button class="dr-item-more" @click="sessionMenuFor = it; sheet = 'sessionMenu'">
@@ -270,55 +267,43 @@
       <!-- 附件菜单 -->
       <template v-else-if="sheet === 'imageWorkbench'">
         <div class="sheet-title">生图工作台</div>
-        <div class="sheet-body">
+        <div class="sheet-body image-workbench">
           <div class="card">
             <div class="row static">
-              <span class="row-label">模型<span class="rl-sub">{{ imageModelId || '未配置生图模型' }}</span></span>
-              <select v-model="settings.imageModel" @change="persistSettings()" style="text-align:right;flex:1;direction:rtl">
-                <option value="">自动选择</option>
-                <option v-for="md in imageModelOptions" :value="md">{{ md }}</option>
-              </select>
-            </div>
-            <div class="row static">
               <span class="row-label">尺寸</span>
-              <select v-model="settings.imageDefaultSize" @change="persistSettings()" style="text-align:right;flex:1;direction:rtl">
-                <option value="1024x1024">1024x1024</option>
-                <option value="1024x1536">1024x1536</option>
-                <option value="1536x1024">1536x1024</option>
-                <option value="auto">auto</option>
+              <select class="select-control" v-model="settings.imageDefaultSize" @change="persistSettings()">
+                <option v-for="size in imageSizeOptions" :value="size">{{ size }}</option>
               </select>
             </div>
             <div class="row static">
-              <span class="row-label">数量</span>
-              <input type="text" inputmode="numeric" style="width:80px" :value="settings.imageDefaultCount || 1" @change="setImageCount($event.target.value)">
+              <span class="row-label">质量</span>
+              <select class="select-control" v-model="settings.imageQuality" @change="persistSettings()">
+                <option v-for="q in imageQualityOptions" :value="q.value">{{ q.label }}</option>
+              </select>
             </div>
             <div class="row static">
               <span class="row-label">格式</span>
-              <select v-model="settings.imageOutputFormat" @change="persistSettings()" style="text-align:right;flex:1;direction:rtl">
-                <option value="png">PNG</option>
-                <option value="jpeg">JPEG</option>
-                <option value="webp">WebP</option>
+              <select class="select-control" v-model="settings.imageOutputFormat" @change="persistSettings()">
+                <option v-for="fmt in imageFormatOptions" :value="fmt.value">{{ fmt.label }}</option>
               </select>
             </div>
             <div class="row static">
-              <span class="row-label">协议<span class="rl-sub">官方和中转推荐 OpenAI Images</span></span>
-              <select v-model="settings.imageApiMode" @change="persistSettings()" style="text-align:right;flex:1;direction:rtl">
-                <option value="images">OpenAI Images</option>
-                <option value="auto">自动诊断</option>
-                <option value="chat">Chat 兼容</option>
-                <option value="responses">Responses 兼容</option>
+              <span class="row-label">背景</span>
+              <select class="select-control" v-model="settings.imageBackground" @change="persistSettings()">
+                <option v-for="bg in imageBackgroundOptions" :value="bg.value">{{ bg.label }}</option>
               </select>
             </div>
             <div class="row static">
-              <span class="row-label">生图路径<span class="rl-sub">留空自动，支持完整 URL</span></span>
-              <input type="text" style="width:180px" v-model="settings.imageEndpointPath" placeholder="/v1/images/generations" @change="persistSettings()">
-            </div>
-            <div class="row static">
-              <span class="row-label">图像编辑路径<span class="rl-sub">留空自动，支持完整 URL</span></span>
-              <input type="text" style="width:180px" v-model="settings.imageEditEndpointPath" placeholder="/v1/images/edits" @change="persistSettings()">
+              <span class="row-label">风格<span class="rl-sub" v-if="selectedImageStylePreset">{{ selectedImageStylePreset.name }}</span></span>
+              <select class="select-control" v-model="settings.imageStylePresetId" @change="persistSettings()">
+                <option value="">不使用预设</option>
+                <option v-for="preset in imageStylePresets" :value="preset.id">{{ preset.name }}</option>
+              </select>
             </div>
           </div>
-          <div class="hint">生成结果会保存到当前会话工作区 images/，点击消息中的图片可查看和导出。</div>
+          <textarea class="textarea-block image-wb-prompt" v-model="imageWorkbenchPrompt" placeholder="描述要生成的图片"></textarea>
+          <button class="big-btn" :disabled="generating || !imageWorkbenchPrompt.trim()" @click="sendWorkbenchImageMessage()">生成图片</button>
+          <div class="hint">当前模型：{{ imageModelId || '未配置生图模型' }}。生成结果会保存到当前会话工作区 images/。</div>
         </div>
       </template>
 
@@ -409,7 +394,7 @@
         </button>
         <button class="row setting-entry" @click="pushPage('settings-image')">
           <span class="setting-ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="18" height="18" rx="3"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5-11 11"/></svg></span>
-          <span class="row-label">图片生成<span class="rl-sub">首选生图模型、默认尺寸与智能路由</span></span>
+          <span class="row-label">图片生成<span class="rl-sub">首选模型与风格预设</span></span>
           <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 6l6 6-6 6"/></svg>
         </button>
         <button class="row setting-entry" @click="pushPage('settings-general')">
@@ -577,48 +562,23 @@
         </div>
       </div>
 
-      <div class="sec-label">默认参数</div>
-      <div class="card">
-        <div class="row static">
-          <span class="row-label">尺寸</span>
-          <select v-model="settings.imageDefaultSize" @change="persistSettings()" style="text-align:right;flex:1;direction:rtl">
-            <option value="1024x1024">1024x1024</option>
-            <option value="1024x1536">1024x1536</option>
-            <option value="1536x1024">1536x1024</option>
-            <option value="auto">auto</option>
-          </select>
-        </div>
-        <div class="row static">
-          <span class="row-label">数量</span>
-          <input type="text" inputmode="numeric" style="width:80px" :value="settings.imageDefaultCount || 1" @change="setImageCount($event.target.value)">
-        </div>
-        <div class="row static">
-          <span class="row-label">输出格式</span>
-          <select v-model="settings.imageOutputFormat" @change="persistSettings()" style="text-align:right;flex:1;direction:rtl">
-            <option value="png">PNG</option>
-            <option value="jpeg">JPEG</option>
-            <option value="webp">WebP</option>
-          </select>
-        </div>
-        <div class="row static">
-          <span class="row-label">协议<span class="rl-sub">官方和中转推荐 OpenAI Images</span></span>
-          <select v-model="settings.imageApiMode" @change="persistSettings()" style="text-align:right;flex:1;direction:rtl">
-            <option value="images">OpenAI Images</option>
-            <option value="auto">自动诊断</option>
-            <option value="chat">Chat 兼容</option>
-            <option value="responses">Responses 兼容</option>
-          </select>
-        </div>
-        <div class="row static">
-          <span class="row-label">生图路径<span class="rl-sub">留空自动；可填 /v1/images/generations 或完整 URL</span></span>
-          <input type="text" style="width:180px" v-model="settings.imageEndpointPath" placeholder="/v1/images/generations" @change="persistSettings()">
-        </div>
-        <div class="row static">
-          <span class="row-label">图像编辑路径<span class="rl-sub">留空自动；可填 /v1/images/edits 或完整 URL</span></span>
-          <input type="text" style="width:180px" v-model="settings.imageEditEndpointPath" placeholder="/v1/images/edits" @change="persistSettings()">
+      <div class="sec-label">风格预设</div>
+      <div class="card preset-card">
+        <button class="row" @click="addImageStylePreset()">
+          <span class="row-label" style="color:var(--link)">＋ 添加风格预设</span>
+        </button>
+        <div class="preset-empty" v-if="!imageStylePresets.length">暂无风格预设</div>
+        <div class="preset-item" v-for="preset in imageStylePresets" :key="preset.id">
+          <button class="preset-main" @click="editImageStylePreset(preset)">
+            <span class="preset-name">{{ preset.name }}</span>
+            <span class="preset-prompt">{{ preset.prompt }}</span>
+          </button>
+          <button class="preset-del" @click.stop="deleteImageStylePreset(preset)" aria-label="删除预设">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg>
+          </button>
         </div>
       </div>
-      <div class="hint">生成结果会自动写入当前会话工作区的 images/ 文件夹。可以在图片查看器里导出，也可以从工作区导出。</div>
+      <div class="hint">尺寸、质量、格式、背景和当前风格选择在生图工作台里调整。</div>
     </div>
   </div>
 

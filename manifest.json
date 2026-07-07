@@ -3,8 +3,8 @@
     "id" : "H531C34C1",
     "name" : "WEPchat",
     "version" : {
-        "name" : "1.0.2",
-        "code" : 102
+        "name" : "1.0.3",
+        "code" : 103
     },
     "description" : "WepChat 是一款本地优先的移动端 AI 聊天应用，支持多模型提供商、Markdown 渲染、文件与图片处理、会话管理和轻量 Agent 工具。",
     "icons" : {
@@ -70,6 +70,9 @@
         },
         "NativeObj" : {
             "description" : "原生对象"
+        },
+        "Push" : {
+            "description" : "创建运行中本地通知提醒"
         }
     },
     "plus" : {
@@ -89,9 +92,10 @@
                 "permissions" : [
                     "<uses-permission android:name=\"android.permission.REQUEST_INSTALL_PACKAGES\"/>",
                     "<uses-permission android:name=\"android.permission.WRITE_EXTERNAL_STORAGE\"/>",
-                    "<uses-permission android:name=\"android.permission.READ_EXTERNAL_STORAGE\"/>"
+                    "<uses-permission android:name=\"android.permission.READ_EXTERNAL_STORAGE\"/>",
+                    "<uses-permission android:name=\"android.permission.POST_NOTIFICATIONS\"/>"
                 ],
-                "abiFilters" : [ "arm64-v8a" ]
+                "abiFilters" : [ "arm64-v8a", "x86" ]
             },
             "orientation" : [ "portrait-primary" ],
             "icons" : {

@@ -105,9 +105,12 @@ html.plus-app .topbar { padding-top: 6px; }
 .icon-btn.small { width: 36px; height: 36px; }
 .icon-btn.small svg { width: 20px; height: 20px; }
 .icon-btn.danger { color: var(--danger); }
+.topbar .model-pill + .icon-btn { margin-left: auto; }
 
 .model-pill {
-  flex: 1; min-width: 0; display: flex; align-items: center; justify-content: center; gap: 4px;
+  position: absolute; left: 50%; transform: translateX(-50%);
+  width: min(52vw, 280px); min-width: 0;
+  display: flex; align-items: center; justify-content: center; gap: 4px;
   height: 42px; padding: 0 10px; border-radius: 21px;
 }
 .model-pill:active { background: var(--surface); opacity: 1; }
@@ -434,6 +437,10 @@ html.plus-app .page-head { padding-top: 6px; }
   flex: 1; text-align: right; font-size: 15px; min-width: 0;
 }
 .row input::placeholder { color: var(--text3); }
+.select-control {
+  flex: 1; min-width: 0; max-width: 62%; text-align: right; text-align-last: right;
+  font-size: 15px; color: var(--text);
+}
 
 .settings-menu { margin-top: 6px; }
 .settings-menu .row + .row::before { left: 16px; }
@@ -477,6 +484,33 @@ html.plus-app .page-head { padding-top: 6px; }
   width: 100%; background: var(--bg2); border: 1px solid var(--border); border-radius: 14px;
   padding: 12px 14px; font-size: 14.5px; min-height: 88px; resize: vertical; line-height: 1.55;
 }
+.image-workbench .card { border-radius: 14px; }
+.image-wb-prompt {
+  margin-top: 10px; min-height: 112px; resize: none;
+}
+.preset-card { margin-bottom: 18px; }
+.preset-item {
+  display: flex; align-items: center; gap: 8px; padding: 12px 12px 12px 15px;
+  position: relative;
+}
+.preset-item::before {
+  content: ""; position: absolute; top: 0; left: 15px; right: 0; height: 1px; background: var(--border);
+}
+.preset-main {
+  flex: 1; min-width: 0; text-align: left; display: flex; flex-direction: column; gap: 3px;
+}
+.preset-name { font-size: 15px; font-weight: 650; line-height: 1.25; }
+.preset-prompt {
+  color: var(--text3); font-size: 12.5px; line-height: 1.45;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+}
+.preset-del {
+  width: 34px; height: 34px; border-radius: 10px; color: var(--danger);
+  display: flex; align-items: center; justify-content: center; flex: none;
+}
+.preset-del:active { background: rgba(224,52,43,0.08); opacity: 1; }
+.preset-del svg { width: 18px; height: 18px; }
+.preset-empty { color: var(--text3); font-size: 13px; padding: 16px; text-align: center; }
 .seg { display: flex; background: var(--surface); border-radius: 12px; padding: 3px; gap: 2px; }
 .seg button {
   flex: 1; padding: 7px 4px; border-radius: 10px; font-size: 13.5px; color: var(--text2); font-weight: 500;
@@ -774,8 +808,8 @@ html.dark #wc-toast { background: rgba(240,240,244,0.95); color: #17171a; }
 .scroll-down svg { width: 18px; height: 18px; }
 
 .token-widget {
-  position: fixed; right: 14px; bottom: calc(var(--sab) + 86px);
-  z-index: 12; display: flex; flex-direction: column; align-items: flex-end; gap: 8px;
+  position: absolute; right: 14px; top: 12px;
+  z-index: 4; display: flex; flex-direction: column; align-items: flex-end; gap: 8px;
 }
 .token-orb {
   width: 34px; height: 34px; border-radius: 50%; padding: 3px;
