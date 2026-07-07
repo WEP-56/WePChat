@@ -3,8 +3,8 @@
     "id" : "H531C34C1",
     "name" : "WEPchat",
     "version" : {
-        "name" : "1.0.3",
-        "code" : 103
+        "name" : "1.0.4",
+        "code" : 104
     },
     "description" : "WepChat 是一款本地优先的移动端 AI 聊天应用，支持多模型提供商、Markdown 渲染、文件与图片处理、会话管理和轻量 Agent 工具。",
     "icons" : {
