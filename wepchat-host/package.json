@@ -14,6 +14,9 @@
   "scripts": {
     "check": "node --check bin/wepchat-host.js && node --check lib/config.js && node --check lib/codex-client.js && node --check lib/http-server.js && node --check lib/remote-protocol.js && node --check lib/workspaces.js"
   },
+  "dependencies": {
+    "qrcode-terminal": "^0.12.0"
+  },
   "engines": {
     "node": ">=18"
   },

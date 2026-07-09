@@ -68,10 +68,36 @@ function localAddresses(port) {
   const nets = os.networkInterfaces();
   Object.keys(nets).forEach(name => {
     (nets[name] || []).forEach(info => {
-      if (info.family === 'IPv4' && !info.internal) out.push(`http://${info.address}:${port}`);
+      if (info.family === 'IPv4' && !info.internal) out.push(info.address);
     });
   });
-  return out;
+  return out
+    .sort((a, b) => addressRank(a) - addressRank(b) || a.localeCompare(b))
+    .map(address => `http://${address}:${port}`);
+}
+
+function addressRank(address) {
+  const parts = String(address || '').split('.').map(n => Number(n));
+  const [a, b] = parts;
+  if (a === 192 && b === 168) return 0;
+  if (a === 10) return 0;
+  if (a === 172 && b >= 16 && b <= 31) return 0;
+  if (a === 169 && b === 254) return 4;
+  if (a === 198 && (b === 18 || b === 19)) return 5;
+  if (a === 100 && b >= 64 && b <= 127) return 3;
+  return 2;
+}
+
+function printPairingQr(url) {
+  let qrcode;
+  try {
+    qrcode = require('qrcode-terminal');
+  } catch (err) {
+    console.log('QR:     run "npm install" in wepchat-host to enable terminal QR output');
+    return;
+  }
+  console.log('QR:');
+  qrcode.generate(url, { small: true });
 }
 
 async function main() {
@@ -133,10 +159,16 @@ async function main() {
   workspaces.list().forEach(ws => console.log(`  - ${ws.name}  ${ws.path}`));
   console.log('');
   console.log('WepChat remote URL:');
-  console.log(`  ${local}?token=${encodeURIComponent(config.token)}`);
+  const localRemoteUrl = `${local}?token=${encodeURIComponent(config.token)}`;
+  const lanRemoteUrl = config.bind !== '127.0.0.1' && lan[0]
+    ? `${lan[0]}?token=${encodeURIComponent(config.token)}`
+    : '';
+  console.log(`  ${localRemoteUrl}`);
   if (config.bind !== '127.0.0.1' && lan[0]) {
-    console.log(`  ${lan[0]}?token=${encodeURIComponent(config.token)}`);
+    console.log(`  ${lanRemoteUrl}`);
   }
+  console.log('');
+  printPairingQr(lanRemoteUrl || localRemoteUrl);
   console.log('');
 
   const shutdown = async () => {

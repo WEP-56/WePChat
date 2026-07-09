@@ -227,15 +227,19 @@ html.plus-app .topbar { padding-top: 6px; }
   margin: 10px 0; overflow: hidden; background: var(--bg2);
   font-size: 13.5px;
 }
+.tool-card.remote-tool { border-radius: 12px; margin: 7px 0; }
 .tool-head {
   display: flex; align-items: center; gap: 9px; padding: 11px 13px; width: 100%; text-align: left;
 }
+.tool-card.remote-tool .tool-head { padding: 9px 11px; gap: 8px; }
 .tool-head:active { background: var(--surface); opacity: 1; }
 .tool-ic {
   width: 28px; height: 28px; border-radius: 8px; background: var(--surface2);
   display: flex; align-items: center; justify-content: center; flex: none;
 }
+.tool-card.remote-tool .tool-ic { width: 24px; height: 24px; border-radius: 7px; }
 .tool-ic svg { width: 16px; height: 16px; color: var(--text2); }
+.tool-card.remote-tool .tool-ic svg { width: 14px; height: 14px; }
 .tool-name { font-weight: 600; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tool-status { color: var(--text3); font-size: 12px; flex: none; display: flex; align-items: center; gap: 5px; }
 .tool-body { border-top: 1px solid var(--border); padding: 10px 13px; }
@@ -613,6 +617,41 @@ html.plus-app .page-head { padding-top: 6px; }
 .session-admin-file-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
 .session-admin-file-name { font-size: 13.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
+.remote-host-list { display: flex; flex-direction: column; gap: 10px; }
+.remote-host-card {
+  background: var(--bg2); border: 1px solid var(--border); border-radius: 14px;
+  overflow: hidden;
+}
+.remote-host-main {
+  display: flex; align-items: center; gap: 10px; width: 100%;
+  padding: 12px 12px 8px; text-align: left;
+}
+.remote-host-main:active { background: var(--surface); opacity: 1; }
+.remote-host-copy { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.remote-host-title { font-size: 15px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.remote-host-meta { color: var(--text3); font-size: 12px; line-height: 1.35; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.remote-host-actions {
+  display: flex; gap: 6px; padding: 0 10px 10px;
+}
+.remote-host-actions button {
+  flex: 1; min-width: 0; padding: 8px 6px; border-radius: 10px;
+  background: var(--surface); color: var(--text2); font-size: 12.5px; font-weight: 650;
+}
+.remote-host-actions button:disabled { opacity: 0.38; }
+.remote-host-actions button:active { opacity: 1; background: var(--surface2); }
+.remote-host-actions button.danger { color: var(--danger); background: rgba(224, 52, 43, 0.08); }
+
+.remote-scan-page {
+  position: fixed; inset: 0; z-index: 1000; background: #000;
+  display: flex; flex-direction: column;
+}
+.remote-scan-view { flex: 1; min-height: 0; }
+.remote-scan-close {
+  position: fixed; left: 50%; bottom: calc(var(--sab) + 22px); transform: translateX(-50%);
+  padding: 10px 22px; border-radius: 999px; background: rgba(255,255,255,0.92);
+  color: #111; font-size: 15px; font-weight: 650;
+}
+
 /* ============ 文件管理 ============ */
 .file-tree { margin-top: 4px; }
 .file-row { display: flex; align-items: center; gap: 6px; padding: 4px 8px; width: 100%; text-align: left; }
@@ -886,7 +925,7 @@ html.dark .hljs-variable, html.dark .hljs-regexp { color: #df9776; }
   width: 100%; background: var(--surface); border-radius: 12px; padding: 11px 13px;
   font-size: 15px; margin-top: 12px;
 }
-.dlg-btns { display: flex; justify-content: flex-end; gap: 4px; margin-top: 16px; }
+.dlg-btns { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 4px; margin-top: 16px; }
 .dlg-btn { padding: 10px 16px; border-radius: 12px; font-weight: 600; font-size: 14.5px; color: var(--text2); }
 .dlg-btn.primary { color: var(--text); }
 .dlg-btn.danger { color: var(--danger); }

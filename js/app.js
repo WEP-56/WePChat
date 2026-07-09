@@ -27,7 +27,8 @@
     sess.files = sess.files || {};
     sess.folders = Array.isArray(sess.folders) ? sess.folders : [];
     sess.services = Array.isArray(sess.services) ? sess.services : [];
-    sess.mode = sess.mode === 'image' ? 'image' : 'chat';
+    sess.mode = sess.mode === 'image' ? 'image' : (sess.mode === 'remote' ? 'remote' : 'chat');
+    sess.remote = sess.remote || null;
     sess.createdAt = sess.createdAt || U.now();
     sess.updatedAt = sess.updatedAt || U.now();
     sess.title = sess.title || '';
@@ -520,6 +521,8 @@
       return {
         U,
         API,
+        RemoteAPI,
+        RemoteScan,
         MODEL_META,
         appVersion: '',
         appTag: '',
@@ -542,6 +545,15 @@
         attachments: [],
         generating: false,
         abortCtl: null,
+        remoteRuntime: {
+          client: null,
+          assistantId: '',
+          messageIds: [],
+          threadId: '',
+          turnId: '',
+          resolveTurn: null,
+          rejectTurn: null
+        },
         stopRequested: false,
         showScrollDown: false,
         autoFollow: true,
@@ -559,6 +571,17 @@
           showKey: false,
           fetching: false,
           testing: false
+        },
+        remoteForm: {
+          testingHostId: '',
+          loadingHostId: '',
+          workspacesHostId: '',
+          workspaces: [],
+          filesHostId: '',
+          filesWorkspaceId: '',
+          files: [],
+          filesTruncated: false,
+          loadingFiles: false
         },
 
         viewer: {
@@ -638,13 +661,35 @@
         if (!this.currentProvider) return '未配置模型';
         return this.currentModelId || '默认模型';
       },
+      remoteHosts() {
+        return (Array.isArray(this.settings.remoteHosts) ? this.settings.remoteHosts : [])
+          .map(h => RemoteAPI.normalizeHost(h))
+          .filter(h => h.baseUrl);
+      },
+      activeRemoteHost() {
+        const id = this.settings.activeRemoteHostId;
+        return this.remoteHosts.find(h => h.id === id) || this.remoteHosts[0] || null;
+      },
+      remoteSessionHost() {
+        const r = this.session && this.session.remote || {};
+        return r.hostId ? (this.remoteHosts.find(h => h.id === r.hostId) || null) : this.activeRemoteHost;
+      },
+      remoteWorkspaceName() {
+        const r = this.session && this.session.remote || {};
+        return r.workspaceName || r.workspacePath || '未选择工作区';
+      },
       topModelLabel() {
-        return this.appMode === 'image' ? (this.imageModelId || '未配置生图模型') : this.currentModelLabel;
+        if (this.appMode === 'image') return this.imageModelId || '未配置生图模型';
+        if (this.appMode === 'remote') return this.remoteWorkspaceName;
+        return this.currentModelLabel;
       },
       topProviderLabel() {
-        return this.appMode === 'image'
-          ? (this.imageProvider && this.imageProvider.name || '图片生成')
-          : (this.currentProvider && this.currentProvider.name || '');
+        if (this.appMode === 'image') return this.imageProvider && this.imageProvider.name || '图片生成';
+        if (this.appMode === 'remote') {
+          const h = this.remoteSessionHost;
+          return h ? ('远程 Codex · ' + h.name) : '远程 Codex';
+        }
+        return this.currentProvider && this.currentProvider.name || '';
       },
       currentModelMeta() {
         return this.currentProvider ? providerModelMeta(this.currentProvider, this.currentModelId) : null;
@@ -653,10 +698,27 @@
         return MODEL_META.capLabels(this.currentModelMeta);
       },
       appMode() {
-        return this.session && this.session.mode === 'image' ? 'image' : 'chat';
+        if (this.session && this.session.mode === 'image') return 'image';
+        if (this.session && this.session.mode === 'remote') return 'remote';
+        return 'chat';
       },
       composerPlaceholder() {
-        return this.appMode === 'image' ? '描述你想生成的图片' : '有问题，尽管问';
+        if (this.appMode === 'image') return '描述你想生成的图片';
+        if (this.appMode === 'remote') return '让桌面 Codex 在当前项目里做什么';
+        return '有问题，尽管问';
+      },
+      emptyTitle() {
+        if (this.appMode === 'image') return '描述一张图片';
+        if (this.appMode === 'remote') return '连接桌面 Codex';
+        return '有问题，尽管问';
+      },
+      emptySub() {
+        if (this.appMode === 'image') return this.imageModelId || '未配置生图模型';
+        if (this.appMode === 'remote') {
+          const r = this.session && this.session.remote || {};
+          return r.workspacePath || r.workspaceName || '先在设置里添加 WepChat Host';
+        }
+        return this.currentModelLabel;
       },
       imageProvider() {
         const id = this.settings.imageProviderId || this.settings.activeProviderId;
@@ -780,6 +842,9 @@
       fileCount() {
         return Object.keys(this.session.files || {}).length;
       },
+      remoteFileCount() {
+        return (this.remoteForm.files || []).filter(x => x && x.type === 'file').length;
+      },
       folderCount() {
         const files = this.session.files || {};
         const folders = new Set(this.session.folders || []);
@@ -810,8 +875,8 @@
           return {
             id: sess.id,
             title: sess.title || '新聊天',
-            mode: sess.mode === 'image' ? 'image' : 'chat',
-            modeLabel: sess.mode === 'image' ? '生图' : '常规',
+            mode: sess.mode === 'image' ? 'image' : (sess.mode === 'remote' ? 'remote' : 'chat'),
+            modeLabel: sess.mode === 'image' ? '生图' : (sess.mode === 'remote' ? '远程' : '常规'),
             updatedAt: sess.updatedAt || meta.updatedAt || sess.createdAt || 0,
             createdAt: sess.createdAt || meta.createdAt || 0,
             pinned: !!(sess.pinned || meta.pinned),
@@ -896,6 +961,60 @@
         walk('', 0);
         return rows;
       },
+      remoteWorkspaceRows() {
+        const entries = Array.isArray(this.remoteForm.files) ? this.remoteForm.files : [];
+        const children = new Map();
+        const push = (parent, item) => {
+          const list = children.get(parent) || [];
+          list.push(item);
+          children.set(parent, list);
+        };
+        const folders = new Set();
+        entries.forEach(item => {
+          const rawPath = String(item && item.path || '').replace(/\\/g, '/').replace(/^\/+|\/+$/g, '');
+          if (!rawPath) return;
+          const parts = rawPath.split('/');
+          for (let i = 1; i < parts.length; i++) folders.add(parts.slice(0, i).join('/'));
+          if (item.type === 'folder') folders.add(rawPath);
+        });
+        folders.forEach(path => {
+          const parts = path.split('/');
+          push(parts.slice(0, -1).join('/'), { type: 'folder', path, name: parts[parts.length - 1] });
+        });
+        entries.forEach(item => {
+          if (!item || item.type !== 'file') return;
+          const rawPath = String(item.path || '').replace(/\\/g, '/').replace(/^\/+|\/+$/g, '');
+          if (!rawPath) return;
+          const parts = rawPath.split('/');
+          const file = { size: Number(item.size) || 0, mtime: Number(item.mtime) || 0, mime: workspaceMime(rawPath) };
+          push(parts.slice(0, -1).join('/'), {
+            type: 'file',
+            path: rawPath,
+            name: parts[parts.length - 1],
+            file,
+            kind: this.fileKind(rawPath, file)
+          });
+        });
+
+        const rows = [];
+        const walk = (parent, depth) => {
+          const list = (children.get(parent) || []).slice().sort((a, b) => {
+            if (a.type !== b.type) return a.type === 'folder' ? -1 : 1;
+            return a.name.localeCompare(b.name, 'zh-Hans');
+          });
+          list.forEach(item => {
+            if (item.type === 'folder') {
+              const open = this.isFolderOpen(item.path);
+              rows.push(Object.assign({}, item, { depth, open, childCount: (children.get(item.path) || []).length }));
+              if (open) walk(item.path, depth + 1);
+            } else {
+              rows.push(Object.assign({}, item, { depth }));
+            }
+          });
+        };
+        walk('', 0);
+        return rows;
+      },
       viewerTabs() {
         if (!this.viewer.name) return [];
         if (this.viewer.isImage) return [{ id: 'view', label: '预览' }];
@@ -923,6 +1042,9 @@
         return !!this.viewer.name && !this.viewer.isImage;
       },
       canSend() {
+        if (this.appMode === 'remote') {
+          return !this.generating && (!!this.input.trim() || (this.attachments || []).some(a => a.kind === 'image'));
+        }
         return !this.generating && (!!this.input.trim() || this.attachments.length > 0);
       },
       groupedIndex() {
@@ -1026,8 +1148,26 @@
         if (!this.imageFormatOptions.some(x => x.value === this.settings.imageOutputFormat)) this.settings.imageOutputFormat = 'png';
         if (!this.imageBackgroundOptions.some(x => x.value === this.settings.imageBackground)) this.settings.imageBackground = 'auto';
       },
+      normalizeRemoteSettings() {
+        const seen = new Set();
+        const hosts = (Array.isArray(this.settings.remoteHosts) ? this.settings.remoteHosts : [])
+          .map(h => RemoteAPI.normalizeHost(h))
+          .filter(h => h.baseUrl)
+          .filter(h => {
+            const key = h.id || h.baseUrl;
+            if (seen.has(key)) return false;
+            seen.add(key);
+            return true;
+          });
+        this.settings.remoteHosts = hosts;
+        if (this.settings.activeRemoteHostId && !hosts.some(h => h.id === this.settings.activeRemoteHostId)) {
+          this.settings.activeRemoteHostId = '';
+        }
+        if (!this.settings.activeRemoteHostId && hosts[0]) this.settings.activeRemoteHostId = hosts[0].id;
+      },
       persistSettings() {
         this.normalizeImageSettings();
+        this.normalizeRemoteSettings();
         Store.saveSettings(this.settings);
         this.storageUsed = Store.usage();
         this.applyTheme();
@@ -1226,7 +1366,7 @@
         this.persistSettings();
       },
       setAppMode(mode) {
-        this.session.mode = mode === 'image' ? 'image' : 'chat';
+        this.session.mode = mode === 'image' ? 'image' : (mode === 'remote' ? 'remote' : 'chat');
         this.persistSession();
         nextTick(() => this.growInput());
       },
@@ -1428,6 +1568,413 @@
       openSettings() {
         this.pushPage('settings');
       },
+      openModeSettings() {
+        if (this.appMode === 'image') this.sheet = 'imageWorkbench';
+        else if (this.appMode === 'remote') this.pushPage('settings-remote');
+        else this.sheet = 'model';
+      },
+      async openFilesSheet() {
+        if (this.appMode === 'remote') {
+          await this.loadRemoteWorkspaceFiles(false);
+        }
+        this.sheet = 'files';
+      },
+      remoteHostById(id) {
+        return this.remoteHosts.find(h => h.id === id) || null;
+      },
+      remoteHostStatus(host) {
+        if (!host) return '';
+        if (this.remoteForm.testingHostId === host.id) return '测试中';
+        return host.lastStatus || '未测试';
+      },
+      remoteWorkspaceLabel(host) {
+        host = host || this.activeRemoteHost;
+        if (!host) return '未选择';
+        const ws = (this.remoteForm.workspacesHostId === host.id ? this.remoteForm.workspaces : [])
+          .find(x => x.id === host.lastWorkspaceId);
+        if (ws) return ws.name || ws.path || ws.id;
+        return host.lastWorkspaceId || '未选择';
+      },
+      upsertRemoteHost(host) {
+        host = RemoteAPI.normalizeHost(host);
+        if (!host.baseUrl) {
+          U.toast('Host 地址不能为空');
+          return null;
+        }
+        const list = this.remoteHosts.slice();
+        const i = list.findIndex(h => h.id === host.id || h.baseUrl === host.baseUrl);
+        let saved;
+        if (i >= 0) {
+          saved = Object.assign({}, list[i], host, { id: list[i].id });
+          list[i] = saved;
+        } else {
+          saved = host;
+          list.push(saved);
+        }
+        this.settings.remoteHosts = list;
+        this.settings.activeRemoteHostId = saved.id;
+        this.persistSettings();
+        return saved;
+      },
+      patchRemoteHost(id, patch) {
+        const list = this.remoteHosts.map(h => h.id === id ? Object.assign({}, h, patch) : h);
+        this.settings.remoteHosts = list;
+        this.persistSettings();
+      },
+      async addRemoteHost() {
+        const text = await this.askText(
+          '添加 WepChat Host',
+          '',
+          '粘贴配对文本，或输入 http://192.168.1.2:8797 token',
+          true
+        );
+        if (text == null) return;
+        let host;
+        try {
+          host = RemoteAPI.parsePairingText(text);
+        } catch (e) {
+          U.toast(e.message || '配对内容无效', 3500);
+          return;
+        }
+        if (!host.token) {
+          const token = await this.askText('Host Token', '', 'wepchat-host 显示的 token');
+          if (token == null) return;
+          host.token = String(token || '').trim();
+        }
+        const saved = this.upsertRemoteHost(host);
+        if (saved) await this.testRemoteHost(saved);
+      },
+      async scanRemoteHost() {
+        let text;
+        try {
+          text = await RemoteScan.scan();
+        } catch (e) {
+          U.toast(e.message || '扫码不可用', 3500);
+          return;
+        }
+        let host;
+        try {
+          host = RemoteAPI.parsePairingText(text);
+        } catch (e) {
+          U.toast(e.message || '二维码内容无效', 3500);
+          return;
+        }
+        const saved = this.upsertRemoteHost(host);
+        if (saved) await this.testRemoteHost(saved);
+      },
+      async editRemoteHost(host) {
+        if (!host) return;
+        const text = await this.askText(
+          '编辑 Host',
+          (host.baseUrl || '') + (host.token ? '\n' + host.token : ''),
+          '第一行 Host 地址，第二行 token',
+          true
+        );
+        if (text == null) return;
+        let next;
+        try {
+          const lines = String(text || '').split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+          next = lines.length >= 2
+            ? RemoteAPI.normalizeHost({ id: host.id, name: host.name, baseUrl: lines[0], token: lines.slice(1).join(' ') })
+            : RemoteAPI.parsePairingText(text);
+          next.id = host.id;
+          next.name = host.name;
+        } catch (e) {
+          U.toast(e.message || 'Host 配置无效', 3500);
+          return;
+        }
+        this.upsertRemoteHost(next);
+      },
+      async deleteRemoteHost(host) {
+        if (!host) return;
+        const ok = await this.confirm('删除远程 Host：\n' + host.name, '删除 Host');
+        if (!ok) return;
+        this.settings.remoteHosts = this.remoteHosts.filter(h => h.id !== host.id);
+        if (this.settings.activeRemoteHostId === host.id) this.settings.activeRemoteHostId = '';
+        if (this.remoteForm.workspacesHostId === host.id) {
+          this.remoteForm.workspacesHostId = '';
+          this.remoteForm.workspaces = [];
+        }
+        this.persistSettings();
+      },
+      async testRemoteHost(host) {
+        host = host && this.remoteHostById(host.id) || host;
+        if (!host) return false;
+        this.remoteForm.testingHostId = host.id;
+        try {
+          const health = await RemoteAPI.health(host);
+          const workspaces = await RemoteAPI.workspaces(host);
+          const status = (health.codex ? 'Codex 就绪' : 'Host 在线，Codex 未就绪') + ' · ' + workspaces.length + ' 个工作区';
+          this.patchRemoteHost(host.id, {
+            lastConnectedAt: U.now(),
+            lastStatus: status,
+            lastWorkspaceId: host.lastWorkspaceId || (workspaces[0] && workspaces[0].id) || ''
+          });
+          this.remoteForm.workspacesHostId = host.id;
+          this.remoteForm.workspaces = workspaces;
+          U.toast('Host 连接正常');
+          return true;
+        } catch (e) {
+          this.patchRemoteHost(host.id, { lastStatus: e.message || '连接失败' });
+          U.toast(e.message || 'Host 连接失败', 3500);
+          return false;
+        } finally {
+          this.remoteForm.testingHostId = '';
+        }
+      },
+      async fetchRemoteWorkspaces(host) {
+        host = host && this.remoteHostById(host.id) || host;
+        if (!host) return [];
+        this.remoteForm.loadingHostId = host.id;
+        try {
+          const workspaces = await RemoteAPI.workspaces(host);
+          this.remoteForm.workspacesHostId = host.id;
+          this.remoteForm.workspaces = workspaces;
+          if (!host.lastWorkspaceId && workspaces[0]) this.patchRemoteHost(host.id, { lastWorkspaceId: workspaces[0].id });
+          return workspaces;
+        } catch (e) {
+          U.toast(e.message || '读取工作区失败', 3500);
+          return [];
+        } finally {
+          this.remoteForm.loadingHostId = '';
+        }
+      },
+      async loadRemoteWorkspaces(host) {
+        const rows = await this.fetchRemoteWorkspaces(host);
+        if (rows.length) U.toast('已刷新工作区');
+      },
+      selectRemoteHost(host) {
+        if (!host) return;
+        this.settings.activeRemoteHostId = host.id;
+        this.persistSettings();
+      },
+      selectRemoteWorkspace(host, ws) {
+        if (!host || !ws) return;
+        if (this.remoteForm.filesWorkspaceId && this.remoteForm.filesWorkspaceId !== ws.id) {
+          this.remoteForm.filesHostId = '';
+          this.remoteForm.filesWorkspaceId = '';
+          this.remoteForm.files = [];
+          this.remoteForm.filesTruncated = false;
+        }
+        this.patchRemoteHost(host.id, { lastWorkspaceId: ws.id });
+      },
+      async loadRemoteWorkspaceFiles(force) {
+        const remote = this.session && this.session.remote || {};
+        const host = this.remoteSessionHost;
+        const workspaceId = remote.workspaceId || (host && host.lastWorkspaceId) || '';
+        if (!host || !workspaceId) {
+          U.toast('请先连接远程 Host 并选择工作区');
+          return [];
+        }
+        if (!force && this.remoteForm.filesHostId === host.id && this.remoteForm.filesWorkspaceId === workspaceId && this.remoteForm.files.length) {
+          return this.remoteForm.files;
+        }
+        this.remoteForm.loadingFiles = true;
+        try {
+          const result = await RemoteAPI.workspaceFiles(host, workspaceId);
+          this.remoteForm.filesHostId = host.id;
+          this.remoteForm.filesWorkspaceId = workspaceId;
+          this.remoteForm.files = result.data || [];
+          this.remoteForm.filesTruncated = !!result.truncated;
+          return this.remoteForm.files;
+        } catch (e) {
+          U.toast(e.message || '读取远程工作区文件失败', 3500);
+          return [];
+        } finally {
+          this.remoteForm.loadingFiles = false;
+        }
+      },
+      openRemoteWorkspaceRow(row) {
+        if (!row) return;
+        if (row.type === 'folder') {
+          this.toggleFolder(row.path);
+          return;
+        }
+        this.insertRemotePath(row.path);
+      },
+      insertRemotePath(path) {
+        path = String(path || '').trim();
+        if (!path) return;
+        const token = '`' + path.replace(/`/g, '\\`') + '`';
+        const el = this.$refs.inputEl;
+        const current = String(this.input || '');
+        if (el && typeof el.selectionStart === 'number' && typeof el.selectionEnd === 'number') {
+          const start = el.selectionStart;
+          const end = el.selectionEnd;
+          const left = current.slice(0, start);
+          const right = current.slice(end);
+          const prefix = left && !/\s$/.test(left) ? ' ' : '';
+          const suffix = right && !/^\s/.test(right) ? ' ' : '';
+          this.input = left + prefix + token + suffix + right;
+          nextTick(() => {
+            const pos = (left + prefix + token).length;
+            if (el.setSelectionRange) el.setSelectionRange(pos, pos);
+            if (el.focus) el.focus();
+            this.growInput();
+          });
+        } else {
+          this.input = current ? (current.replace(/\s*$/, ' ') + token) : token;
+          nextTick(() => this.growInput());
+        }
+        this.sheet = '';
+      },
+      async chooseRemoteHost() {
+        const hosts = this.remoteHosts;
+        if (!hosts.length) {
+          const ok = await this.confirm('需要先在设置里添加并测试 WepChat Host。', '远程 Codex');
+          if (ok) {
+            this.openSettings();
+            this.pushPage('settings-remote');
+          }
+          return null;
+        }
+        if (hosts.length === 1) return hosts[0];
+        const buttons = [{ text: '取消', value: null }];
+        hosts.slice(0, 8).forEach(h => {
+          buttons.push({ text: h.name, value: h.id, style: h.id === this.settings.activeRemoteHostId ? 'primary' : '' });
+        });
+        const id = await this.dialog({ title: '选择远程 Host', msg: '这次会话会连接到哪台桌面机器。', buttons });
+        return id ? this.remoteHostById(id) : null;
+      },
+      async chooseRemoteWorkspace(host) {
+        const workspaces = await this.fetchRemoteWorkspaces(host);
+        if (!workspaces.length) {
+          U.toast('Host 没有可用工作区');
+          return null;
+        }
+        const preferred = workspaces.find(ws => ws.id === host.lastWorkspaceId);
+        if (workspaces.length === 1) return workspaces[0];
+        const buttons = [{ text: '取消', value: null }];
+        workspaces.slice(0, 8).forEach(ws => {
+          const label = U.truncate(ws.name || ws.path || ws.id, 18);
+          buttons.push({ text: label, value: ws.id, style: preferred && preferred.id === ws.id ? 'primary' : '' });
+        });
+        const id = await this.dialog({
+          title: '选择项目目录',
+          msg: 'Codex 会在这个工作区里读取、修改和运行命令。',
+          buttons
+        });
+        return id ? workspaces.find(ws => ws.id === id) : null;
+      },
+      async chooseRemoteThread(host, ws) {
+        let threads = [];
+        try {
+          threads = await RemoteAPI.threads(host, ws.id);
+        } catch (e) {
+          U.toast(e.message || '读取 Codex 会话失败', 3500);
+          return null;
+        }
+        threads = (threads || []).filter(t => t && t.id);
+        if (!threads.length) {
+          U.toast('这个工作区没有可续接的 Codex 会话');
+          return null;
+        }
+        const shown = threads.slice(0, 5);
+        const buttons = [{ text: '取消', value: null }];
+        shown.forEach((t, i) => {
+          buttons.push({ text: (i + 1) + '. ' + RemoteHistory.threadLabel(U, t), value: t.id, style: 'primary' });
+        });
+        const id = await this.dialog({
+          title: '续接 Codex 会话',
+          msg: shown.map((t, i) => {
+            return (i + 1) + '. ' + RemoteHistory.threadLabel(U, t) + '\n' + (RemoteHistory.threadMeta(U, t) || t.id);
+          }).join('\n\n'),
+          buttons
+        });
+        return id ? threads.find(t => t.id === id) : null;
+      },
+      async resumeRemoteThread(host, ws, thread) {
+        const client = RemoteAPI.createSession(host);
+        try {
+          await client.connect();
+          const resumed = await client.request('remote.thread.resume', {
+            workspaceId: ws.id,
+            threadId: thread.id
+          });
+          let read = null;
+          try {
+            read = await client.request('remote.thread.read', {
+              threadId: thread.id,
+              includeTurns: true
+            });
+          } catch (e) {}
+          return {
+            resumed,
+            read,
+            historyMessages: RemoteHistory.messagesFromResult(U, { resumed, read })
+          };
+        } finally {
+          client.close();
+        }
+      },
+      async prepareRemoteSession(options) {
+        options = options || {};
+        const host = await this.chooseRemoteHost();
+        if (!host) return null;
+        const ws = await this.chooseRemoteWorkspace(host);
+        if (!ws) return null;
+        this.selectRemoteHost(host);
+        this.selectRemoteWorkspace(host, ws);
+        let mode = options.resumeOnly ? 'resume' : 'new';
+        if (!options.resumeOnly && !options.newOnly) {
+          mode = await this.dialog({
+            title: '远程 Codex',
+            msg: '新建一个 Codex 线程，或续接桌面上已有的线程。',
+            buttons: [
+              { text: '取消', value: null },
+              { text: '新建', value: 'new', style: 'primary' },
+              { text: '续接', value: 'resume', style: 'primary' }
+            ]
+          });
+          if (!mode) return null;
+        }
+        let thread = null;
+        let resumed = null;
+        if (mode === 'resume') {
+          thread = await this.chooseRemoteThread(host, ws);
+          if (!thread) return null;
+          try {
+            resumed = await this.resumeRemoteThread(host, ws, thread);
+          } catch (e) {
+            U.toast(e.message || '续接 Codex 会话失败', 3500);
+            return null;
+          }
+        }
+        return {
+          hostId: host.id,
+          hostName: host.name,
+          baseUrl: host.baseUrl,
+          workspaceId: ws.id,
+          workspaceName: ws.name || ws.path || ws.id,
+          workspacePath: ws.path || '',
+          codexThreadId: thread && thread.id || '',
+          hostSessionId: resumed && resumed.resumed && resumed.resumed.hostSessionId || '',
+          lastSeq: 0,
+          _historyMessages: resumed && resumed.historyMessages || []
+        };
+      },
+      async resumeRemoteThreadFromSettings() {
+        const canLeave = await this.confirmStopRunning('续接 Codex 会话');
+        if (!canLeave) return;
+        const remote = await this.prepareRemoteSession({ resumeOnly: true });
+        if (!remote) return;
+        const historyMessages = remote._historyMessages || [];
+        delete remote._historyMessages;
+        this.session = Store.newSession();
+        this.session.mode = 'remote';
+        this.session.remote = remote;
+        this.session.messages = historyMessages;
+        this.session.title = '远程：' + (remote.workspaceName || 'Codex');
+        this.session.providerId = this.settings.activeProviderId || '';
+        this.session.model = this.settings.activeModel || '';
+        this.input = '';
+        this.attachments = [];
+        this.pages = [];
+        this.drawerOpen = false;
+        this.persistSession();
+        U.toast(historyMessages.length ? ('已同步 ' + historyMessages.length + ' 条历史消息') : '已续接，未读取到可显示历史');
+        nextTick(() => this.scrollToBottom(true));
+      },
 
       async dialog(opts) {
         return new Promise(resolve => {
@@ -1499,12 +2046,20 @@
           buttons: [
             { text: '取消', value: null },
             { text: '常规', value: 'chat', style: 'primary' },
-            { text: '生图', value: 'image', style: 'primary' }
+            { text: '生图', value: 'image', style: 'primary' },
+            { text: '远程', value: 'remote', style: 'primary' }
           ]
         });
         if (!mode) return;
+        const remote = mode === 'remote' ? await this.prepareRemoteSession() : null;
+        if (mode === 'remote' && !remote) return;
+        const historyMessages = remote && remote._historyMessages || [];
+        if (remote) delete remote._historyMessages;
         this.session = Store.newSession();
-        this.session.mode = mode === 'image' ? 'image' : 'chat';
+        this.session.mode = mode === 'image' ? 'image' : (mode === 'remote' ? 'remote' : 'chat');
+        this.session.remote = remote;
+        if (historyMessages.length) this.session.messages = historyMessages;
+        if (remote) this.session.title = '远程：' + (remote.workspaceName || 'Codex');
         this.session.providerId = this.settings.activeProviderId || '';
         this.session.model = this.settings.activeModel || '';
         this.persistSession();
@@ -1892,9 +2447,56 @@
           list_services: '列出预览',
           web_fetch: '抓取网页',
           image_go: '图片生成',
-          image_generation: '图片生成'
+          image_generation: '图片生成',
+          codex_command: 'Codex 命令',
+          codex_file_change: 'Codex 文件变更',
+          codex_reasoning: 'Codex 思考',
+          codex_approval: 'Codex 授权',
+          codex_item: 'Codex 事件'
         };
         return map[name] || name || '工具';
+      },
+      toolArgObject(t) {
+        if (!t || t.arguments == null) return {};
+        try {
+          return typeof t.arguments === 'string' ? JSON.parse(t.arguments) : (t.arguments || {});
+        } catch (e) {
+          return {};
+        }
+      },
+      isRemoteTool(t) {
+        return /^codex_/i.test(String(t && t.name || ''));
+      },
+      shouldDisplayToolCall(t) {
+        if (!t) return false;
+        const name = String(t.name || '');
+        if (name === 'codex_item' || name === 'codex_reasoning') return false;
+        if (name === 'codex_file_change') {
+          const args = this.toolArgObject(t);
+          return !!(t.result || args.path || args.file || args.summary || args.files || args.changes || args.diff);
+        }
+        return true;
+      },
+      displayToolCalls(m) {
+        return (m && m.toolCalls || []).filter(t => this.shouldDisplayToolCall(t));
+      },
+      toolTitle(t) {
+        const name = String(t && t.name || '');
+        const args = this.toolArgObject(t);
+        if (name === 'codex_command') {
+          const cmd = String(args.command || args.cmd || args.commandLine || '').replace(/\s+/g, ' ').trim();
+          return cmd ? ('命令 · ' + U.truncate(cmd, 34)) : 'Codex 命令';
+        }
+        if (name === 'codex_file_change') {
+          const firstFile = Array.isArray(args.files) ? args.files[0] : '';
+          const label = String(args.path || args.file || firstFile || args.summary || '').trim();
+          return label ? ('文件变更 · ' + U.truncate(label, 32)) : 'Codex 文件变更';
+        }
+        if (name === 'codex_approval') {
+          const subject = String(args.command || args.path || args.kind || '').replace(/\s+/g, ' ').trim();
+          return subject ? ('授权 · ' + U.truncate(subject, 34)) : 'Codex 授权';
+        }
+        return this.toolLabel(name);
       },
       prettyJson(v) {
         if (v == null) return '';
@@ -1953,6 +2555,10 @@
       },
       async regenerate(i) {
         if (this.generating) return;
+        if (this.appMode === 'remote') {
+          U.toast('远程会话暂不支持重新生成');
+          return;
+        }
         const m = this.session.messages[i];
         if (!m || m.role !== 'assistant') return;
         this.session.messages.splice(i);
@@ -2217,10 +2823,497 @@
           nextTick(() => this.scrollToBottom(false));
         }
       },
+      remoteEventApplies(ev) {
+        const r = this.session && this.session.remote || {};
+        const rt = this.remoteRuntime || {};
+        const threadId = rt.threadId || r.codexThreadId || '';
+        return !(ev && ev.threadId && threadId && ev.threadId !== threadId);
+      },
+      remoteAssistantMsg(id) {
+        const targetId = id || this.remoteRuntime && this.remoteRuntime.assistantId;
+        return targetId ? (this.session.messages || []).find(m => m.id === targetId) : null;
+      },
+      remoteTurnMessages() {
+        const rt = this.remoteRuntime || {};
+        const ids = new Set((rt.messageIds || []).concat(rt.assistantId ? [rt.assistantId] : []));
+        return (this.session.messages || []).filter(m => ids.has(m.id));
+      },
+      remoteFindToolMessage(toolId) {
+        if (!toolId) return null;
+        return this.remoteTurnMessages().find(m => (m.toolCalls || []).some(t => t.id === toolId)) || null;
+      },
+      remoteMessageHasText(msg) {
+        return !!(msg && (String(msg.content || '').trim() || String(msg._remoteContent || '').trim() || String(msg.reasoning || '').trim()));
+      },
+      remoteNewSegment(kind) {
+        const msg = {
+          id: U.uuid(),
+          role: 'assistant',
+          content: '',
+          reasoning: '',
+          toolCalls: [],
+          previews: [],
+          status: 'streaming',
+          model: 'Codex',
+          createdAt: U.now(),
+          _remoteSegment: kind || 'text'
+        };
+        this.session.messages.push(msg);
+        this.remoteRuntime.assistantId = msg.id;
+        this.remoteRuntime.messageIds = (this.remoteRuntime.messageIds || []).concat(msg.id);
+        return msg;
+      },
+      remoteEnsureSegment(kind, toolId) {
+        const rt = this.remoteRuntime || {};
+        if (toolId) {
+          const existing = this.remoteFindToolMessage(toolId);
+          if (existing) {
+            rt.assistantId = existing.id;
+            return existing;
+          }
+        }
+
+        let msg = this.remoteAssistantMsg();
+        if (!msg && (rt.messageIds || []).length) msg = this.remoteAssistantMsg(rt.messageIds[rt.messageIds.length - 1]);
+        if (msg) {
+          const hasTools = !!((msg.toolCalls || []).length);
+          const hasText = this.remoteMessageHasText(msg);
+          if (kind === 'text' && !hasTools) return msg;
+          if (kind === 'tool' && !hasText) return msg;
+        }
+        return this.remoteNewSegment(kind);
+      },
+      remoteMarkTurnDone() {
+        this.remoteTurnMessages().forEach(m => {
+          (m.toolCalls || []).forEach(t => {
+            if (t.status === 'running') t.status = 'done';
+          });
+          m.status = 'done';
+        });
+      },
+      remotePruneEmptySegments() {
+        const rt = this.remoteRuntime || {};
+        const ids = new Set(rt.messageIds || []);
+        if (!ids.size) return;
+        this.session.messages = (this.session.messages || []).filter(m => {
+          if (!ids.has(m.id)) return true;
+          if (this.remoteMessageHasText(m) || m.error) return true;
+          if ((m.toolCalls || []).some(t => this.shouldDisplayToolCall(t))) return true;
+          if ((m.images && m.images.length) || (m.previews && m.previews.length)) return true;
+          return false;
+        });
+        rt.messageIds = (rt.messageIds || []).filter(id => (this.session.messages || []).some(m => m.id === id));
+        if (rt.assistantId && !rt.messageIds.includes(rt.assistantId)) {
+          rt.assistantId = rt.messageIds[rt.messageIds.length - 1] || '';
+        }
+      },
+      remoteWaitTurnText() {
+        return Promise.all(this.remoteTurnMessages().map(m => waitSmoothText(m)));
+      },
+      resetRemoteRuntime() {
+        this.remoteRuntime.client = null;
+        this.remoteRuntime.assistantId = '';
+        this.remoteRuntime.messageIds = [];
+        this.remoteRuntime.threadId = '';
+        this.remoteRuntime.turnId = '';
+        this.remoteRuntime.resolveTurn = null;
+        this.remoteRuntime.rejectTurn = null;
+      },
+      async createRemoteClient(host, assistantId) {
+        const client = RemoteAPI.createSession(host, {
+          onEvent: ev => this.handleRemoteEvent(ev),
+          onClose: () => this.handleRemoteClose()
+        });
+        this.remoteRuntime.client = client;
+        this.remoteRuntime.assistantId = assistantId;
+        this.remoteRuntime.messageIds = assistantId ? [assistantId] : [];
+        await client.connect();
+        return client;
+      },
+      handleRemoteClose() {
+        const rt = this.remoteRuntime || {};
+        if (this.generating && rt.rejectTurn) {
+          const reject = rt.rejectTurn;
+          rt.resolveTurn = null;
+          rt.rejectTurn = null;
+          reject(new Error('Host 连接已断开'));
+        }
+      },
+      resolveRemoteTurn(value) {
+        const rt = this.remoteRuntime || {};
+        if (!rt.resolveTurn) return;
+        const resolve = rt.resolveTurn;
+        rt.resolveTurn = null;
+        rt.rejectTurn = null;
+        resolve(value || {});
+      },
+      rejectRemoteTurn(err) {
+        const rt = this.remoteRuntime || {};
+        if (!rt.rejectTurn) return;
+        const reject = rt.rejectTurn;
+        rt.resolveTurn = null;
+        rt.rejectTurn = null;
+        reject(err instanceof Error ? err : new Error(String(err || '远程任务失败')));
+      },
+      remoteItemKind(item) {
+        item = item || {};
+        return String(item.type || item.kind || item.name || item.itemType || '').toLowerCase();
+      },
+      remoteItemCommand(item) {
+        item = item || {};
+        const cmd = item.command || item.cmd || item.commandLine || item.shellCommand;
+        if (Array.isArray(cmd)) return cmd.join(' ');
+        return String(cmd || '').trim();
+      },
+      remoteItemFiles(item) {
+        item = item || {};
+        const files = [];
+        if (item.path) files.push(item.path);
+        if (item.file) files.push(item.file);
+        if (Array.isArray(item.files)) item.files.forEach(f => files.push(typeof f === 'string' ? f : (f && (f.path || f.file || f.name))));
+        if (Array.isArray(item.paths)) item.paths.forEach(f => files.push(f));
+        return files.filter(Boolean).map(String);
+      },
+      remoteItemIsCommand(item) {
+        const kind = this.remoteItemKind(item);
+        return !!(this.remoteItemCommand(item) || /command|exec|shell|bash|terminal|process/.test(kind));
+      },
+      remoteItemIsFileChange(item) {
+        const kind = this.remoteItemKind(item);
+        return !!(this.remoteItemFiles(item).length || item && (item.diff || item.patch || item.unifiedDiff) || /file|patch|diff|edit|write/.test(kind));
+      },
+      remoteShouldDisplayItem(item) {
+        if (!item) return false;
+        if (item.error) return true;
+        return this.remoteItemIsCommand(item) || this.remoteItemIsFileChange(item);
+      },
+      remoteToolNameForItem(item) {
+        if (!this.remoteShouldDisplayItem(item)) return '';
+        if (this.remoteItemIsCommand(item)) return 'codex_command';
+        if (this.remoteItemIsFileChange(item)) return 'codex_file_change';
+        return 'codex_item';
+      },
+      remoteToolArgs(item, extra) {
+        const body = Object.assign({}, extra || {});
+        item = item || {};
+        const command = this.remoteItemCommand(item);
+        const files = this.remoteItemFiles(item);
+        if (command) body.command = command;
+        if (files.length) body.files = files;
+        ['type', 'kind', 'status', 'cwd', 'path', 'title', 'summary'].forEach(k => {
+          if (item[k] != null && item[k] !== '') body[k] = item[k];
+        });
+        return JSON.stringify(body, null, 2);
+      },
+      mergeRemoteToolArgs(oldArgs, nextArgs) {
+        if (nextArgs == null || nextArgs === '') return oldArgs;
+        try {
+          const oldObj = typeof oldArgs === 'string' ? JSON.parse(oldArgs || '{}') : (oldArgs || {});
+          const nextObj = typeof nextArgs === 'string' ? JSON.parse(nextArgs || '{}') : (nextArgs || {});
+          if (oldObj && typeof oldObj === 'object' && nextObj && typeof nextObj === 'object' && !Array.isArray(oldObj) && !Array.isArray(nextObj)) {
+            return JSON.stringify(Object.assign({}, oldObj, nextObj), null, 2);
+          }
+        } catch (e) {}
+        return nextArgs;
+      },
+      remoteUpsertTool(msg, id, name, args) {
+        if (!msg) return null;
+        const calls = msg.toolCalls || (msg.toolCalls = []);
+        let t = calls.find(x => x.id === id);
+        if (!t) {
+          t = { id, name, arguments: args || '{}', status: 'running', result: '', _open: false };
+          calls.push(t);
+        }
+        t.name = name || t.name;
+        if (args != null && args !== '') t.arguments = this.mergeRemoteToolArgs(t.arguments, args);
+        if (t.status !== 'done' && t.status !== 'error' && t.status !== 'cancelled') t.status = 'running';
+        return t;
+      },
+      handleRemoteEvent(ev) {
+        if (!ev || !ev.type || ev.type === 'hello') return;
+        if (!this.remoteEventApplies(ev)) return;
+        if (this.session.remote && ev.seq) this.session.remote.lastSeq = Math.max(this.session.remote.lastSeq || 0, ev.seq);
+
+        if (ev.type === 'remote.turn.started') {
+          const turnId = ev.turn && ev.turn.id || ev.turnId || '';
+          if (ev.threadId) this.remoteRuntime.threadId = ev.threadId;
+          if (turnId) this.remoteRuntime.turnId = turnId;
+          return;
+        }
+        if (ev.type === 'remote.message.delta') {
+          const msg = this.remoteEnsureSegment('text');
+          if (!msg) return;
+          msg._remoteContent = (msg._remoteContent || msg.content || '') + String(ev.delta || '');
+          smoothText(this, msg, msg._remoteContent);
+          msg.status = 'streaming';
+          this.persistSessionSoon();
+          return;
+        }
+        if (ev.type === 'remote.item.started') {
+          const item = ev.item || {};
+          const id = ev.itemId || item.id || ('remote_item_' + (ev.seq || Date.now()));
+          const name = this.remoteToolNameForItem(item);
+          if (!name) return;
+          const msg = this.remoteEnsureSegment('tool', id);
+          this.remoteUpsertTool(msg, id, name, this.remoteToolArgs(item));
+          this.persistSessionSoon();
+          return;
+        }
+        if (ev.type === 'remote.command.output.delta') {
+          const id = ev.itemId || ('remote_cmd_' + (ev.seq || Date.now()));
+          const msg = this.remoteEnsureSegment('tool', id);
+          const t = this.remoteUpsertTool(msg, id, 'codex_command');
+          if (t) t.result = String(t.result || '') + String(ev.delta || '');
+          this.persistSessionSoon();
+          return;
+        }
+        if (ev.type === 'remote.item.completed') {
+          const item = ev.item || {};
+          const id = ev.itemId || item.id || ('remote_item_' + (ev.seq || Date.now()));
+          const existingMsg = this.remoteFindToolMessage(id);
+          const calls = existingMsg && existingMsg.toolCalls || [];
+          const existing = calls.find(x => x.id === id);
+          const name = this.remoteToolNameForItem(item) || (existing && existing.name);
+          if (!name) return;
+          const msg = existingMsg || this.remoteEnsureSegment('tool', id);
+          const t = this.remoteUpsertTool(msg, id, name, this.remoteToolArgs(item));
+          if (t) {
+            t.status = item.error ? 'error' : 'done';
+            const result = item.output || item.result || item.summary || item.error || '';
+            if (result && !t.result) t.result = typeof result === 'string' ? result : JSON.stringify(result, null, 2);
+          }
+          this.persistSessionSoon();
+          return;
+        }
+        if (ev.type === 'remote.turn.diff.updated') {
+          const diff = ev.diff || ev.patch || ev.unifiedDiff || ev.delta || '';
+          const files = Array.isArray(ev.files) ? ev.files : [];
+          if (!diff && !files.length) return;
+          const args = {
+            summary: '工作区文件变更',
+            files: files.map(f => typeof f === 'string' ? f : (f && (f.path || f.file || f.name))).filter(Boolean)
+          };
+          const id = 'remote_diff_' + (ev.turnId || 'current');
+          const msg = this.remoteEnsureSegment('tool', id);
+          const t = this.remoteUpsertTool(msg, id, 'codex_file_change', JSON.stringify(args, null, 2));
+          if (t) {
+            t.result = typeof diff === 'string' ? diff : JSON.stringify(diff || ev, null, 2);
+            t.status = 'running';
+          }
+          this.persistSessionSoon();
+          return;
+        }
+        if (ev.type === 'remote.approval.required') {
+          this.handleRemoteApproval(ev);
+          return;
+        }
+        if (ev.type === 'remote.approval.resolved') {
+          const msg = this.remoteFindToolMessage(ev.approvalId) || this.remoteAssistantMsg();
+          const t = msg && (msg.toolCalls || []).find(x => x.id === ev.approvalId);
+          if (t) {
+            t.status = ev.decision && String(ev.decision).startsWith('accept') ? 'done' : 'cancelled';
+            t.result = '决定：' + (ev.decision || 'decline');
+          }
+          this.persistSessionSoon();
+          return;
+        }
+        if (ev.type === 'remote.turn.completed') {
+          this.remoteMarkTurnDone();
+          this.resolveRemoteTurn(ev);
+          return;
+        }
+        if (/^remote\.codex\.(error|warning|configWarning)$/.test(ev.type) || ev.type === 'remote.serverRequest.unsupported') {
+          const text = ev.error || ev.message || ev.method || 'Codex 远程错误';
+          const msg = this.remoteEnsureSegment('text');
+          if (msg) msg.error = text;
+          this.rejectRemoteTurn(new Error(text));
+        }
+      },
+      async handleRemoteApproval(ev) {
+        const msg = this.remoteEnsureSegment('tool', ev.approvalId);
+        const args = {
+          kind: ev.kind,
+          command: ev.command || '',
+          cwd: ev.cwd || '',
+          reason: ev.reason || '',
+          grantRoot: ev.grantRoot || ''
+        };
+        const t = this.remoteUpsertTool(msg, ev.approvalId, 'codex_approval', JSON.stringify(args, null, 2));
+        if (t) {
+          t._open = true;
+          t.result = '等待你在手机上授权。';
+        }
+        const decision = await this.dialog({
+          title: 'Codex 请求授权',
+          msg: [
+            ev.command || ev.kind || '文件变更',
+            ev.cwd ? '目录：' + ev.cwd : '',
+            ev.reason ? '原因：' + ev.reason : ''
+          ].filter(Boolean).join('\n'),
+          buttons: [
+            { text: '取消任务', value: 'cancel' },
+            { text: '拒绝', value: 'decline' },
+            { text: '允许', value: 'accept', style: 'primary' },
+            { text: '本会话允许', value: 'acceptForSession', style: 'primary' }
+          ]
+        }) || 'decline';
+        try {
+          if (this.remoteRuntime.client) {
+            await this.remoteRuntime.client.request('remote.approval.respond', {
+              approvalId: ev.approvalId,
+              decision
+            });
+          }
+          if (t) {
+            t.status = String(decision).startsWith('accept') ? 'done' : 'cancelled';
+            t.result = '决定：' + decision;
+          }
+        } catch (e) {
+          if (t) {
+            t.status = 'error';
+            t.result = e.message || '授权响应失败';
+          }
+          this.rejectRemoteTurn(e);
+        } finally {
+          this.persistSessionSoon();
+        }
+      },
+      stopRemoteTurn() {
+        const rt = this.remoteRuntime || {};
+        const threadId = rt.threadId || this.session && this.session.remote && this.session.remote.codexThreadId;
+        if (rt.client && threadId) {
+          rt.client.request('remote.turn.interrupt', { threadId, turnId: rt.turnId || undefined }).catch(() => {});
+        }
+        this.resolveRemoteTurn({ interrupted: true });
+      },
+      async sendRemoteMessage() {
+        const remoteImages = (this.attachments || []).filter(a => a.kind === 'image' && a.dataUrl);
+        if ((this.attachments || []).some(a => a.kind !== 'image')) {
+          U.toast('远程 Codex 模式目前只支持发送图片附件');
+          return;
+        }
+        if (remoteImages.length > 4) {
+          U.toast('一次最多发送 4 张图片');
+          return;
+        }
+        let remote = this.session.remote;
+        if (!remote) {
+          remote = await this.prepareRemoteSession();
+          if (!remote) return;
+          const historyMessages = remote._historyMessages || [];
+          delete remote._historyMessages;
+          if (historyMessages.length && !this.session.messages.length) this.session.messages.push(...historyMessages);
+          this.session.remote = remote;
+        }
+        const host = this.remoteHostById(remote.hostId);
+        if (!host) {
+          U.toast('远程 Host 不存在，请在设置中重新连接');
+          this.pushPage('settings-remote');
+          return;
+        }
+        const content = this.input.trim();
+        if (!content && !remoteImages.length) return;
+        const user = { id: U.uuid(), role: 'user', content, attachments: clone(this.attachments), createdAt: U.now() };
+        const assistant = {
+          id: U.uuid(),
+          role: 'assistant',
+          content: '',
+          reasoning: '',
+          toolCalls: [],
+          previews: [],
+          status: 'streaming',
+          model: 'Codex',
+          createdAt: U.now()
+        };
+        this.session.messages.push(user, assistant);
+        if (!this.session.title) this.session.title = cleanTitle(content || (remoteImages[0] && remoteImages[0].name) || '图片');
+        this.input = '';
+        this.attachments = [];
+        this.persistSession();
+        nextTick(() => {
+          this.growInput();
+          this.scrollToBottom(true);
+        });
+
+        this.generating = true;
+        this.requestNotificationPermission();
+        this.stopRequested = false;
+
+        const assistantMsg = this.session.messages[this.session.messages.length - 1];
+        let client = null;
+        try {
+          client = await this.createRemoteClient(host, assistantMsg.id);
+          if (this.stopRequested) {
+            smoothText(this, assistantMsg, '已停止。');
+            await waitSmoothText(assistantMsg);
+            assistantMsg.status = 'done';
+            return;
+          }
+          this.remoteRuntime.threadId = remote.codexThreadId || '';
+          if (!remote.codexThreadId) {
+            const started = await client.request('remote.thread.start', { workspaceId: remote.workspaceId });
+            remote.hostSessionId = started.hostSessionId || '';
+            remote.codexThreadId = started.thread && started.thread.id || '';
+            this.remoteRuntime.threadId = remote.codexThreadId;
+            if (started.codex && started.codex.model) assistantMsg.model = started.codex.model;
+            this.persistSession();
+          }
+          if (!remote.codexThreadId) throw new Error('Host 未返回 Codex threadId');
+          if (this.stopRequested) {
+            const stopMsg = this.remoteEnsureSegment('text');
+            smoothText(this, stopMsg, '已停止。');
+            await waitSmoothText(stopMsg);
+            this.remoteMarkTurnDone();
+            return;
+          }
+
+          const turnDone = new Promise((resolve, reject) => {
+            this.remoteRuntime.resolveTurn = resolve;
+            this.remoteRuntime.rejectTurn = reject;
+          });
+          const result = await client.request('remote.turn.start', {
+            workspaceId: remote.workspaceId,
+            threadId: remote.codexThreadId,
+            text: content,
+            images: remoteImages.map(a => ({
+              name: a.name || '',
+              mime: a.mime || '',
+              dataUrl: a.dataUrl
+            })),
+            clientUserMessageId: user.id
+          });
+          const turnId = result && result.turn && result.turn.id || result && result.turnId || '';
+          if (turnId) this.remoteRuntime.turnId = turnId;
+          await turnDone;
+          const hasVisible = this.remoteTurnMessages().some(m => this.remoteMessageHasText(m) || (m.toolCalls || []).length);
+          if (!hasVisible && this.stopRequested) smoothText(this, this.remoteEnsureSegment('text'), '已停止。');
+          await this.remoteWaitTurnText();
+          this.remoteMarkTurnDone();
+        } catch (e) {
+          const errMsg = this.remoteEnsureSegment('text');
+          errMsg.status = 'done';
+          errMsg.error = e && e.message || String(e);
+        } finally {
+          await this.remoteWaitTurnText();
+          this.remotePruneEmptySegments();
+          this.generating = false;
+          this.abortCtl = null;
+          this.stopRequested = false;
+          this.clearRunningNotification();
+          this.resetRemoteRuntime();
+          if (client) client.close();
+          await this.flushSessionPersist(1200);
+          nextTick(() => this.scrollToBottom(false));
+        }
+      },
       async sendMessage() {
         if (!this.canSend) return;
         if (this.appMode === 'image') {
           await this.sendImageMessage();
+          return;
+        }
+        if (this.appMode === 'remote') {
+          await this.sendRemoteMessage();
           return;
         }
         const provider = this.currentProvider;
@@ -2397,6 +3490,7 @@
       stopGenerate() {
         if (!this.generating) return;
         this.stopRequested = true;
+        if (this.appMode === 'remote') this.stopRemoteTurn();
         if (this.abortCtl) {
           try { this.abortCtl.abort(); } catch (e) {}
         }

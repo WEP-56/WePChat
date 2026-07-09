@@ -4,3 +4,4 @@ unpackage/
 Thumbs.db
 *.log
 node_modules/
+docs_private

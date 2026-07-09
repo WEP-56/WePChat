@@ -86,6 +86,14 @@ function createHostServer(options) {
         return;
       }
 
+      if (req.method === 'GET' && url.pathname === '/workspace-files') {
+        const result = workspaces.listFiles(url.searchParams.get('workspaceId'), {
+          limit: Number(url.searchParams.get('limit') || 800)
+        });
+        json(res, 200, { ok: true, data: result.data, truncated: !!result.truncated });
+        return;
+      }
+
       if (req.method === 'GET' && url.pathname === '/threads') {
         const workspaceId = url.searchParams.get('workspaceId');
         const result = await protocol.listThreads(workspaceId, {

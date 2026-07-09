@@ -3,10 +3,10 @@
     "id" : "H531C34C1",
     "name" : "WEPchat",
     "version" : {
-        "name" : "1.0.5",
-        "code" : 105
+        "name" : "1.0.6",
+        "code" : 106
     },
-    "description" : "WepChat 是一款本地优先的移动端 AI 聊天应用，支持多模型提供商、Markdown 渲染、文件与图片处理、会话管理和轻量 Agent 工具。",
+    "description" : "WepChat 是一款本地优先的移动端 AI 聊天应用，支持多模型提供商、Markdown 渲染、文件与图片处理、会话管理和轻量 Agent 工具，同时支持codex远程控制。",
     "icons" : {
         "72" : "img/icon.png"
     },
@@ -25,6 +25,9 @@
         },
         "Camera" : {
             "description" : "访问摄像头，用于拍照上传图片"
+        },
+        "Barcode" : {
+            "description" : "访问摄像头，用于扫码连接 WepChat Host"
         },
         "Downloader" : {
             "description" : "文件下载管理"

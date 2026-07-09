@@ -167,6 +167,8 @@ const Store = {
       imageEndpointPath: '',         // optional override, e.g. /v1/images/generations
       imageEditEndpointPath: '',     // optional override, e.g. /v1/images/edits
       appMode: 'chat',               // chat | image
+      remoteHosts: [],
+      activeRemoteHostId: '',
       maxToolRounds: 8,
       maxToolCalls: 24,
       systemPrompt: '',
@@ -230,6 +232,8 @@ const Store = {
     const saved = this._get(this.KEY_SETTINGS, {});
     const out = Object.assign(d, saved);
     out.toolPermissions = Object.assign({}, d.toolPermissions, saved.toolPermissions || {});
+    out.remoteHosts = Array.isArray(saved.remoteHosts) ? saved.remoteHosts : [];
+    out.activeRemoteHostId = saved.activeRemoteHostId || '';
     if (saved.webFetch && !(saved.toolPermissions && saved.toolPermissions.web_fetch)) {
       out.toolPermissions.web_fetch = saved.webFetch;
     }
@@ -260,7 +264,8 @@ const Store = {
       title: '',
       createdAt: U.now(),
       updatedAt: U.now(),
-      mode: 'chat',    // chat | image
+      mode: 'chat',    // chat | image | remote
+      remote: null,
       providerId: '',
       model: '',
       messages: [],

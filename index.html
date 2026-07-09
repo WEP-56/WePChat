@@ -20,14 +20,14 @@
       <button class="icon-btn" @click="drawerOpen = true" aria-label="菜单">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 7h16M4 12h10"/></svg>
       </button>
-      <button class="model-pill" @click="sheet = appMode === 'image' ? 'imageWorkbench' : 'model'">
+      <button class="model-pill" @click="openModeSettings()">
         <span class="mp-col">
           <span class="mp-name">{{ topModelLabel }}</span>
           <span class="mp-sub" v-if="topProviderLabel">{{ topProviderLabel }}</span>
         </span>
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M8 10l4 4 4-4"/></svg>
       </button>
-      <button class="icon-btn" @click="sheet = 'files'" aria-label="会话工作区">
+      <button class="icon-btn" @click="openFilesSheet()" aria-label="会话工作区">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z"/></svg>
       </button>
       <button class="icon-btn" @click="newSession()" aria-label="新会话">
@@ -38,10 +38,10 @@
       <!-- 空状态 -->
       <div class="empty-state" v-if="!session.messages.length">
         <div class="empty-logo">W</div>
-        <div class="empty-title">{{ appMode === 'image' ? '描述一张图片' : '有问题，尽管问' }}</div>
-        <div class="empty-sub" v-if="!providers.length">先在设置里添加一个模型提供商</div>
-        <div class="empty-sub" v-else>{{ appMode === 'image' ? (imageModelId || '未配置生图模型') : currentModelLabel }}</div>
-        <div class="sugg-list" v-if="!providers.length">
+        <div class="empty-title">{{ emptyTitle }}</div>
+        <div class="empty-sub" v-if="appMode === 'chat' && !providers.length">先在设置里添加一个模型提供商</div>
+        <div class="empty-sub" v-else>{{ emptySub }}</div>
+        <div class="sugg-list" v-if="appMode === 'chat' && !providers.length">
           <button class="sugg" @click="openSettings()"><b>添加提供商</b>配置 API 地址与密钥，开始对话</button>
         </div>
       </div>
@@ -80,10 +80,10 @@
               </div>
 
               <!-- 工具调用 -->
-              <div v-for="t in (m.toolCalls || [])" :key="t.id" class="tool-card">
+              <div v-for="t in displayToolCalls(m)" :key="t.id" class="tool-card" :class="{ 'remote-tool': isRemoteTool(t) }">
                 <button class="tool-head" @click="t._open = !t._open">
                   <span class="tool-ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M14.7 6.3a4.5 4.5 0 0 0-6 6L3 18l3 3 5.7-5.7a4.5 4.5 0 0 0 6-6L14 13l-3-3 3.7-3.7z"/></svg></span>
-                  <span class="tool-name">{{ toolLabel(t.name) }}</span>
+                  <span class="tool-name">{{ toolTitle(t) }}</span>
                   <span class="tool-status">
                     <span class="spinner" v-if="t.status === 'composing' || t.status === 'running'"></span>
                     <template v-if="t.status === 'composing'">编写中</template>
@@ -132,7 +132,7 @@
                   </div>
                 </div>
               </div>
-              <span class="typing-dot" v-if="m.status === 'streaming' && !m.content && !m.reasoning && !(m.toolCalls && m.toolCalls.length) && !(m.images && m.images.length) && !(m.previews && m.previews.length)"></span>
+              <span class="typing-dot" v-if="m.status === 'streaming' && !m.content && !m.reasoning && !displayToolCalls(m).length && !(m.images && m.images.length) && !(m.previews && m.previews.length)"></span>
 
               <div class="err-box" v-if="m.error">{{ m.error }}<button class="err-retry" @click="regenerate(mi)">重试</button></div>
 
@@ -153,7 +153,7 @@
         </button>
       </transition>
 
-      <div class="token-widget" :class="{open: tokenPanelOpen, warn: tokenStats.warn, danger: tokenStats.danger}" v-if="appMode !== 'image' && currentProvider && currentModelId">
+      <div class="token-widget" :class="{open: tokenPanelOpen, warn: tokenStats.warn, danger: tokenStats.danger}" v-if="appMode === 'chat' && currentProvider && currentModelId">
         <button class="token-orb" :style="tokenRingStyle" @click="tokenPanelOpen = !tokenPanelOpen" aria-label="上下文用量">
           <span></span>
         </button>
@@ -334,11 +334,11 @@
           <button class="act-item" @click="attachImage()">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="18" height="18" rx="3"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5-11 11"/></svg>图片
           </button>
-          <button class="act-item" @click="attachFile()">
+          <button class="act-item" v-if="appMode !== 'remote'" @click="attachFile()">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M13 3H6a1.5 1.5 0 0 0-1.5 1.5v15A1.5 1.5 0 0 0 6 21h12a1.5 1.5 0 0 0 1.5-1.5V9.5L13 3z"/><path d="M13 3v6.5h6.5"/></svg>文本文件
           </button>
-          <button class="act-item" @click="sheet = 'files'">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z"/></svg>工作区（{{ fileCount }} 文件）
+          <button class="act-item" @click="openFilesSheet()">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z"/></svg>{{ appMode === 'remote' ? '桌面工作区' : ('工作区（' + fileCount + ' 文件）') }}
           </button>
         </div>
       </template>
@@ -346,8 +346,8 @@
       <!-- 会话文件 -->
       <template v-else-if="sheet === 'files'">
         <div class="sheet-title">
-          <span>会话工作区</span>
-          <span class="sheet-actions">
+          <span>{{ appMode === 'remote' ? '桌面工作区' : '会话工作区' }}</span>
+          <span class="sheet-actions" v-if="appMode !== 'remote'">
             <button class="icon-btn small" @click="newWorkspaceItem()" aria-label="新建">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg>
             </button>
@@ -358,8 +358,35 @@
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v12M7 12l5 5 5-5"/><path d="M5 21h14"/></svg>
             </button>
           </span>
+          <span class="sheet-actions" v-else>
+            <button class="icon-btn small" @click="loadRemoteWorkspaceFiles(true)" aria-label="刷新">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M20 12a8 8 0 1 1-2.3-5.6M20 3v4h-4"/></svg>
+            </button>
+          </span>
         </div>
-        <div class="sheet-body">
+        <div class="sheet-body" v-if="appMode === 'remote'">
+          <div class="hint">点击文件会把相对路径插入输入框。{{ remoteForm.filesTruncated ? '列表已截断，请直接输入更深路径。' : '' }}</div>
+          <div class="model-none" v-if="remoteForm.loadingFiles">读取桌面工作区文件中</div>
+          <div class="model-none" v-else-if="!remoteFileCount">暂无可显示文件</div>
+          <div class="card file-tree" v-else>
+            <div class="file-row tree-row" v-for="row in remoteWorkspaceRows" :key="'remote:' + row.type + ':' + row.path" :style="{paddingLeft: (10 + row.depth * 18) + 'px'}">
+              <button class="file-main" @click="openRemoteWorkspaceRow(row)">
+                <span class="file-ic" :class="'kind-' + (row.type === 'folder' ? 'folder' : row.kind)">
+                  <svg v-if="row.type === 'folder'" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z"/></svg>
+                  <svg v-else-if="row.kind === 'image'" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="18" height="18" rx="3"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5-11 11"/></svg>
+                  <span v-else class="file-ext">{{ fileExt(row.path) }}</span>
+                </span>
+                <span class="file-info">
+                  <span class="file-name">{{ row.name }}</span>
+                  <span class="file-meta" style="display:block" v-if="row.type === 'folder'">{{ row.childCount }} 项</span>
+                  <span class="file-meta" style="display:block" v-else>{{ U.fmtSize(row.file.size) }} · {{ U.fmtFull(row.file.mtime) }}</span>
+                </span>
+                <svg v-if="row.type === 'folder'" class="chev folder-chev" :class="{open: row.open}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 6l6 6-6 6"/></svg>
+              </button>
+            </div>
+          </div>
+        </div>
+        <div class="sheet-body" v-else>
           <div class="model-none" v-if="!fileCount && !folderCount">工作区为空<br>AI 写入的代码、你新建或上传的文件会出现在这里</div>
           <div class="card file-tree" v-else>
             <div class="file-row tree-row" v-for="row in workspaceRows" :key="row.type + ':' + row.path" :style="{paddingLeft: (10 + row.depth * 18) + 'px'}">
@@ -415,6 +442,11 @@
         <button class="row setting-entry" @click="pushPage('settings-image')">
           <span class="setting-ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="18" height="18" rx="3"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5-11 11"/></svg></span>
           <span class="row-label">图片生成<span class="rl-sub">首选模型与风格预设</span></span>
+          <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 6l6 6-6 6"/></svg>
+        </button>
+        <button class="row setting-entry" @click="pushPage('settings-remote')">
+          <span class="setting-ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M7 11h10M9 15h6"/><rect x="3" y="4" width="18" height="15" rx="3"/></svg></span>
+          <span class="row-label">远程 Codex<span class="rl-sub">连接局域网里的 wepchat-host</span></span>
           <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 6l6 6-6 6"/></svg>
         </button>
         <button class="row setting-entry" @click="pushPage('settings-general')">
@@ -591,6 +623,65 @@
         </div>
       </div>
       <div class="hint">尺寸、质量、格式、背景和当前风格选择在生图工作台里调整。</div>
+    </div>
+  </div>
+
+  <div class="page" v-if="pageIs('settings-remote')">
+    <div class="page-head">
+      <button class="icon-btn" @click="closePage()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M15 5l-7 7 7 7"/></svg></button>
+      <div class="page-title">远程 Codex</div>
+    </div>
+    <div class="page-body">
+      <div class="sec-label">连接</div>
+      <div class="card">
+        <button class="row" @click="addRemoteHost()">
+          <span class="row-label">添加 Host<span class="rl-sub">粘贴 wepchat-host 的配对文本或地址 token</span></span>
+          <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
+        </button>
+        <button class="row" @click="scanRemoteHost()">
+          <span class="row-label">扫码连接<span class="rl-sub">APK 环境可用；浏览器调试时请手动粘贴</span></span>
+          <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4h6v6H4zM14 4h6v6h-6zM4 14h6v6H4zM15 14h2v2h-2zM18 18h2v2h-2zM14 18h2v2h-2zM18 14h2v2h-2z"/></svg>
+        </button>
+        <button class="row" @click="resumeRemoteThreadFromSettings()">
+          <span class="row-label">续接已有会话<span class="rl-sub">选择桌面 Codex 线程，并同步可显示的旧消息</span></span>
+          <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 12a8 8 0 1 0 2.3-5.6M4 4v6h6"/></svg>
+        </button>
+      </div>
+
+      <div class="sec-label">Host</div>
+      <div class="model-none" v-if="!remoteHosts.length">暂无远程 Host</div>
+      <div class="remote-host-list" v-else>
+        <div class="remote-host-card" v-for="h in remoteHosts" :key="h.id">
+          <button class="remote-host-main" @click="selectRemoteHost(h)">
+            <span class="remote-host-copy">
+              <span class="remote-host-title">{{ h.name }}</span>
+              <span class="remote-host-meta">{{ h.baseUrl }}</span>
+              <span class="remote-host-meta">{{ remoteHostStatus(h) }}</span>
+            </span>
+            <span class="session-admin-current" v-if="activeRemoteHost && activeRemoteHost.id === h.id">默认</span>
+          </button>
+          <div class="remote-host-actions">
+            <button @click="testRemoteHost(h)" :disabled="remoteForm.testingHostId === h.id">测试</button>
+            <button @click="editRemoteHost(h)">编辑</button>
+            <button class="danger" @click="deleteRemoteHost(h)">删除</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="sec-label">工作区</div>
+      <div class="card" v-if="activeRemoteHost">
+        <button class="row" @click="loadRemoteWorkspaces(activeRemoteHost)">
+          <span class="row-label">刷新工作区<span class="rl-sub">当前默认：{{ remoteWorkspaceLabel(activeRemoteHost) }}</span></span>
+          <span class="row-value">{{ remoteForm.loadingHostId === activeRemoteHost.id ? '读取中' : '刷新' }}</span>
+        </button>
+        <template v-if="remoteForm.workspacesHostId === activeRemoteHost.id">
+          <button class="row" v-for="ws in remoteForm.workspaces" :key="ws.id" @click="selectRemoteWorkspace(activeRemoteHost, ws)">
+            <span class="row-label">{{ ws.name || ws.id }}<span class="rl-sub">{{ ws.path }}</span></span>
+            <span class="row-value" v-if="activeRemoteHost.lastWorkspaceId === ws.id">默认</span>
+          </button>
+        </template>
+      </div>
+      <div class="hint">远程会话只能选择 Host 已注册的工作区。手机端不会直接传任意本机路径给 Codex。</div>
     </div>
   </div>
 
@@ -971,6 +1062,9 @@
 <script src="js/api.js"></script>
 <script src="js/image-api.js"></script>
 <script src="js/tools.js"></script>
+<script src="js/remote-api.js"></script>
+<script src="js/remote-history.js"></script>
+<script src="js/remote-scan.js"></script>
 <script src="js/app.js"></script>
 </body>
 </html>

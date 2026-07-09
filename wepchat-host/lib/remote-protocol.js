@@ -14,6 +14,26 @@ function textInput(text) {
   };
 }
 
+function imageInput(url) {
+  return {
+    type: 'image',
+    url: String(url || ''),
+    detail: null
+  };
+}
+
+function turnInput(text, images) {
+  const input = [];
+  const body = String(text == null ? '' : text);
+  if (body.trim()) input.push(textInput(body));
+  (Array.isArray(images) ? images : []).slice(0, 4).forEach(img => {
+    const url = typeof img === 'string' ? img : (img && (img.url || img.dataUrl || img.imageUrl));
+    if (!url) return;
+    input.push(imageInput(url));
+  });
+  return input;
+}
+
 function sanitizeThread(thread) {
   if (!thread) return null;
   return {
@@ -239,10 +259,11 @@ class RemoteProtocol {
     this._requireCodex();
     if (!msg.threadId) throw new Error('threadId is required');
     const text = msg.text != null ? msg.text : msg.prompt;
-    if (!String(text || '').trim()) throw new Error('text is required');
+    const input = turnInput(text, msg.images);
+    if (!input.length) throw new Error('text or image is required');
     const params = {
       threadId: msg.threadId,
-      input: [textInput(text)]
+      input
     };
     if (msg.clientUserMessageId) params.clientUserMessageId = msg.clientUserMessageId;
     const ws = this._workspaceFromMessage(msg);
@@ -257,12 +278,13 @@ class RemoteProtocol {
     const expectedTurnId = msg.expectedTurnId || this.activeTurnByThread.get(msg.threadId);
     if (!expectedTurnId) throw new Error('expectedTurnId is required when no active turn is known');
     const text = msg.text != null ? msg.text : msg.prompt;
-    if (!String(text || '').trim()) throw new Error('text is required');
+    const input = turnInput(text, msg.images);
+    if (!input.length) throw new Error('text or image is required');
     return this.codex.request('turn/steer', {
       threadId: msg.threadId,
       expectedTurnId,
       clientUserMessageId: msg.clientUserMessageId || null,
-      input: [textInput(text)]
+      input
     });
   }
 

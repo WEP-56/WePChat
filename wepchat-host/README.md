@@ -19,7 +19,7 @@ The phone never talks to `codex app-server` directly. The host process owns auth
 
 This package is an MVP scaffold. It currently provides:
 
-- zero runtime npm dependencies
+- one small runtime dependency for terminal QR pairing
 - `wepchat-host` CLI
 - workspace registry from cwd, `--workspace`, or config
 - token-protected HTTP API
@@ -33,6 +33,8 @@ This package is an MVP scaffold. It currently provides:
 - `turn/start`
 - `turn/steer`
 - `turn/interrupt`
+- workspace file listing for mobile path insertion
+- image input forwarding for remote turns
 - command/file-change approval forwarding
 - Codex notification translation for message deltas, item lifecycle, command output, turn lifecycle, and diff updates
 
@@ -40,10 +42,18 @@ It does not attempt to control a running Codex Desktop window or reuse Codex's o
 
 ## Usage
 
-From a project directory:
+From this repository on Windows/PowerShell:
+
+```powershell
+cd E:\wepchat\wepchat
+npm --prefix .\wepchat-host install
+node .\wepchat-host\bin\wepchat-host.js --lan
+```
+
+After installing `wepchat-host` on PATH, or when running a packaged version, start it from a project directory:
 
 ```bash
-npx wepchat-host --lan
+wepchat-host --lan
 ```
 
 Or explicitly register directories:
@@ -53,6 +63,7 @@ wepchat-host --lan --workspace E:\wepchat\wepchat --workspace D:\projects\foo
 ```
 
 By default the server listens on `127.0.0.1:8797`. Use `--lan` only when you want access from another device on the same network.
+When `qrcode-terminal` is installed, startup prints a QR code for the first usable LAN pairing URL. If the desktop has VPN or virtual adapters, RFC1918 LAN addresses such as `192.168.x.x`, `10.x.x.x`, and `172.16-31.x.x` are printed first.
 
 ```bash
 wepchat-host --help
@@ -71,6 +82,7 @@ Token-protected:
 ```text
 GET /pairing
 GET /workspaces
+GET /workspace-files?workspaceId=...
 GET /threads?workspaceId=...
 ```
 
@@ -103,7 +115,7 @@ Client messages:
 { "type": "remote.thread.resume", "id": "2", "workspaceId": "ws_...", "threadId": "..." }
 { "type": "remote.thread.read", "id": "3", "threadId": "...", "includeTurns": true }
 { "type": "remote.threads.list", "id": "4", "workspaceId": "ws_..." }
-{ "type": "remote.turn.start", "id": "5", "workspaceId": "ws_...", "threadId": "...", "text": "Fix the failing tests" }
+{ "type": "remote.turn.start", "id": "5", "workspaceId": "ws_...", "threadId": "...", "text": "Fix the failing tests", "images": [] }
 { "type": "remote.turn.steer", "id": "6", "threadId": "...", "text": "Also check Windows behavior" }
 { "type": "remote.turn.interrupt", "id": "7", "threadId": "..." }
 { "type": "remote.approval.respond", "id": "8", "approvalId": "appr_...", "decision": "accept" }
