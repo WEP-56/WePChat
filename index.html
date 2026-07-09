@@ -112,7 +112,27 @@
                   <span>{{ img.path }}</span>
                 </button>
               </div>
-              <span class="typing-dot" v-else-if="m.status === 'streaming' && !m.content && !m.reasoning && !(m.toolCalls && m.toolCalls.length)"></span>
+              <div class="html-preview-list" v-if="m.previews && m.previews.length">
+                <div class="html-preview-card" v-for="p in m.previews" :key="p.id" role="button" tabindex="0" @click="openPreviewCard(p)" @keydown.enter.prevent="openPreviewCard(p)">
+                  <div class="html-preview-head">
+                    <span class="html-preview-title">{{ p.title || (p.kind === 'js' ? 'JS 运行器' : 'HTML 预览') }}</span>
+                    <span class="html-preview-path">{{ p.path }}</span>
+                  </div>
+                  <div class="html-preview-frame-wrap" v-if="p.kind !== 'js'">
+                    <iframe class="html-preview-frame" :srcdoc="p.doc" sandbox="allow-scripts" tabindex="-1" aria-hidden="true"></iframe>
+                  </div>
+                  <div class="js-run-card" v-else>
+                    <div class="js-run-icon">
+                      <svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
+                    </div>
+                    <div class="js-run-copy">
+                      <span>打开代码与终端</span>
+                      <small>支持 console、prompt 输入和 SandboxFS.writeFile</small>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <span class="typing-dot" v-if="m.status === 'streaming' && !m.content && !m.reasoning && !(m.toolCalls && m.toolCalls.length) && !(m.images && m.images.length) && !(m.previews && m.previews.length)"></span>
 
               <div class="err-box" v-if="m.error">{{ m.error }}<button class="err-retry" @click="regenerate(mi)">重试</button></div>
 
@@ -418,7 +438,7 @@
           <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 6l6 6-6 6"/></svg>
         </button>
       </div>
-      <div class="hint">WepChat v{{ appVersion }} · 本地存储 {{ U.fmtSize(storageUsed) }}</div>
+      <div class="hint">WepChat v{{ appVersionLabel }} · 本地存储 {{ U.fmtSize(storageUsed) }}</div>
     </div>
   </div>
 
@@ -698,7 +718,7 @@
         <div class="about-logo">W</div>
         <div class="about-copy">
           <div class="about-title">WepChat</div>
-          <div class="about-sub">{{ appTag }}</div>
+          <div class="about-sub">{{ appTagLabel }}</div>
         </div>
       </div>
       <div class="card about-card">
@@ -850,9 +870,31 @@
       <template v-else>
         <iframe class="pv-frame" ref="viewerFrame" v-show="viewer.tab === 'view' && viewerIsHtml" sandbox="allow-scripts allow-modals"></iframe>
         <div class="viewer-md md" v-show="viewer.tab === 'view' && viewerIsMarkdown" v-html="renderViewerMarkdown()"></div>
-        <div class="code-editor" v-show="viewer.tab === 'source'">
-          <pre class="code-highlight" ref="viewerHighlight" aria-hidden="true"><code class="hljs" v-html="highlightSource(viewer.content, viewer.name)"></code></pre>
-          <textarea class="code-input" v-model="viewer.content" wrap="off" spellcheck="false" autocapitalize="off" autocomplete="off" @input="onViewerInput()" @scroll="syncEditorScroll($event)"></textarea>
+        <div class="viewer-source" v-show="viewer.tab === 'source'" :class="{ 'viewer-source-js': viewerIsJs }">
+          <div class="viewer-code-pane">
+            <div class="code-editor">
+              <pre class="code-highlight" ref="viewerHighlight" aria-hidden="true"><code class="hljs" v-html="highlightSource(viewer.content, viewer.name)"></code></pre>
+              <textarea class="code-input" v-model="viewer.content" wrap="off" spellcheck="false" autocapitalize="off" autocomplete="off" @input="onViewerInput()" @scroll="syncEditorScroll($event)"></textarea>
+            </div>
+          </div>
+          <div class="viewer-terminal" v-if="viewerIsJs">
+            <div class="term-head">
+              <span>Terminal</span>
+              <button type="button" @click="clearViewerTerminal()">清空</button>
+            </div>
+            <div class="term-body" ref="viewerTerminalBody">
+              <div class="term-empty" v-if="!viewer.terminal.length">点击运行查看输出</div>
+              <div class="term-line" v-for="(l, i) in viewer.terminal" :key="i" :class="l.level">{{ l.text }}</div>
+            </div>
+            <form class="term-input-row" :class="{waiting: viewer.prompting}" @submit.prevent="submitViewerTerminal()">
+              <span>&gt;</span>
+              <input ref="viewerTerminalInput" v-model="viewer.terminalInput" autocapitalize="off" autocomplete="off" spellcheck="false" :placeholder="viewer.prompting ? '输入回答并回车' : '输入内容，或 run / clear'">
+            </form>
+          </div>
+          <button class="viewer-run-fab" v-if="viewerIsJs" :disabled="viewer.running" @click="runViewerJs()" aria-label="运行 JavaScript">
+            <svg v-if="!viewer.running" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
+            <svg v-else viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3a9 9 0 1 1-8.3 5.5"/></svg>
+          </button>
         </div>
         <div class="pv-console" v-show="viewer.tab === 'console'">
           <div class="pv-empty" v-if="!viewer.logs.length">暂无输出</div>

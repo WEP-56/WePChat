@@ -1,0 +1,21 @@
+{
+  "name": "wepchat-host",
+  "version": "0.1.0",
+  "description": "LAN bridge for controlling Codex app-server from WepChat.",
+  "type": "commonjs",
+  "bin": {
+    "wepchat-host": "bin/wepchat-host.js"
+  },
+  "files": [
+    "bin",
+    "lib",
+    "README.md"
+  ],
+  "scripts": {
+    "check": "node --check bin/wepchat-host.js && node --check lib/config.js && node --check lib/codex-client.js && node --check lib/http-server.js && node --check lib/remote-protocol.js && node --check lib/workspaces.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "license": "MIT"
+}

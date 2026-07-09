@@ -22,6 +22,7 @@
       if (Array.isArray(m.toolCalls)) {
         m.toolCalls.forEach(t => { t._open = false; });
       }
+      m.previews = Array.isArray(m.previews) ? m.previews : [];
     });
     sess.files = sess.files || {};
     sess.folders = Array.isArray(sess.folders) ? sess.folders : [];
@@ -166,11 +167,21 @@
   function isHtmlName(name) { return /\.html?$/i.test(name || ''); }
   function isMarkdownName(name) { return /\.(md|markdown)$/i.test(name || ''); }
   function isImageName(name) { return /\.(png|jpe?g|webp|gif|bmp)$/i.test(name || ''); }
+  function isJsName(name) { return /\.m?js$/i.test(name || ''); }
 
-  const APP_VERSION = '1.0.3';
-  const APP_TAG = 'v' + APP_VERSION;
   const RELEASES_URL = 'https://github.com/WEP-56/WePChat/releases';
   const LATEST_RELEASE_API = 'https://api.github.com/repos/WEP-56/WePChat/releases/latest';
+
+  function normalizeAppVersion(value) {
+    const text = String(value || '').trim().replace(/^v/i, '');
+    const m = text.match(/^(\d+)\.(\d+)\.(\d+)/);
+    return m ? (m[1] + '.' + m[2] + '.' + m[3]) : '';
+  }
+
+  function appTag(version) {
+    const v = normalizeAppVersion(version);
+    return v ? 'v' + v : '';
+  }
 
   function parseReleaseTag(tag) {
     const m = String(tag || '').trim().match(/^v(\d+)\.(\d+)\.(\d+)$/i);
@@ -207,6 +218,33 @@
       };
       xhr.onerror = () => reject(new Error('network'));
       xhr.ontimeout = () => reject(new Error('timeout'));
+      xhr.send();
+    });
+  }
+
+  function plusRuntimeVersion() {
+    return new Promise(resolve => {
+      if (!window.plus || !plus.runtime) return resolve('');
+      resolve(normalizeAppVersion(plus.runtime.version));
+    });
+  }
+
+  function manifestVersion() {
+    return new Promise(resolve => {
+      const xhr = new XMLHttpRequest();
+      xhr.open('GET', 'manifest.json', true);
+      xhr.timeout = 5000;
+      xhr.onload = () => {
+        if (xhr.status < 200 || xhr.status >= 300) return resolve('');
+        try {
+          const data = JSON.parse(xhr.responseText || '{}');
+          resolve(normalizeAppVersion(data && data.version && data.version.name));
+        } catch (e) {
+          resolve('');
+        }
+      };
+      xhr.onerror = () => resolve('');
+      xhr.ontimeout = () => resolve('');
       xhr.send();
     });
   }
@@ -483,8 +521,11 @@
         U,
         API,
         MODEL_META,
-        appVersion: APP_VERSION,
-        appTag: APP_TAG,
+        appVersion: '',
+        appTag: '',
+        appVersionSource: '',
+        appVersionLoaded: false,
+        appVersionLoading: false,
         settings,
         providers,
         index,
@@ -530,6 +571,11 @@
           tab: 'source',
           doc: '',
           logs: [],
+          terminal: [],
+          terminalInput: '',
+          running: false,
+          prompting: false,
+          promptQuestion: '',
           editPrompt: '',
           dirty: false,
           address: '',
@@ -669,6 +715,12 @@
         return (Array.isArray(this.settings.imageStylePresets) ? this.settings.imageStylePresets : [])
           .map(normalizeStylePreset)
           .filter(Boolean);
+      },
+      appVersionLabel() {
+        return this.appVersion || '读取中';
+      },
+      appTagLabel() {
+        return this.appTag || (this.appVersionLoading ? '读取版本中' : '版本未知');
       },
       latestRelease() {
         return this.updateCheck && this.updateCheck.latest || null;
@@ -864,6 +916,9 @@
       viewerIsMarkdown() {
         return isMarkdownName(this.viewer.name);
       },
+      viewerIsJs() {
+        return isJsName(this.viewer.name) && !this.viewer.isImage;
+      },
       viewerCanSave() {
         return !!this.viewer.name && !this.viewer.isImage;
       },
@@ -913,7 +968,9 @@
         this.growInput();
         this.scrollToBottom(true);
       });
-      if (this.settings.updateAutoCheck) this.checkReleaseUpdate({ silent: true });
+      this.refreshAppVersion().then(() => {
+        if (this.settings.updateAutoCheck) this.checkReleaseUpdate({ silent: true });
+      });
     },
 
     methods: {
@@ -921,6 +978,7 @@
         if (this.plusReady || !window.plus) return;
         this.plusReady = true;
         document.documentElement.classList.add('plus-app');
+        this.refreshAppVersion({ force: true });
         this.initPushHandlers();
         if (plus.key && !this.backHandler) {
           this.backHandler = () => this.handleBackButton();
@@ -974,6 +1032,32 @@
         this.storageUsed = Store.usage();
         this.applyTheme();
       },
+      refreshAppVersion(opts) {
+        opts = opts || {};
+        if (this.appVersionLoading && this._appVersionPromise) return this._appVersionPromise;
+        if (this.appVersionLoaded && !opts.force) return Promise.resolve(this.appVersion);
+        this.appVersionLoading = true;
+        this._appVersionPromise = (async () => {
+          const plusVersion = await plusRuntimeVersion();
+          let version = plusVersion;
+          let source = plusVersion ? 'app' : '';
+          if (!version) {
+            version = await manifestVersion();
+            source = version ? 'manifest' : '';
+          }
+          if (version) {
+            this.appVersion = version;
+            this.appTag = appTag(version);
+            this.appVersionSource = source;
+          }
+          this.appVersionLoaded = true;
+          return this.appVersion;
+        })().finally(() => {
+          this.appVersionLoading = false;
+          this._appVersionPromise = null;
+        });
+        return this._appVersionPromise;
+      },
       setUpdateAutoCheck(on) {
         this.settings.updateAutoCheck = !!on;
         this.persistSettings();
@@ -984,6 +1068,8 @@
         this.updateCheck.checking = true;
         this.updateCheck.failed = false;
         try {
+          await this.refreshAppVersion();
+          if (!this.appTag) throw new Error('version unavailable');
           const release = await fetchLatestRelease();
           const tag = String(release.tag_name || '').trim();
           const latest = {
@@ -993,7 +1079,7 @@
             url: String(release.html_url || RELEASES_URL),
             publishedAt: release.published_at || release.created_at || ''
           };
-          const hasUpdate = compareReleaseTags(tag, APP_TAG) > 0;
+          const hasUpdate = compareReleaseTags(tag, this.appTag) > 0;
           this.updateCheck.latest = latest;
           this.updateCheck.hasUpdate = hasUpdate;
           this.updateCheck.checked = true;
@@ -1799,7 +1885,7 @@
           create_folder: '创建文件夹',
           move_path: '移动路径',
           path_exists: '检查路径',
-          preview_file: '预览 HTML',
+          preview_file: '预览文件',
           create_workspace: '创建工作区',
           run_service: '启动预览',
           stop_service: '停止预览',
@@ -2185,6 +2271,7 @@
           content: '',
           reasoning: '',
           toolCalls: [],
+          previews: [],
           status: 'streaming',
           model,
           createdAt: U.now()
@@ -2280,6 +2367,7 @@
                 confirm: msg => this.confirm(msg, '工具授权'),
                 openPreview: payload => this.openPreview(payload),
                 openService: serviceId => this.openServicePreview(serviceId),
+                createPreviewCard: payload => this.createPreviewCard(payload, assistantMsg),
                 imageGo: args => this.imageGoTool(args, assistantMsg)
               });
               t.result = out;
@@ -2528,6 +2616,11 @@
           tab: f.dataUrl ? 'view' : (isHtmlName(name) || isMarkdownName(name) ? 'view' : 'source'),
           doc: '',
           logs: [],
+          terminal: [],
+          terminalInput: '',
+          running: false,
+          prompting: false,
+          promptQuestion: '',
           editPrompt: '',
           dirty: false,
           address: name,
@@ -2959,6 +3052,130 @@
         } catch (e) {}
         return U.escapeHtml(withTail);
       },
+      viewerSandboxFiles() {
+        const files = {};
+        const name = normalizeWorkspacePath(this.viewer.name || '', { allowEmpty: true });
+        if (!name) return files;
+        files[name] = this.viewer.content || '';
+        const base = name.split('/').pop();
+        if (base && base !== name) files[base] = this.viewer.content || '';
+        return files;
+      },
+      pushViewerTerminal(level, text) {
+        this.viewer.terminal = Array.isArray(this.viewer.terminal) ? this.viewer.terminal : [];
+        this.viewer.terminal.push({
+          level: level || 'log',
+          text: String(text == null ? '' : text),
+          at: U.now()
+        });
+        if (this.viewer.terminal.length > 120) this.viewer.terminal.splice(0, this.viewer.terminal.length - 120);
+        nextTick(() => {
+          const el = this.$refs.viewerTerminalBody;
+          if (el) el.scrollTop = el.scrollHeight;
+        });
+      },
+      clearViewerTerminal() {
+        this.viewer.terminal = [];
+      },
+      async submitViewerTerminal() {
+        const raw = String(this.viewer.terminalInput || '');
+        const cmd = raw.trim();
+        if (this.viewer.running && this._viewerPromptResolve) {
+          this.viewer.terminalInput = '';
+          this.pushViewerTerminal('input', raw);
+          const resolve = this._viewerPromptResolve;
+          this._viewerPromptResolve = null;
+          this.viewer.prompting = false;
+          this.viewer.promptQuestion = '';
+          resolve(raw);
+          return;
+        }
+        if (!cmd) return;
+        this.viewer.terminalInput = '';
+        if (cmd === 'clear') {
+          this.clearViewerTerminal();
+          return;
+        }
+        if (this.viewer.running) {
+          this.pushViewerTerminal('warn', '程序正在运行，等待脚本请求输入');
+          return;
+        }
+        if (cmd === 'run') {
+          await this.runViewerJs('');
+          return;
+        }
+        await this.runViewerJs(raw);
+      },
+      waitViewerPrompt(question) {
+        return new Promise(resolve => {
+          this.viewer.prompting = true;
+          this.viewer.promptQuestion = String(question || '');
+          this.pushViewerTerminal('prompt', this.viewer.promptQuestion || '请输入：');
+          this._viewerPromptResolve = resolve;
+          nextTick(() => {
+            const input = this.$refs.viewerTerminalInput;
+            if (input && input.focus) input.focus();
+          });
+        });
+      },
+      async runViewerJs(stdin) {
+        if (!this.viewerIsJs || this.viewer.running) return;
+        const inputText = stdin == null ? String(this.viewer.terminalInput || '') : String(stdin || '');
+        if (stdin == null) this.viewer.terminalInput = '';
+        const started = Date.now();
+        this.viewer.running = true;
+        this.viewer.prompting = false;
+        this.viewer.promptQuestion = '';
+        this._viewerPromptResolve = null;
+        this.pushViewerTerminal('cmd', '$ run ' + (this.viewer.name || 'script.js'));
+        if (inputText) this.pushViewerTerminal('input', inputText);
+        try {
+          const r = await Tools.runWorkspaceJS(this.session, {
+            code: this.viewer.content || '',
+            files: this.viewerSandboxFiles(),
+            stdin: inputText,
+            timeout: 5 * 60 * 1000,
+            onPrompt: question => this.waitViewerPrompt(question)
+          });
+          if (r.stdout) this.pushViewerTerminal('log', r.stdout);
+          if (r.stderr) this.pushViewerTerminal(r.ok ? 'warn' : 'error', r.stderr);
+          if (r.result !== undefined && r.result !== null && r.result !== '') this.pushViewerTerminal('return', r.result);
+          if (r.saved && r.saved.length) {
+            r.saved.forEach(path => {
+              const folder = parentFolder(path);
+              if (folder) this.openFolders[folder] = true;
+            });
+            this.pushViewerTerminal('write', '写入工作区文件：\n' + r.saved.map(path => '- ' + path).join('\n'));
+            if (r.saved.includes(this.viewer.name)) {
+              const f = this.session.files[this.viewer.name];
+              if (f && !f.dataUrl) {
+                this.viewer.content = String(f.content || '');
+                this.viewer.originalContent = this.viewer.content;
+                this.viewer.dirty = false;
+              }
+            }
+            this.persistSession();
+          }
+          if (r.skippedWrites && r.skippedWrites.length) {
+            this.pushViewerTerminal('warn', '脚本执行失败，以下写入未保存：\n' + r.skippedWrites.map(path => '- ' + path).join('\n'));
+          }
+          if (!r.stdout && !r.stderr && (r.result === undefined || r.result === null || r.result === '') && !(r.saved && r.saved.length)) {
+            this.pushViewerTerminal(r.ok ? 'muted' : 'error', r.ok ? '执行完成（无输出）' : '执行失败（无输出）');
+          }
+          this.pushViewerTerminal(r.ok ? 'muted' : 'error', (r.ok ? '退出码 0' : '执行失败') + ' · ' + (Date.now() - started) + 'ms');
+        } catch (e) {
+          this.pushViewerTerminal('error', e && e.message || String(e));
+        } finally {
+          if (this._viewerPromptResolve) {
+            const resolve = this._viewerPromptResolve;
+            this._viewerPromptResolve = null;
+            resolve('');
+          }
+          this.viewer.prompting = false;
+          this.viewer.promptQuestion = '';
+          this.viewer.running = false;
+        }
+      },
       runViewerPreview() {
         if (!isHtmlName(this.viewer.name)) return;
         this.viewer.logs = [];
@@ -3030,6 +3247,55 @@
         this.preview.doc = this.buildServiceDoc(svc);
         this.pushPage('preview');
         nextTick(() => this.runPreview());
+      },
+      createPreviewCard(payload, targetMsg) {
+        payload = payload || {};
+        const svc = this.serviceById(payload.serviceId);
+        const entry = payload.entry || (svc && svc.entry) || '';
+        const kind = payload.kind === 'js' || isJsName(entry) ? 'js' : 'html';
+        if (!entry || !this.session.files[entry]) return kind === 'js' ? '错误：JS 文件不存在' : '错误：HTML 预览入口不存在';
+        const card = {
+          id: U.uuid(),
+          kind,
+          serviceId: payload.serviceId || (svc && svc.id) || '',
+          path: entry,
+          title: payload.title || (svc && svc.name) || entry,
+          doc: kind === 'html' ? this.buildWorkspaceHtml(entry, null, 'preview-card-' + U.uuid()) : '',
+          createdAt: U.now()
+        };
+        if (targetMsg) {
+          targetMsg.previews = Array.isArray(targetMsg.previews) ? targetMsg.previews : [];
+          targetMsg.previews.push(card);
+        }
+        if (kind === 'js') return '已生成 JS 运行卡片：' + entry + '。用户点击卡片后会打开代码与终端运行器。';
+        return '已生成 HTML 预览卡片：' + entry + '。用户点击卡片后会打开完整预览。';
+      },
+      openPreviewCard(card) {
+        if (!card) return;
+        if (card.kind === 'js' || isJsName(card.path || '')) {
+          if (!card.path || !this.session.files[card.path]) {
+            U.toast('JS 文件不存在：' + (card.path || ''));
+            return;
+          }
+          this.viewFile(card.path);
+          return;
+        }
+        let svc = card.serviceId && this.serviceById(card.serviceId);
+        const path = card.path || (svc && svc.entry) || '';
+        if (!svc && path) {
+          if (!this.session.files[path]) {
+            U.toast('入口文件不存在：' + path);
+            return;
+          }
+          this.session.services = Array.isArray(this.session.services) ? this.session.services : [];
+          svc = this.session.services.find(s => s.entry === path);
+          if (!svc) {
+            svc = { id: U.uuid(), name: card.title || path, entry: path, status: 'stopped', createdAt: U.now(), updatedAt: U.now() };
+            this.session.services.push(svc);
+            this.persistSession();
+          }
+        }
+        if (svc) this.openServicePreview(svc.id);
       },
       buildServiceDoc(svc) {
         const path = this.preview.currentPath && this.session.files[this.preview.currentPath]
@@ -3149,6 +3415,7 @@
       onPreviewMessage(e) {
         const data = e.data || {};
         if (data.source !== 'wepchat-preview') return;
+        if (/^preview-card-/.test(String(data.target || ''))) return;
         if (data.type === 'navigate') {
           this.navigateBrowser(data.target === 'viewer' ? 'viewer' : 'preview', data.href);
           return;

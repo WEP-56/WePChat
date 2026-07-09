@@ -19,7 +19,22 @@ const Tools = (() => {
       var out = [], err = [];
       var LIMIT = ${MAX_OUTPUT};
       var inputFiles = e.data.files || {};
+      var inputText = String(e.data.stdin == null ? '' : e.data.stdin);
+      var inputArgs = Array.isArray(e.data.argv) ? e.data.argv.map(String) : [];
       var writtenFiles = {};
+      var promptSeq = 0;
+      var pendingPrompts = 0;
+      var promptResolvers = {};
+      self.onmessage = function (ev) {
+        var msg = ev.data || {};
+        if (msg.type !== 'prompt-response') return;
+        var slot = promptResolvers[msg.id];
+        if (!slot) return;
+        delete promptResolvers[msg.id];
+        pendingPrompts = Math.max(0, pendingPrompts - 1);
+        if (msg.error) slot.reject(new Error(String(msg.error)));
+        else slot.resolve(String(msg.value == null ? '' : msg.value));
+      };
       function normalizePath(p) {
         p = String(p || '').trim().replace(/\\\\/g, '/').replace(/^\\/+/, '').replace(/\\/+/g, '/');
         if (p.indexOf('./') === 0) p = p.slice(2);
@@ -55,12 +70,42 @@ const Tools = (() => {
       };
       console.log = console.info = console.debug = function () { push(out, arguments); };
       console.warn = console.error = function () { push(err, arguments); };
+      function sandboxPrompt(question) {
+        var id = 'p' + (++promptSeq);
+        pendingPrompts++;
+        self.postMessage({ type: 'prompt', id: id, question: String(question == null ? '' : question) });
+        return new Promise(function (resolve, reject) {
+          promptResolvers[id] = { resolve: resolve, reject: reject };
+        });
+      }
+      function waitForInteractiveIdle() {
+        return new Promise(function (resolve) {
+          var quiet = 0;
+          function check() {
+            if (pendingPrompts > 0) {
+              quiet = 0;
+              setTimeout(check, 25);
+              return;
+            }
+            quiet++;
+            if (quiet >= 2) resolve();
+            else setTimeout(check, 25);
+          }
+          check();
+        });
+      }
       /* 屏蔽网络与外部加载 */
       self.fetch = undefined; self.XMLHttpRequest = undefined;
       self.importScripts = undefined; self.WebSocket = undefined;
+      self.input = inputText; self.stdin = inputText; self.argv = inputArgs;
+      self.prompt = sandboxPrompt;
       Promise.resolve().then(function () {
-        var fn = new Function('SandboxFS', '"use strict";' + e.data.code);
-        return fn(SandboxFS);
+        var fn = new Function('SandboxFS', 'prompt', '"use strict";' + e.data.code);
+        return fn(SandboxFS, sandboxPrompt);
+      }).then(function (result) {
+        return Promise.resolve(result).then(function (value) {
+          return waitForInteractiveIdle().then(function () { return value; });
+        });
       }).then(function (result) {
         var r;
         if (result !== undefined) {
@@ -75,7 +120,27 @@ const Tools = (() => {
     };
   `;
 
-  function runJS(code, timeout, files) {
+  function parseArgv(text) {
+    const out = [];
+    String(text || '').replace(/"([^"]*)"|'([^']*)'|[^\s]+/g, (m, d, s) => {
+      out.push(d != null ? d : (s != null ? s : m));
+      return m;
+    });
+    return out;
+  }
+
+  function runOptions(options) {
+    options = options || {};
+    const stdin = String(options.stdin == null ? '' : options.stdin);
+    return {
+      stdin,
+      argv: Array.isArray(options.argv) ? options.argv.map(String) : parseArgv(stdin),
+      onPrompt: typeof options.onPrompt === 'function' ? options.onPrompt : null
+    };
+  }
+
+  function runJS(code, timeout, files, options) {
+    const opts = runOptions(options);
     return new Promise((resolve) => {
       let worker, timer, blobUrl;
       const finish = (r) => {
@@ -88,17 +153,33 @@ const Tools = (() => {
         blobUrl = URL.createObjectURL(new Blob([WORKER_SRC], { type: 'application/javascript' }));
         worker = new Worker(blobUrl);
       } catch (e) {
-        return finish(runJSInline(code, files)); // Worker 不可用时降级（无硬超时）
+        if (opts.onPrompt) return finish({ ok: false, stdout: '', stderr: '当前环境不支持交互输入：Worker 不可用', files: {} });
+        return finish(runJSInline(code, files, opts)); // Worker 不可用时降级（无硬超时）
       }
       timer = setTimeout(() => finish({ ok: false, stdout: '', stderr: '执行超时（' + ((timeout || JS_TIMEOUT) / 1000) + 's），已中断', files: {} }), timeout || JS_TIMEOUT);
-      worker.onmessage = e => finish(e.data);
+      worker.onmessage = e => {
+        const data = e.data || {};
+        if (data.type === 'prompt') {
+          if (!opts.onPrompt) {
+            worker.postMessage({ type: 'prompt-response', id: data.id, error: '当前环境不支持交互输入' });
+            return;
+          }
+          Promise.resolve()
+            .then(() => opts.onPrompt(String(data.question || '')))
+            .then(value => worker.postMessage({ type: 'prompt-response', id: data.id, value: String(value == null ? '' : value) }))
+            .catch(ex => worker.postMessage({ type: 'prompt-response', id: data.id, error: ex && ex.message || String(ex) }));
+          return;
+        }
+        finish(data);
+      };
       worker.onerror = e => finish({ ok: false, stdout: '', stderr: String(e.message || '执行出错'), files: {} });
-      worker.postMessage({ code, files: files || {} });
+      worker.postMessage({ code, files: files || {}, stdin: opts.stdin, argv: opts.argv });
     });
   }
 
   /* 降级方案：主线程独立作用域执行（仍捕获 console，但无法强杀死循环） */
-  function runJSInline(code, files) {
+  function runJSInline(code, files, options) {
+    const opts = runOptions(options);
     const out = [], err = [], writtenFiles = {};
     const fake = {};
     ['log', 'info', 'debug'].forEach(k => fake[k] = (...a) => out.push(a.map(x => typeof x === 'string' ? x : JSON.stringify(x)).join(' ')));
@@ -120,7 +201,16 @@ const Tools = (() => {
         return Object.keys(files || {}).sort();
       }
     };
+    const globalNames = ['input', 'stdin', 'argv'];
+    const previousGlobals = globalNames.map(name => ({
+      name,
+      had: Object.prototype.hasOwnProperty.call(globalThis, name),
+      value: globalThis[name]
+    }));
     try {
+      globalThis.input = opts.stdin;
+      globalThis.stdin = opts.stdin;
+      globalThis.argv = opts.argv;
       const fn = new Function('console', 'fetch', 'XMLHttpRequest', 'plus', 'localStorage', 'document', 'window', 'SandboxFS', '"use strict";' + code);
       const result = fn(fake, undefined, undefined, undefined, undefined, undefined, undefined, sandboxFS);
       let r;
@@ -129,6 +219,13 @@ const Tools = (() => {
     } catch (ex) {
       err.push(String(ex));
       return { ok: false, stdout: out.join('\n'), stderr: err.join('\n'), files: writtenFiles };
+    } finally {
+      previousGlobals.forEach(item => {
+        if (item.had) globalThis[item.name] = item.value;
+        else {
+          try { delete globalThis[item.name]; } catch (e) {}
+        }
+      });
     }
   }
 
@@ -305,14 +402,30 @@ const Tools = (() => {
     svc.status = 'running';
     svc.updatedAt = U.now();
     svc.lastStartedAt = U.now();
-    ctx.openService(svc.id);
+    if (ctx.createPreviewCard) {
+      return ctx.createPreviewCard({
+        serviceId: svc.id,
+        entry: svc.entry,
+        title: svc.name,
+        updatedAt: svc.updatedAt
+      });
+    }
+    if (ctx.openService) ctx.openService(svc.id);
     return '已打开 HTML 预览：' + entry + '（wepchat://service/' + svc.id + '）';
   }
   function fPreviewFile(session, args, ctx) {
     ensureWorkspace(session);
     const name = safeName(args.path || args.entry || 'index.html');
-    if (!session.files[name]) throw new Error('HTML 文件不存在: ' + name + '。请先用 write_file 创建它。');
-    if (!/\.html?$/i.test(name)) throw new Error('preview_file 只能打开 HTML 文件: ' + name);
+    if (!session.files[name]) throw new Error('文件不存在: ' + name + '。请先用 write_file 创建它。');
+    if (/\.m?js$/i.test(name)) {
+      if (!ctx || !ctx.createPreviewCard) return 'JS 运行卡片未生成：当前界面不支持卡片。';
+      return ctx.createPreviewCard({
+        entry: name,
+        title: args.title || name,
+        kind: 'js'
+      });
+    }
+    if (!/\.html?$/i.test(name)) throw new Error('preview_file 只能用于 HTML 或 JS 文件: ' + name);
     return openHtmlPreview(session, name, args, ctx);
   }
   function fReadFile(session, args) {
@@ -620,6 +733,35 @@ const Tools = (() => {
     return saved;
   }
 
+  function extendSandboxFiles(sandbox, extraFiles) {
+    if (!extraFiles || typeof extraFiles !== 'object') return sandbox;
+    let total = Object.keys(sandbox.files || {}).reduce((sum, key) => sum + String(sandbox.files[key] || '').length, 0);
+    Object.keys(extraFiles).forEach(alias => {
+      const key = safeName(alias);
+      const content = String(extraFiles[alias] == null ? '' : extraFiles[alias]);
+      total += content.length;
+      if (total > RUN_JS_FS_LIMIT) throw new Error('run_js 挂载文件超过 ' + U.fmtSize(RUN_JS_FS_LIMIT) + ' 上限，请减少 inputFiles');
+      sandbox.files[key] = content;
+    });
+    return sandbox;
+  }
+
+  async function runWorkspaceJS(session, options) {
+    options = options || {};
+    const sandbox = extendSandboxFiles(buildSandboxFiles(session, options.inputFiles), options.files);
+    const r = await runJS(options.code || '', options.timeout || JS_TIMEOUT, sandbox.files, {
+      stdin: options.stdin || '',
+      argv: options.argv,
+      onPrompt: options.onPrompt
+    });
+    const saved = r.ok ? applySandboxWrites(session, r.files) : [];
+    return Object.assign({}, r, {
+      saved,
+      notes: sandbox.notes || [],
+      skippedWrites: !r.ok && r.files && Object.keys(r.files).length ? Object.keys(r.files) : []
+    });
+  }
+
   /* ---------- web_fetch ---------- */
   function normalizeMethod(method) {
     method = String(method || 'GET').trim().toUpperCase();
@@ -703,7 +845,7 @@ const Tools = (() => {
   const DEFS = [
     {
       name: 'run_js',
-      description: '在隔离沙盒中执行 JavaScript 代码，用于精确计算、文本/JSON/CSV 处理、编码解码、正则提取等。无网络、无 DOM。需要读取工作区文件时，必须先用 list_files 确认路径，再用 inputFiles 显式挂载；沙盒内只能用 SandboxFS 访问本次挂载的文本文件。',
+      description: '在隔离沙盒中执行 JavaScript 代码，用于精确计算、文本/JSON/CSV 处理、编码解码、正则提取等。无网络、无 DOM。需要读取工作区文件时，必须先用 list_files 确认路径，再用 inputFiles 显式挂载；沙盒内只能用 SandboxFS 访问本次挂载的文本文件。可用 SandboxFS.writeFile(path, content) 在脚本成功结束后直接写回工作区文本文件。',
       parameters: {
         type: 'object',
         properties: {
@@ -731,7 +873,7 @@ const Tools = (() => {
     },
     {
       name: 'write_file',
-      description: '把文本内容写入当前会话工作区（新建或覆盖）。生成 HTML/CSS/JS/Markdown/JSON 等文件时优先使用它，而不是把完整代码直接输出在聊天正文里。需要预览 HTML 时，先写入文件，再调用 preview_file。',
+      description: '把文本内容写入当前会话工作区（新建或覆盖）。生成 HTML/CSS/JS/Markdown/JSON 等文件时优先使用它，而不是把完整代码直接输出在聊天正文里。需要给用户展示 HTML 或可运行 JS 时，先写入文件，再调用 preview_file 生成对话内卡片。',
       parameters: {
         type: 'object',
         properties: {
@@ -814,12 +956,12 @@ const Tools = (() => {
     },
     {
       name: 'preview_file',
-      description: '打开当前会话工作区中已有的 HTML 文件预览。只能预览 .html/.htm 文件；不要用于 CSS/JS/JSON/Markdown。写多页 HTML 项目时通常只预览入口页，例如 index.html。',
+      description: '为当前会话工作区中已有的 HTML 或 JS 文件生成对话内卡片。HTML 卡片是静态缩略预览，用户点击后进入完整 HTML 预览；JS 卡片是运行入口，用户点击后进入代码与终端运行器，不会自动执行。只能用于 .html/.htm/.js/.mjs 文件；不要用于 CSS/JSON/Markdown。写多页 HTML 项目时通常只预览入口页，例如 index.html。',
       parameters: {
         type: 'object',
         properties: {
-          path: { type: 'string', description: '要预览的工作区 HTML 文件路径，例如 index.html 或 demo/index.html' },
-          title: { type: 'string', description: '可选，预览名称' }
+          path: { type: 'string', description: '要展示的工作区文件路径，例如 index.html、demo/index.html 或 tools/sum.js。仅支持 HTML 或 JS 文件' },
+          title: { type: 'string', description: '可选，卡片名称' }
         },
         required: ['path']
       }
@@ -863,11 +1005,14 @@ const Tools = (() => {
 
   const SYSTEM_HINT = [
     '当前对话默认拥有一个“工作区”，可以保存 HTML、CSS、JavaScript、Markdown、JSON、图片等文件。用户可以在工作区里打开文件、预览 HTML/Markdown、编辑源码、查看控制台并导出文件。',
-    '你可以使用以下工具：run_js（沙盒执行 JavaScript，适合精确计算、数据转换、编码解码；需要文件时必须用 inputFiles 显式挂载）、read_file/write_file/edit_file/delete_file/list_files/create_folder/move_path/path_exists/preview_file（当前会话工作区文件和文件夹）、web_fetch（GET/POST 抓取网页或接口文本）、image_go（用户明确需要生成或编辑位图时调用图片模型；有参考图片路径时用 edit，无参考图时用 generate）。',
+    '你可以使用以下工具：run_js（沙盒执行 JavaScript，适合精确计算、数据转换、编码解码；需要文件时必须用 inputFiles 显式挂载；可用 SandboxFS.writeFile 写回工作区文本文件）、read_file/write_file/edit_file/delete_file/list_files/create_folder/move_path/path_exists/preview_file（当前会话工作区文件和文件夹）、web_fetch（GET/POST 抓取网页或接口文本）、image_go（用户明确需要生成或编辑位图时调用图片模型；有参考图片路径时用 edit，无参考图时用 generate）。',
     '简单问题直接回答；只在需要精确计算、验证、数据处理、生成可交互页面、访问网页或操作文件时调用工具。',
     '当用户要你写网页、小工具、代码示例、临时项目或需要多文件协作时，优先把代码写入工作区文件，例如 index.html、style.css、script.js；不要把大段完整代码只堆在聊天正文里。',
     '查看工作区文件列表时只用 list_files。run_js 里的 SandboxFS.listFiles() 只列出本次 inputFiles 挂载进沙盒的文件，不等于工作区文件列表。',
-    '需要展示 HTML 时，先用 write_file 写入 .html 文件，再调用 preview_file 打开这个 HTML 文件。preview_file 只能打开 HTML 文件；写 CSS/JS/JSON/Markdown 时不要调用 preview_file。多页 HTML 项目通常只预览入口页，例如 index.html。',
+    '需要展示 HTML 时，先用 write_file 写入 .html 文件，再调用 preview_file 生成对话内预览卡片；用户点击卡片后才会进入完整 HTML 预览。需要展示可运行的 JS 脚本时，先用 write_file 写入 .js/.mjs 文件，再调用 preview_file 生成 JS 运行卡片；用户点击卡片后进入代码与终端运行器，仍需用户手动点击运行。preview_file 不要用于 CSS/JSON/Markdown。多页 HTML 项目通常只预览入口页，例如 index.html。',
+    '可以编写可交互的 JavaScript 脚本，但运行环境是浏览器 Worker 沙盒，不是 Node.js。可用 console.log/warn/error 输出；可用 async/await；可用 prompt(question) 请求用户在终端输入；可用 SandboxFS.readFile 读取 inputFiles 挂载的文本文件；可用 SandboxFS.writeFile 写回工作区文本文件。不要依赖 Node.js API，例如 require、process、fs、readline、Buffer、child_process，也不要依赖 DOM、document、window、localStorage、fetch、XMLHttpRequest、WebSocket 或 importScripts。',
+    'JS 运行器适合一次性脚本、文本处理、编码转换、小计算器、文件转换、纯文本问答或纯文本回合制逻辑。不适合按钮界面、画面游戏、Canvas/DOM UI、键盘鼠标事件、动画、长期游戏循环、网络应用或需要 npm/Node 依赖的程序；这类需求应写成 HTML/CSS/JS 页面并用 HTML 预览卡片展示。',
+    '写交互式 JS 后，回复用户时说明：点击对话里的 JS 运行卡片或在工作区打开 .js 文件，查看上方代码，下方终端；点击悬浮运行按钮开始；脚本出现输入问题时在终端输入答案并回车；脚本写出的文件会保存到当前会话工作区。不要声称它会在 Node.js、真实 shell、后台进程或 localhost 端口中运行。',
     '查看工作区时优先用 list_files；只查看大文件片段时用 read_file 的 lines 参数。创建空目录用 create_folder；移动或重命名用 move_path；删除多个文件或目录时用 delete_file 的 paths 批量参数。',
     '修改已有文件前，先 list_files 或 read_file 了解当前内容；小改动优先用 edit_file，整文件重写才用 write_file。edit_file 默认精确匹配；如果缩进/换行不确定，传 ignoreWhitespace: true；需要模式匹配时传 useRegex: true；二者不要同时使用。',
     'HTML 文件写入工作区后，告诉用户可以在会话工作区点击 .html 文件进入预览/源码/控制台；不要声称启动了真实后台进程、shell、Node/Python 服务或 localhost 端口。',
@@ -905,16 +1050,18 @@ const Tools = (() => {
       switch (name) {
         case 'run_js': {
           if (!args.code) return '错误：缺少 code 参数';
-          const sandbox = buildSandboxFiles(ctx.session, args.inputFiles);
-          const r = await runJS(args.code, JS_TIMEOUT, sandbox.files);
-          let saved = [];
-          if (r.ok) saved = applySandboxWrites(ctx.session, r.files);
+          const r = await runWorkspaceJS(ctx.session, {
+            code: args.code,
+            inputFiles: args.inputFiles
+          });
+          const saved = r.saved || [];
           let s = '';
-          if (sandbox.notes.length) s += sandbox.notes.join('\n') + '\n';
+          if (r.notes && r.notes.length) s += r.notes.join('\n') + '\n';
           if (r.stdout) s += 'stdout:\n' + r.stdout + '\n';
           if (r.stderr) s += 'stderr:\n' + r.stderr + '\n';
           if (r.result !== undefined && r.result !== null && r.result !== '') s += 'return: ' + r.result + '\n';
           if (saved.length) s += '写入工作区文件：\n' + saved.map(path => '- ' + path).join('\n');
+          if (r.skippedWrites && r.skippedWrites.length) s += '脚本执行失败，SandboxFS.writeFile 的写入未保存：\n' + r.skippedWrites.map(path => '- ' + path).join('\n');
           if (!r.ok) return '错误：JavaScript 执行失败\n' + (s.trim() || '(无输出)');
           return s.trim() || '(执行完成，无输出)';
         }
@@ -955,7 +1102,7 @@ const Tools = (() => {
     }
   }
 
-  return { DEFS, SYSTEM_HINT, execute, runJS, MAX_FILE, MAX_FILES, MAX_SERVICES };
+  return { DEFS, SYSTEM_HINT, execute, runJS, runWorkspaceJS, applySandboxWrites, MAX_FILE, MAX_FILES, MAX_SERVICES };
 })();
 
 window.Tools = Tools;
