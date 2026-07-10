@@ -17,6 +17,7 @@
         RemoteAPI,
         RemoteScan,
         MODEL_META,
+        themeStyles: WepChatThemeSystem.styles,
         appVersion: '',
         appTag: '',
         appVersionSource: '',
@@ -356,9 +357,12 @@
       },
       tokenRingStyle() {
         const p = this.tokenStats.pct;
-        const fg = this.tokenStats.danger ? '#ff5449' : (this.tokenStats.warn ? '#f5a524' : 'var(--text)');
+        const fg = this.tokenStats.danger ? 'var(--danger)' : (this.tokenStats.warn ? 'var(--warning)' : 'var(--text)');
+        const visible = p < 2 ? 0 : p;
         return {
-          background: 'conic-gradient(' + fg + ' ' + p + '%, var(--surface2) 0)'
+          background: visible
+            ? 'conic-gradient(' + fg + ' ' + visible + '%, var(--surface2) 0)'
+            : 'var(--surface2)'
         };
       },
       provSelectedMeta() {
@@ -380,6 +384,10 @@
           for (let i = 1; i < parts.length; i++) folders.add(parts.slice(0, i).join('/'));
         });
         return folders.size;
+      },
+      dataOverview() {
+        void this.storageUsed;
+        return Store.usageBreakdown();
       },
       sessionManagerItems() {
         return (this.index || []).map(meta => {

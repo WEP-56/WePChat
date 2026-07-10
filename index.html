@@ -441,14 +441,14 @@
     </div>
     <div class="page-body">
       <div class="card settings-menu">
+        <button class="row setting-entry" @click="pushPage('settings-general')">
+          <span class="setting-ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v18M5 8h14M7 16h10"/></svg></span>
+          <span class="row-label">常规<span class="rl-sub">主题、字号与界面偏好</span></span>
+          <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 6l6 6-6 6"/></svg>
+        </button>
         <button class="row setting-entry" @click="pushPage('settings-model')">
           <span class="setting-ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M4 12h10M4 17h7"/></svg></span>
           <span class="row-label">模型<span class="rl-sub">提供商、对话参数、系统提示词</span></span>
-          <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 6l6 6-6 6"/></svg>
-        </button>
-        <button class="row setting-entry" @click="pushPage('settings-tools')">
-          <span class="setting-ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14.7 6.3a4.5 4.5 0 0 0-6 6L3 18l3 3 5.7-5.7a4.5 4.5 0 0 0 6-6L14 13l-3-3 3.7-3.7z"/></svg></span>
-          <span class="row-label">工具<span class="rl-sub">Agent 工具权限与调用限制</span></span>
           <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 6l6 6-6 6"/></svg>
         </button>
         <button class="row setting-entry" @click="pushPage('settings-image')">
@@ -456,24 +456,24 @@
           <span class="row-label">图片生成<span class="rl-sub">首选模型与风格预设</span></span>
           <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 6l6 6-6 6"/></svg>
         </button>
+        <button class="row setting-entry" @click="pushPage('settings-tools')">
+          <span class="setting-ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14.7 6.3a4.5 4.5 0 0 0-6 6L3 18l3 3 5.7-5.7a4.5 4.5 0 0 0 6-6L14 13l-3-3 3.7-3.7z"/></svg></span>
+          <span class="row-label">工具<span class="rl-sub">Agent 工具权限与调用限制</span></span>
+          <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 6l6 6-6 6"/></svg>
+        </button>
         <button class="row setting-entry" @click="pushPage('settings-remote')">
           <span class="setting-ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M7 11h10M9 15h6"/><rect x="3" y="4" width="18" height="15" rx="3"/></svg></span>
           <span class="row-label">远程 Codex<span class="rl-sub">连接局域网里的 wepchat-host</span></span>
           <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 6l6 6-6 6"/></svg>
         </button>
-        <button class="row setting-entry" @click="pushPage('settings-general')">
-          <span class="setting-ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v18M5 8h14M7 16h10"/></svg></span>
-          <span class="row-label">常规<span class="rl-sub">主题、字号与界面偏好</span></span>
+        <button class="row setting-entry" @click="pushPage('settings-skills')">
+          <span class="setting-ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l7 4v5c0 4.5-2.8 7.8-7 9-4.2-1.2-7-4.5-7-9V7l7-4z"/><path d="M9 12l2 2 4-4"/></svg></span>
+          <span class="row-label">技能与 MCP<span class="rl-sub">技能、服务与扩展能力</span></span>
           <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 6l6 6-6 6"/></svg>
         </button>
         <button class="row setting-entry" @click="pushPage('settings-data')">
           <span class="setting-ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7c0 2 3.6 3.5 8 3.5S20 9 20 7s-3.6-3.5-8-3.5S4 5 4 7z"/><path d="M4 7v10c0 2 3.6 3.5 8 3.5s8-1.5 8-3.5V7"/><path d="M4 12c0 2 3.6 3.5 8 3.5s8-1.5 8-3.5"/></svg></span>
-          <span class="row-label">数据<span class="rl-sub">备份、导入、清空本地数据</span></span>
-          <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 6l6 6-6 6"/></svg>
-        </button>
-        <button class="row setting-entry" @click="pushPage('settings-skills')">
-          <span class="setting-ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l7 4v5c0 4.5-2.8 7.8-7 9-4.2-1.2-7-4.5-7-9V7l7-4z"/><path d="M9 12l2 2 4-4"/></svg></span>
-          <span class="row-label">技能与 MCP<span class="rl-sub">预留入口</span></span>
+          <span class="row-label">数据<span class="rl-sub">总览、备份与存储管理</span></span>
           <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 6l6 6-6 6"/></svg>
         </button>
         <button class="row setting-entry" @click="pushPage('settings-about')">
@@ -722,8 +722,22 @@
     <div class="page-body">
       <div class="sec-label">外观</div>
       <div class="card">
+        <div class="theme-grid">
+          <button class="theme-choice" v-for="item in themeStyles" :key="item.id"
+            :class="['theme-choice-' + item.id, {on: settings.themeStyle === item.id}]"
+            @click="setThemeStyle(item.id)">
+            <span class="theme-swatch"><i></i><b></b></span>
+            <span class="theme-choice-copy"><strong>{{ item.name }}</strong><small>{{ item.note }}</small></span>
+            <span class="theme-check" aria-hidden="true">✓</span>
+          </button>
+        </div>
+        <div class="theme-live-preview" aria-label="主题预览">
+          <div class="tlp-assistant">你好，需要我帮你做什么？</div>
+          <div class="tlp-user">让界面更简单一些</div>
+          <div class="tlp-controls"><span></span><b>输入消息</b><i>↑</i></div>
+        </div>
         <div class="row static">
-          <span class="row-label">主题</span>
+          <span class="row-label">显示</span>
           <div class="seg" style="width:190px">
             <button :class="{on: settings.theme === 'auto'}" @click="setTheme('auto')">跟随系统</button>
             <button :class="{on: settings.theme === 'light'}" @click="setTheme('light')">浅色</button>
@@ -747,6 +761,28 @@
       <div class="page-title">数据</div>
     </div>
     <div class="page-body">
+      <div class="sec-label">数据总览</div>
+      <div class="storage-overview">
+        <div class="storage-total">
+          <span><small>本地数据</small><strong>{{ U.fmtSize(dataOverview.total) }}</strong></span>
+          <i>{{ index.length }} 个会话</i>
+        </div>
+        <div class="storage-bar" aria-hidden="true">
+          <span class="storage-seg conversation" :style="{flexGrow: dataOverview.conversation || 1}"></span>
+          <span class="storage-seg images" :style="{flexGrow: dataOverview.images || 0}"></span>
+          <span class="storage-seg files" :style="{flexGrow: dataOverview.files || 0}"></span>
+          <span class="storage-seg configuration" :style="{flexGrow: dataOverview.configuration || 0}"></span>
+          <span class="storage-seg other" :style="{flexGrow: dataOverview.other || 0}"></span>
+        </div>
+        <div class="storage-grid">
+          <div class="storage-item"><span><i class="dot conversation"></i>对话数据</span><b>{{ U.fmtSize(dataOverview.conversation) }}</b></div>
+          <div class="storage-item"><span><i class="dot images"></i>图片数据</span><b>{{ U.fmtSize(dataOverview.images) }}</b></div>
+          <div class="storage-item"><span><i class="dot files"></i>代码文件</span><b>{{ U.fmtSize(dataOverview.files) }}</b></div>
+          <div class="storage-item"><span><i class="dot configuration"></i>配置数据</span><b>{{ U.fmtSize(dataOverview.configuration) }}</b></div>
+          <div class="storage-item" v-if="dataOverview.other"><span><i class="dot other"></i>其他数据</span><b>{{ U.fmtSize(dataOverview.other) }}</b></div>
+        </div>
+        <div class="storage-note">分类大小为本地序列化数据估算值</div>
+      </div>
       <div class="sec-label">备份与恢复</div>
       <div class="card">
         <button class="row" @click="exportAll()">
@@ -1123,8 +1159,10 @@
 <script src="js/remote-history.js"></script>
 <script src="js/remote-scan.js"></script>
 <script src="js/app-helpers.js"></script>
+<script src="js/theme-system.js"></script>
 <script src="js/app-options.js"></script>
 <script src="js/app-methods-core.js"></script>
+<script src="js/app-methods-theme.js"></script>
 <script src="js/app-methods-sessions.js"></script>
 <script src="js/app-methods-generation.js"></script>
 <script src="js/app-methods-workspace.js"></script>

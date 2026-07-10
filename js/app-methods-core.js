@@ -8,6 +8,7 @@
         if (this.plusReady || !window.plus) return;
         this.plusReady = true;
         document.documentElement.classList.add('plus-app');
+        this.applyTheme();
         this.refreshAppVersion({ force: true });
         this.initPushHandlers();
         if (plus.key && !this.backHandler) {

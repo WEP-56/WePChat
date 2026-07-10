@@ -9,6 +9,7 @@
   options.methods = Object.assign(
     {},
     window.WepChatAppMethodsCore,
+    window.WepChatAppMethodsTheme,
     window.WepChatAppMethodsSessions,
     window.WepChatAppMethodsGeneration,
     window.WepChatAppMethodsWorkspace,

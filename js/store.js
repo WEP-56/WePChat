@@ -109,6 +109,7 @@ const Store = {
   defaultSettings() {
     return {
       theme: 'auto',                 // auto | light | dark
+      themeStyle: 'graphite',        // graphite | warm-paper | nebula | clear-glass
       activeProviderId: '',
       activeModel: '',
       agentEnabled: true,            // 是否给模型配置工具
@@ -337,6 +338,77 @@ const Store = {
       if (k && k.startsWith('wc.')) total += (raw || '').length * 2;
     });
     return total;
+  },
+
+  usageBreakdown() {
+    const sizeOf = value => {
+      try { return JSON.stringify(value == null ? null : value).length * 2; }
+      catch (e) { return 0; }
+    };
+    const rawSize = key => ((this._cache.get(key) || '').length * 2);
+    let conversation = 0;
+    let images = 0;
+    let files = 0;
+    let configuration = rawSize(this.KEY_SETTINGS) + rawSize(this.KEY_PROVIDERS) + rawSize(this.KEY_INDEX);
+
+    const stripMessageImages = value => {
+      if (typeof value === 'string') {
+        if (/^data:image\//i.test(value)) {
+          images += value.length * 2;
+          return '';
+        }
+        return value;
+      }
+      if (Array.isArray(value)) return value.map(stripMessageImages);
+      if (!value || typeof value !== 'object') return value;
+      const out = {};
+      Object.keys(value).forEach(key => { out[key] = stripMessageImages(value[key]); });
+      return out;
+    };
+
+    this.loadIndex().forEach(meta => {
+      const sess = this.loadSession(meta.id);
+      if (!sess) return;
+      conversation += sizeOf({
+        id: sess.id,
+        title: sess.title,
+        createdAt: sess.createdAt,
+        updatedAt: sess.updatedAt,
+        mode: sess.mode,
+        remote: sess.remote,
+        providerId: sess.providerId,
+        model: sess.model,
+        messages: stripMessageImages(sess.messages || [])
+      });
+      configuration += sizeOf(sess.services || []);
+      files += sizeOf(sess.folders || []);
+      Object.keys(sess.files || {}).forEach(path => {
+        const file = sess.files[path] || {};
+        const image = /^image\//i.test(file.mime || '') || /\.(png|jpe?g|webp|gif|bmp|svg)$/i.test(path) || /^data:image\//i.test(file.dataUrl || '');
+        if (image) images += sizeOf({ path, file });
+        else files += sizeOf({ path, file });
+      });
+    });
+
+    const total = this.usage();
+    let known = conversation + images + files + configuration;
+    if (known > total && known > 0) {
+      const scale = total / known;
+      conversation = Math.round(conversation * scale);
+      images = Math.round(images * scale);
+      files = Math.round(files * scale);
+      configuration = Math.round(configuration * scale);
+      known = conversation + images + files + configuration;
+    }
+    const other = Math.max(0, total - known);
+    return {
+      total,
+      conversation,
+      images,
+      files,
+      configuration,
+      other
+    };
   }
 };
 
