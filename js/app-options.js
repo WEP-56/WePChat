@@ -74,7 +74,9 @@
           selectedImageModel: '',
           showKey: false,
           fetching: false,
-          testing: false
+          testing: false,
+          modelTests: {},
+          modelTestMessages: {}
         },
         remoteForm: {
           testingHostId: '',
@@ -133,6 +135,9 @@
         },
 
         dlg: null,
+        picker: null,
+        modelEditor: null,
+        imageSettingsShowKey: false,
         tokenPanelOpen: false,
         sessionManagerOpen: {},
         storageUsed: Store.usage(),
@@ -225,8 +230,18 @@
         return this.currentModelLabel;
       },
       imageProvider() {
+        const list = this.imageProviders;
         const id = this.settings.imageProviderId || this.settings.activeProviderId;
-        return this.providers.find(p => p.id === id) || this.currentProvider || this.providers[0] || null;
+        return list.find(p => p.id === id) || list[0] || null;
+      },
+      imageProviders() {
+        return this.providers.filter(p => {
+          if ((p.imageModels || []).length) return true;
+          return (p.models || []).some(id => {
+            const caps = providerModelMeta(p, id).capabilities || {};
+            return caps.imageGeneration || caps.imageEdit;
+          });
+        });
       },
       imageModelId() {
         const provider = this.imageProvider;
@@ -251,6 +266,14 @@
           if (MODEL_META.isImageGenerationMeta(meta) && !out.includes(id)) out.push(id);
         });
         return out;
+      },
+      imageEditModelOptions() {
+        const provider = this.imageProvider;
+        if (!provider) return [];
+        return this.imageModelOptions.filter(id => {
+          const caps = providerModelMeta(provider, id).capabilities || {};
+          return !!caps.imageEdit;
+        });
       },
       imageSizeOptions() {
         return ['auto', '1024x1024', '1536x864', '864x1536', '2048x2048', '2560x1440', '1440x2560', '3840x2160', '2160x3840', '2880x2880'];

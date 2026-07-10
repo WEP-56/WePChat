@@ -272,7 +272,9 @@
           selectedImageModel: p.imageModels && p.imageModels[0] || '',
           showKey: false,
           fetching: false,
-          testing: false
+          testing: false,
+          modelTests: {},
+          modelTestMessages: {}
         };
         this.pushPage('provider');
       },
@@ -288,7 +290,9 @@
           selectedImageModel: data.imageModels && data.imageModels[0] || '',
           showKey: false,
           fetching: false,
-          testing: false
+          testing: false,
+          modelTests: {},
+          modelTestMessages: {}
         };
         this.pushPage('provider');
       },
@@ -341,12 +345,14 @@
         if (!meta) return;
         const n = MODEL_META.toInt(val);
         meta[key] = n == null ? 0 : n;
+        meta.source = 'user';
       },
       toggleSelectedModelCap(key) {
         const meta = this.selectedProvModelMeta();
         if (!meta) return;
         meta.capabilities = meta.capabilities || {};
         meta.capabilities[key] = !meta.capabilities[key];
+        meta.source = 'user';
       },
       saveProvider() {
         const p = this.provForm.data;
@@ -415,6 +421,211 @@
       apiTypeLabel(api) {
         const t = API.API_TYPES.find(x => x.value === api);
         return t ? t.label : api;
+      },
+      openPicker(title, options, value, action, key) {
+        this.picker = { title, options: options || [], value, action, key: key || '' };
+        this.sheet = 'picker';
+      },
+      pickOption(option) {
+        if (!option || option.disabled || !this.picker) return;
+        const picker = this.picker;
+        if (picker.action === 'provider-api' && this.provForm.data) {
+          this.provForm.data.api = option.value;
+        } else if (picker.action === 'image-provider') {
+          this.settings.imageProviderId = option.value;
+          this.settings.imageModel = '';
+          this.settings.imageEditModel = '';
+          this.persistSettings();
+        } else if (picker.action === 'image-model') {
+          this.settings.imageModel = option.value;
+          if (this.settings.imageEditModel && !this.imageEditModelOptions.includes(this.settings.imageEditModel)) {
+            this.settings.imageEditModel = '';
+          }
+          this.persistSettings();
+        } else if (picker.action === 'image-edit-model') {
+          this.settings.imageEditModel = option.value;
+          this.persistSettings();
+        } else if (picker.action === 'setting') {
+          this.settings[picker.key] = option.value;
+          this.persistSettings();
+        }
+        this.sheet = '';
+        this.picker = null;
+      },
+      pickerValueLabel(options, value, fallback) {
+        const got = (options || []).find(x => x.value === value);
+        return got ? got.label : (fallback || value || '请选择');
+      },
+      openApiTypePicker() {
+        this.openPicker('接口类型', API.API_TYPES.map(x => ({ value: x.value, label: x.label })), this.provForm.data && this.provForm.data.api, 'provider-api');
+      },
+      openImageProviderPicker() {
+        this.openPicker('图片提供商', this.imageProviders.map(p => ({
+          value: p.id,
+          label: p.name,
+          sub: this.providerImageModels(p).length + ' 个图片模型'
+        })), this.imageProvider && this.imageProvider.id || '', 'image-provider');
+      },
+      openImageModelPicker(editing) {
+        const ids = editing ? this.imageEditModelOptions : this.imageModelOptions;
+        const options = [{ value: '', label: editing ? '跟随生成模型' : '自动选择' }].concat(ids.map(id => ({
+          value: id,
+          label: id,
+          sub: this.modelSummary(this.imageProvider, id)
+        })));
+        this.openPicker(editing ? '图片编辑模型' : '图片生成模型', options,
+          editing ? this.settings.imageEditModel : this.settings.imageModel,
+          editing ? 'image-edit-model' : 'image-model');
+      },
+      openSettingPicker(key, title, options) {
+        this.openPicker(title, options, this.settings[key], 'setting', key);
+      },
+      providerImageModels(provider) {
+        if (!provider) return [];
+        const out = [];
+        (provider.imageModels || []).forEach(id => { if (id && !out.includes(id)) out.push(id); });
+        (provider.models || []).forEach(id => {
+          const caps = providerModelMeta(provider, id).capabilities || {};
+          if ((caps.imageGeneration || caps.imageEdit) && !out.includes(id)) out.push(id);
+        });
+        return out;
+      },
+      providerModelIds(provider) {
+        if (!provider) return [];
+        return (provider.models || []).concat(provider.imageModels || []).filter((id, i, arr) => id && arr.indexOf(id) === i);
+      },
+      isProviderImageModel(provider, id) {
+        return !!provider && (provider.imageModels || []).includes(id);
+      },
+      providerModelTestState(id) {
+        return this.provForm.modelTests && this.provForm.modelTests[id] || '';
+      },
+      openProviderModelEditor(id) {
+        const p = this.provForm.data;
+        if (!p || !id) return;
+        const stored = (p.modelMeta && p.modelMeta[id]) || (p.imageModelMeta && p.imageModelMeta[id]);
+        const meta = MODEL_META.mergeMeta(MODEL_META.infer(id, p.name), stored);
+        this.modelEditor = {
+          originalId: id,
+          id,
+          contextWindow: String(meta.contextWindow || ''),
+          maxOutputTokens: String(meta.maxOutputTokens || ''),
+          capabilities: Object.assign({}, meta.capabilities || {})
+        };
+      },
+      toggleModelEditorCap(key) {
+        if (!this.modelEditor) return;
+        this.modelEditor.capabilities[key] = !this.modelEditor.capabilities[key];
+      },
+      saveProviderModelEditor() {
+        const p = this.provForm.data;
+        const editor = this.modelEditor;
+        if (!p || !editor) return;
+        const id = String(editor.id || '').trim();
+        if (!id) { U.toast('请填写模型名称'); return; }
+        const duplicate = this.providerModelIds(p).some(x => x === id && x !== editor.originalId);
+        if (duplicate) { U.toast('模型名称已存在'); return; }
+        const remove = x => (x || []).filter(name => name !== editor.originalId && name !== id);
+        p.models = remove(p.models);
+        p.imageModels = remove(p.imageModels);
+        p.modelMeta = p.modelMeta || {};
+        p.imageModelMeta = p.imageModelMeta || {};
+        delete p.modelMeta[editor.originalId];
+        delete p.imageModelMeta[editor.originalId];
+        const meta = MODEL_META.mergeMeta(MODEL_META.infer(id, p.name), {
+          id,
+          contextWindow: MODEL_META.toInt(editor.contextWindow) || 0,
+          maxOutputTokens: MODEL_META.toInt(editor.maxOutputTokens) || 0,
+          capabilities: Object.assign({}, editor.capabilities || {}),
+          source: 'user'
+        });
+        const imageOnly = meta.capabilities.imageGeneration || meta.capabilities.imageEdit;
+        if (imageOnly) {
+          p.imageModels.push(id);
+          p.imageModelMeta[id] = meta;
+        } else {
+          p.models.push(id);
+          p.modelMeta[id] = meta;
+        }
+        this.provForm.modelsText = modelsText(p);
+        this.provForm.imageModelsText = imageModelsText(p);
+        this.modelEditor = null;
+      },
+      async addProviderModel() {
+        const p = this.provForm.data;
+        if (!p) return;
+        const id = await this.askText('添加模型', '', '输入接口使用的完整模型名称');
+        const cleanId = String(id || '').trim();
+        if (!cleanId) return;
+        if (this.providerModelIds(p).includes(cleanId)) { U.toast('模型已经存在'); return; }
+        const meta = MODEL_META.infer(cleanId, p.name);
+        p.modelMeta = p.modelMeta || {};
+        p.imageModelMeta = p.imageModelMeta || {};
+        if (MODEL_META.isImageGenerationMeta(meta) || meta.capabilities.imageEdit) {
+          p.imageModels.push(cleanId);
+          p.imageModelMeta[cleanId] = meta;
+        } else {
+          p.models.push(cleanId);
+          p.modelMeta[cleanId] = meta;
+        }
+        this.provForm.modelsText = modelsText(p);
+        this.provForm.imageModelsText = imageModelsText(p);
+        this.openProviderModelEditor(cleanId);
+      },
+      async deleteProviderModel() {
+        const p = this.provForm.data;
+        const editor = this.modelEditor;
+        if (!p || !editor) return;
+        const ok = await this.confirm('删除模型：' + editor.originalId, '删除模型');
+        if (!ok) return;
+        p.models = (p.models || []).filter(id => id !== editor.originalId);
+        p.imageModels = (p.imageModels || []).filter(id => id !== editor.originalId);
+        if (p.modelMeta) delete p.modelMeta[editor.originalId];
+        if (p.imageModelMeta) delete p.imageModelMeta[editor.originalId];
+        this.provForm.modelsText = modelsText(p);
+        this.provForm.imageModelsText = imageModelsText(p);
+        this.modelEditor = null;
+      },
+      async testProviderModel(id) {
+        const p = this.provForm.data;
+        if (!p || !p.baseUrl) { U.toast('请先填写 API 地址'); return; }
+        if (this.isProviderImageModel(p, id)) {
+          U.toast('图片模型需要实际生成图片，请在图片生成页测试', 3600);
+          return;
+        }
+        this.provForm.modelTests[id] = 'testing';
+        this.provForm.modelTestMessages[id] = '';
+        let answer = '';
+        try {
+          const result = await API.send({
+            provider: p,
+            model: id,
+            messages: [{ role: 'user', content: 'Reply with exactly OK.' }],
+            tools: [],
+            settings: { systemPrompt: '', temperature: 0, maxTokens: 16 },
+            requestKey: NetStability.idempotencyKey('model-test-' + id),
+            onStatus: info => this.connectionStatus(Object.assign({ source: '模型测试' }, info || {})),
+            onUpdate: st => { answer = st && st.content || answer; }
+          });
+          answer = String(result && result.content || answer || '').trim();
+          this.provForm.modelTests[id] = 'ok';
+          this.provForm.modelTestMessages[id] = answer;
+          U.toast('模型可达' + (answer ? ' · ' + U.truncate(answer, 36) : ''));
+        } catch (e) {
+          this.provForm.modelTests[id] = 'error';
+          this.provForm.modelTestMessages[id] = e && e.message || String(e);
+          U.toast('模型不可达：' + (e && e.message || String(e)), 4200);
+        }
+      },
+      saveImageProviderField(key, value) {
+        const p = this.imageProvider;
+        if (!p) return;
+        p[key] = String(value || '').trim();
+        this.persistProviders();
+      },
+      setImageEndpointPath(key, value) {
+        this.settings[key] = String(value || '').trim();
+        this.persistSettings();
       },
       async fetchModels() {
         const p = this.provForm.data;

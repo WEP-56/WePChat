@@ -31,16 +31,27 @@ const MODEL_META = (() => {
     'https://www.volcengine.com/docs/82379',
     'https://developer.volcengine.com/articles/7518983626017472553',
     'https://ai.google.dev/gemini-api/docs/models',
+    'https://docs.x.ai/developers/models',
     'https://www.llama.com/models/',
-    'https://github.com/ollama/ollama/blob/main/docs/api.md'
+    'https://github.com/ollama/ollama/blob/main/docs/api.md',
+    'https://models.dev/api.json'
   ];
 
   const BUILTIN = [
     /* OpenAI */
-    m('gpt-5.6-sol', 'OpenAI', 400000, 128000, { vision: true, reasoning: true }),
-    m('gpt-5.6-sol-preview', 'OpenAI', 400000, 128000, { vision: true, reasoning: true }),
-    m('gpt-5.5', 'OpenAI', 400000, 128000, { vision: true, reasoning: true }),
-    m('gpt-5.5-codex', 'OpenAI', 400000, 128000, { vision: true, reasoning: true }),
+    m('gpt-5.6', 'OpenAI', 1050000, 128000, { vision: true, reasoning: true }),
+    m('gpt-5.6-sol', 'OpenAI', 1050000, 128000, { vision: true, reasoning: true }),
+    m('gpt-5.6-terra', 'OpenAI', 1050000, 128000, { vision: true, reasoning: true }),
+    m('gpt-5.6-luna', 'OpenAI', 1050000, 128000, { vision: true, reasoning: true }),
+    m('gpt-5.5', 'OpenAI', 1050000, 128000, { vision: true, reasoning: true }),
+    m('gpt-5.5-pro', 'OpenAI', 1050000, 128000, { vision: true, reasoning: true }),
+    m('gpt-5.4', 'OpenAI', 1050000, 128000, { vision: true, reasoning: true }),
+    m('gpt-5.4-pro', 'OpenAI', 1050000, 128000, { vision: true, reasoning: true, structuredOutput: false }),
+    m('gpt-5.4-mini', 'OpenAI', 400000, 128000, { vision: true, reasoning: true }),
+    m('gpt-5.4-nano', 'OpenAI', 400000, 128000, { vision: true, reasoning: true }),
+    m('gpt-5.3-codex', 'OpenAI', 400000, 128000, { vision: true, reasoning: true }),
+    m('gpt-5.3-codex-spark', 'OpenAI', 128000, 32000, { vision: true, reasoning: true }),
+    m('gpt-5.3-chat-latest', 'OpenAI', 128000, 16384, { vision: true, reasoning: false }),
     m('gpt-5', 'OpenAI', 400000, 128000, { vision: true, reasoning: true }),
     m('gpt-5-mini', 'OpenAI', 400000, 128000, { vision: true, reasoning: true }),
     m('gpt-5-nano', 'OpenAI', 400000, 128000, { vision: true, reasoning: true }),
@@ -57,24 +68,27 @@ const MODEL_META = (() => {
     m('gpt-image-1', 'OpenAI', 32000, 0, { vision: true, tools: false, structuredOutput: false, imageGeneration: true, imageEdit: true }),
 
     /* Anthropic */
-    m('claude-fable-5', 'Anthropic', 500000, 128000, { vision: true, reasoning: true }),
-    m('claude-sonnet-5', 'Anthropic', 500000, 128000, { vision: true, reasoning: true }),
-    m('claude-opus-4-8', 'Anthropic', 500000, 128000, { vision: true, reasoning: true }),
-    m('claude-opus-4.8', 'Anthropic', 500000, 128000, { vision: true, reasoning: true }),
+    m('claude-sonnet-5', 'Anthropic', 1000000, 128000, { vision: true, reasoning: true }),
+    m('claude-fable-5', 'Anthropic', 1000000, 128000, { vision: true, reasoning: true }),
+    m('claude-opus-4-8', 'Anthropic', 1000000, 128000, { vision: true, reasoning: true }),
+    m('claude-opus-4.8', 'Anthropic', 1000000, 128000, { vision: true, reasoning: true }),
+    m('claude-opus-4-7', 'Anthropic', 1000000, 128000, { vision: true, reasoning: true }),
+    m('claude-sonnet-4-6', 'Anthropic', 1000000, 128000, { vision: true, reasoning: true }),
+    m('claude-opus-4-6', 'Anthropic', 1000000, 128000, { vision: true, reasoning: true }),
     m('claude-haiku-4-5', 'Anthropic', 200000, 64000, { vision: true, reasoning: true }),
     m('claude-opus-4-1', 'Anthropic', 200000, 32000, { vision: true, reasoning: true }),
     m('claude-opus-4-20250514', 'Anthropic', 200000, 32000, { vision: true, reasoning: true }),
-    m('claude-sonnet-4-5', 'Anthropic', 200000, 64000, { vision: true, reasoning: true }),
+    m('claude-sonnet-4-5', 'Anthropic', 1000000, 64000, { vision: true, reasoning: true }),
     m('claude-sonnet-4-20250514', 'Anthropic', 200000, 64000, { vision: true, reasoning: true }),
     m('claude-3-7-sonnet-latest', 'Anthropic', 200000, 64000, { vision: true, reasoning: true }),
     m('claude-3-5-sonnet-latest', 'Anthropic', 200000, 8192, { vision: true }),
     m('claude-3-5-haiku-latest', 'Anthropic', 200000, 8192, { vision: true }),
 
     /* DeepSeek */
-    m('deepseek-v4-pro', 'DeepSeek', 64000, 8192, { reasoning: true }),
-    m('deepseek-v4-flash', 'DeepSeek', 64000, 8192, { reasoning: true }),
-    m('deepseek-chat', 'DeepSeek', 64000, 8192, {}),
-    m('deepseek-reasoner', 'DeepSeek', 64000, 32768, { reasoning: true }),
+    m('deepseek-v4-pro', 'DeepSeek', 1000000, 384000, { reasoning: true }),
+    m('deepseek-v4-flash', 'DeepSeek', 1000000, 384000, { reasoning: true }),
+    m('deepseek-chat', 'DeepSeek', 1000000, 384000, { reasoning: false }),
+    m('deepseek-reasoner', 'DeepSeek', 1000000, 384000, { reasoning: true }),
     m('deepseek-v3.2', 'DeepSeek', 64000, 8192, { reasoning: true }),
     m('deepseek-v3.2-exp', 'DeepSeek', 64000, 8192, { reasoning: true }),
     m('deepseek-v3.2-speciale', 'DeepSeek', 64000, 8192, { reasoning: true, tools: false }),
@@ -84,8 +98,8 @@ const MODEL_META = (() => {
     m('deepseek-r1', 'DeepSeek', 64000, 32768, { reasoning: true }),
 
     /* Qwen / Alibaba Model Studio */
-    m('qwen3.7-max-2026-06-08', 'Qwen', 1000000, 65536, { vision: true, reasoning: true }),
-    m('qwen3.7-max', 'Qwen', 1000000, 65536, { vision: true, reasoning: true }),
+    m('qwen3.7-max-2026-06-08', 'Qwen', 1000000, 65536, { vision: false, reasoning: true }),
+    m('qwen3.7-max', 'Qwen', 1000000, 65536, { vision: false, reasoning: true }),
     m('qwen3.7-plus', 'Qwen', 1000000, 65536, { vision: true, reasoning: true }),
     m('qwen3.6-plus', 'Qwen', 1000000, 65536, { vision: true, reasoning: true }),
     m('qwen3.6-flash', 'Qwen', 1000000, 65536, { vision: true, reasoning: true }),
@@ -96,7 +110,7 @@ const MODEL_META = (() => {
     m('qwen-plus', 'Qwen', 131072, 8192, {}),
     m('qwen-turbo', 'Qwen', 1000000, 8192, {}),
     m('qwen-long', 'Qwen', 10000000, 8192, {}),
-    m('qwen3-max', 'Qwen', 262144, 32768, { reasoning: true }),
+    m('qwen3-max', 'Qwen', 262144, 65536, { reasoning: false }),
     m('qwen3-235b-a22b', 'Qwen', 131072, 32768, { reasoning: true }),
     m('qwen3-coder-next', 'Qwen', 262144, 65536, { reasoning: true }),
     m('qwen3-coder-plus', 'Qwen', 1000000, 65536, { reasoning: true }),
@@ -109,9 +123,12 @@ const MODEL_META = (() => {
     m('qwen-image', 'Qwen', 4096, 0, { tools: false, structuredOutput: false, imageGeneration: true, imageEdit: true }),
 
     /* Zhipu GLM */
-    m('glm-5.2', 'Zhipu GLM', 128000, 96000, { reasoning: true }),
-    m('glm-5.2-air', 'Zhipu GLM', 128000, 96000, { reasoning: true }),
-    m('glm-5.2v', 'Zhipu GLM', 128000, 32768, { vision: true, reasoning: true }),
+    m('glm-5.2', 'Zhipu GLM', 1000000, 131072, { reasoning: true }),
+    m('glm-5.2-air', 'Zhipu GLM', 1000000, 131072, { reasoning: true }),
+    m('glm-5.2v', 'Zhipu GLM', 200000, 131072, { vision: true, reasoning: true }),
+    m('glm-5v-turbo', 'Zhipu GLM', 200000, 131072, { vision: true, reasoning: true }),
+    m('glm-5.1', 'Zhipu GLM', 200000, 131072, { reasoning: true }),
+    m('glm-5', 'Zhipu GLM', 204800, 131072, { reasoning: true }),
     m('glm-4.5', 'Zhipu GLM', 128000, 96000, { reasoning: true }),
     m('glm-4.5-air', 'Zhipu GLM', 128000, 96000, { reasoning: true }),
     m('glm-4-plus', 'Zhipu GLM', 128000, 4096, {}),
@@ -120,15 +137,15 @@ const MODEL_META = (() => {
     m('glm-z1-air', 'Zhipu GLM', 128000, 32000, { reasoning: true }),
 
     /* Moonshot / Kimi */
-    m('kimi-k2.7-code', 'Moonshot Kimi', 256000, 32768, { vision: true, reasoning: true }),
-    m('kimi-k2.7-code-highspeed', 'Moonshot Kimi', 256000, 32768, { vision: true, reasoning: true }),
-    m('kimi-k2.6', 'Moonshot Kimi', 256000, 32768, { vision: true, reasoning: true }),
-    m('kimi-k2.5', 'Moonshot Kimi', 256000, 32768, { vision: true, reasoning: true }),
-    m('kimi/kimi-k2.7-code', 'Moonshot Kimi', 256000, 32768, { vision: true, reasoning: true }),
-    m('kimi/kimi-k2.7-code-highspeed', 'Moonshot Kimi', 256000, 32768, { vision: true, reasoning: true }),
-    m('kimi/kimi-k2.6', 'Moonshot Kimi', 256000, 32768, { vision: true, reasoning: true }),
-    m('kimi/kimi-k2.5', 'Moonshot Kimi', 256000, 32768, { vision: true, reasoning: true }),
-    m('kimi-k2.5-2026-01-29', 'Moonshot Kimi', 256000, 32768, { vision: true, reasoning: true }),
+    m('kimi-k2.7-code', 'Moonshot Kimi', 262144, 262144, { vision: true, reasoning: true }),
+    m('kimi-k2.7-code-highspeed', 'Moonshot Kimi', 262144, 262144, { vision: true, reasoning: true }),
+    m('kimi-k2.6', 'Moonshot Kimi', 262144, 262144, { vision: true, reasoning: true }),
+    m('kimi-k2.5', 'Moonshot Kimi', 262144, 262144, { vision: true, reasoning: true }),
+    m('kimi/kimi-k2.7-code', 'Moonshot Kimi', 262144, 262144, { vision: true, reasoning: true }),
+    m('kimi/kimi-k2.7-code-highspeed', 'Moonshot Kimi', 262144, 262144, { vision: true, reasoning: true }),
+    m('kimi/kimi-k2.6', 'Moonshot Kimi', 262144, 262144, { vision: true, reasoning: true }),
+    m('kimi/kimi-k2.5', 'Moonshot Kimi', 262144, 262144, { vision: true, reasoning: true }),
+    m('kimi-k2.5-2026-01-29', 'Moonshot Kimi', 262144, 262144, { vision: true, reasoning: true }),
     m('kimi-k2-0905-preview', 'Moonshot Kimi', 256000, 32768, {}),
     m('kimi-k2-0905', 'Moonshot Kimi', 256000, 32768, {}),
     m('kimi-k2.5-preview', 'Moonshot Kimi', 256000, 32768, { vision: true }),
@@ -140,12 +157,12 @@ const MODEL_META = (() => {
     m('moonshot-v1-128k', 'Moonshot Kimi', 128000, 4096, {}),
 
     /* MiniMax */
-    m('MiniMax-M3', 'MiniMax', 1000000, 65536, { vision: true, reasoning: true }),
-    m('minimax-m3', 'MiniMax', 1000000, 65536, { vision: true, reasoning: true }),
-    m('MiniMax-M2.7', 'MiniMax', 204800, 65536, { reasoning: true }),
-    m('MiniMax-M2.7-highspeed', 'MiniMax', 204800, 65536, { reasoning: true }),
-    m('minimax-m2.7', 'MiniMax', 204800, 65536, { reasoning: true }),
-    m('minimax-m2.7-highspeed', 'MiniMax', 204800, 65536, { reasoning: true }),
+    m('MiniMax-M3', 'MiniMax', 1000000, 128000, { vision: true, reasoning: true }),
+    m('minimax-m3', 'MiniMax', 1000000, 128000, { vision: true, reasoning: true }),
+    m('MiniMax-M2.7', 'MiniMax', 204800, 131072, { reasoning: true }),
+    m('MiniMax-M2.7-highspeed', 'MiniMax', 204800, 131072, { reasoning: true }),
+    m('minimax-m2.7', 'MiniMax', 204800, 131072, { reasoning: true }),
+    m('minimax-m2.7-highspeed', 'MiniMax', 204800, 131072, { reasoning: true }),
     m('MiniMax-M2.5', 'MiniMax', 204800, 65536, { reasoning: true }),
     m('MiniMax-M2.5-highspeed', 'MiniMax', 204800, 65536, { reasoning: true }),
     m('minimax-m2.5', 'MiniMax', 1000000, 80000, { reasoning: true }),
@@ -175,10 +192,42 @@ const MODEL_META = (() => {
     m('doubao-1.5-lite-32k', 'Doubao', 32768, 4096, {}),
     m('doubao-vision-pro', 'Doubao', 32768, 4096, { vision: true }),
 
+    /* StepFun */
+    m('step-3.7-flash', 'StepFun', 256000, 256000, { vision: true, reasoning: true }),
+    m('step-3.5-flash-2603', 'StepFun', 256000, 256000, { reasoning: true }),
+    m('step-3.5-flash', 'StepFun', 256000, 256000, { reasoning: true }),
+
+    /* Tencent Hunyuan */
+    m('hy3-preview', 'Tencent Hunyuan', 256000, 64000, { reasoning: true }),
+    m('hy3', 'Tencent Hunyuan', 256000, 64000, { reasoning: true }),
+    m('hunyuan-2.0-thinking', 'Tencent Hunyuan', 131072, 16384, { reasoning: true }),
+    m('hunyuan-2.0-instruct', 'Tencent Hunyuan', 131072, 16384, { reasoning: false }),
+    m('hunyuan-turbos', 'Tencent Hunyuan', 131072, 16384, { reasoning: false }),
+    m('hunyuan-t1', 'Tencent Hunyuan', 131072, 16384, { reasoning: true }),
+    m('hunyuan-a13b-instruct', 'Tencent Hunyuan', 131072, 131072, { reasoning: true }),
+
+    /* Baidu ERNIE */
+    m('ernie-5.1-thinking', 'Baidu ERNIE', 119000, 64000, { vision: true, reasoning: true, tools: false, structuredOutput: false }),
+    m('ernie-5.1', 'Baidu ERNIE', 119000, 64000, { vision: true, reasoning: false, tools: false, structuredOutput: false }),
+    m('ernie-5.0-thinking-preview', 'Baidu ERNIE', 128000, 64000, { vision: true, reasoning: true }),
+    m('ernie-4.5-300b-a47b', 'Baidu ERNIE', 131000, 131000, { reasoning: false }),
+    m('ernie-4.5-vl-424b-a47b', 'Baidu ERNIE', 131072, 16000, { vision: true, reasoning: true, tools: false, structuredOutput: false }),
+    m('ernie-4.5-vl-28b-a3b', 'Baidu ERNIE', 32768, 16384, { vision: true, reasoning: false, tools: false, structuredOutput: false }),
+
+    /* Baichuan */
+    m('baichuan4-turbo', 'Baichuan', 128000, 32768, { tools: false, structuredOutput: false }),
+    m('baichuan4-air', 'Baichuan', 32768, 32768, { tools: false, structuredOutput: false }),
+    m('baichuan-m2-32b', 'Baichuan', 131072, 131072, { tools: false, structuredOutput: false }),
+    m('baichuan-m2', 'Baichuan', 32768, 32768, { tools: false, structuredOutput: false }),
+
     /* Google Gemini */
     m('gemini-3.5-flash', 'Google Gemini', 1048576, 65536, { vision: true, reasoning: true }),
-    m('gemini-3.1-pro', 'Google Gemini', 1048576, 65536, { vision: true, reasoning: true }),
-    m('gemini-3.0-pro', 'Google Gemini', 1048576, 65536, { vision: true, reasoning: true }),
+    m('gemini-3.1-flash-lite', 'Google Gemini', 1048576, 65536, { vision: true, reasoning: true }),
+    m('gemini-3.1-flash-lite-preview', 'Google Gemini', 1048576, 65536, { vision: true, reasoning: true }),
+    m('gemini-3.1-pro-preview', 'Google Gemini', 1048576, 65536, { vision: true, reasoning: true }),
+    m('gemini-3.1-pro-preview-customtools', 'Google Gemini', 1048576, 65536, { vision: true, reasoning: true }),
+    m('gemini-3-flash-preview', 'Google Gemini', 1048576, 65536, { vision: true, reasoning: true }),
+    m('gemini-3-pro-preview', 'Google Gemini', 1048576, 65536, { vision: true, reasoning: true }),
     m('gemini-2.5-pro', 'Google Gemini', 1048576, 65536, { vision: true, reasoning: true }),
     m('gemini-2.5-flash', 'Google Gemini', 1048576, 65536, { vision: true, reasoning: true }),
     m('gemini-2.5-flash-lite', 'Google Gemini', 1048576, 65536, { vision: true, reasoning: true }),
@@ -188,7 +237,22 @@ const MODEL_META = (() => {
     m('gemini-1.5-flash', 'Google Gemini', 1048576, 8192, { vision: true }),
     m('imagen-4.0-generate', 'Google Gemini', 4096, 0, { tools: false, structuredOutput: false, imageGeneration: true }),
     m('imagen-4.0-ultra-generate', 'Google Gemini', 4096, 0, { tools: false, structuredOutput: false, imageGeneration: true }),
+    m('gemini-3.1-flash-image-preview', 'Google Gemini', 65536, 65536, { vision: true, reasoning: true, tools: false, structuredOutput: false, imageGeneration: true, imageEdit: true }),
+    m('gemini-3-pro-image-preview', 'Google Gemini', 131072, 32768, { vision: true, reasoning: true, tools: false, structuredOutput: false, imageGeneration: true, imageEdit: true }),
+    m('gemini-2.5-flash-image', 'Google Gemini', 32768, 32768, { vision: true, reasoning: true, tools: false, structuredOutput: false, imageGeneration: true, imageEdit: true }),
     m('gemini-2.0-flash-preview-image-generation', 'Google Gemini', 32768, 8192, { vision: true, tools: false, imageGeneration: true, imageEdit: true }),
+
+    /* xAI Grok */
+    m('grok-4.5', 'xAI', 500000, 500000, { vision: true, reasoning: true }),
+    m('grok-4.5-latest', 'xAI', 500000, 500000, { vision: true, reasoning: true }),
+    m('grok-build-latest', 'xAI', 500000, 500000, { vision: true, reasoning: true }),
+    m('grok-4.3', 'xAI', 1000000, 30000, { vision: true, reasoning: true }),
+    m('grok-build-0.1', 'xAI', 256000, 256000, { vision: true, reasoning: true }),
+    m('grok-4.20-0309-reasoning', 'xAI', 1000000, 30000, { vision: true, reasoning: true }),
+    m('grok-4.20-0309-non-reasoning', 'xAI', 1000000, 30000, { vision: true, reasoning: false }),
+    m('grok-4.20-multi-agent-0309', 'xAI', 1000000, 30000, { vision: true, reasoning: true, tools: false }),
+    m('grok-imagine-image', 'xAI', 8000, 0, { vision: true, tools: false, structuredOutput: false, imageGeneration: true, imageEdit: true }),
+    m('grok-imagine-image-quality', 'xAI', 8000, 0, { vision: true, tools: false, structuredOutput: false, imageGeneration: true, imageEdit: true }),
 
     /* Meta */
     m('llama-4-maverick', 'Meta Llama', 1000000, 8192, { vision: true }),
@@ -209,7 +273,11 @@ const MODEL_META = (() => {
   ];
 
   const EXACT = {};
-  BUILTIN.forEach(item => { EXACT[cleanId(item.id)] = item; });
+  BUILTIN.forEach(item => {
+    const key = cleanId(item.id);
+    if (!EXACT[key]) EXACT[key] = item;
+  });
+  const BUILTIN_MATCH_KEYS = Object.keys(EXACT).sort((a, b) => b.length - a.length);
 
   function m(id, provider, contextWindow, maxOutputTokens, capabilities) {
     return {
@@ -218,7 +286,7 @@ const MODEL_META = (() => {
       contextWindow,
       maxOutputTokens,
       capabilities: Object.assign({}, CAP_DEFAULTS, capabilities || {}),
-      source: 'builtin-2026-07-06'
+      source: 'builtin-2026-07-10'
     };
   }
 
@@ -263,7 +331,17 @@ const MODEL_META = (() => {
     id = String(id || '').trim();
     if (!id) return null;
     const low = cleanId(id);
-    const exact = EXACT[low] || EXACT[low.replace(/^models\//, '')];
+    const shortId = low.split('/').pop();
+    let exact = EXACT[low] || EXACT[low.replace(/^models\//, '')] || EXACT[shortId];
+    if (/ollama/i.test(String(providerName || ''))) {
+      const ollama = BUILTIN.find(item => item.provider === 'Ollama' && cleanId(item.id) === shortId);
+      if (ollama) exact = ollama;
+    }
+    if (!exact) {
+      const matchIn = [low, shortId].join(' ');
+      const matchedKey = BUILTIN_MATCH_KEYS.find(key => key.length >= 4 && matchIn.includes(key));
+      if (matchedKey) exact = EXACT[matchedKey];
+    }
     let out = exact ? cloneMeta(exact) : {
       id,
       contextWindow: DEFAULT_CONTEXT,
@@ -274,8 +352,8 @@ const MODEL_META = (() => {
     out.id = id;
 
     const hay = [id, providerName || '', out.provider || ''].join(' ').toLowerCase();
-    if (/vision|[-_.]vl|multimodal|gpt-4o|gpt-4\.1|gpt-5|claude|gemini|llava/.test(hay)) out.capabilities.vision = true;
-    if (/reason|thinking|deepseek-r1|deepseek-reasoner|qwq|qwen3|glm-[45]|glm-z1|gemini-[23]\.|o[134]|gpt-5/.test(hay)) out.capabilities.reasoning = true;
+    if (/vision|[-_.]vl|multimodal|gpt-4o|gpt-4\.1|gpt-5|claude|gemini|grok-[4-9]|llava/.test(hay)) out.capabilities.vision = true;
+    if (/reason|thinking|deepseek-r1|deepseek-reasoner|qwq|qwen3|glm-[45]|glm-z1|gemini-[23]\.|grok-[4-9]|o[134]|gpt-5/.test(hay)) out.capabilities.reasoning = true;
     if (/image|dall-e|imagen|flux|stable-diffusion|sdxl/.test(hay)) {
       out.capabilities.imageGeneration = true;
       out.capabilities.tools = false;
@@ -305,6 +383,14 @@ const MODEL_META = (() => {
     out.maxOutputTokens = toInt(out.maxOutputTokens);
     if (out.maxOutputTokens == null) out.maxOutputTokens = DEFAULT_MAX_OUTPUT;
     return out;
+  }
+
+  function mergeStoredMeta(base, stored) {
+    if (!stored) return cloneMeta(base);
+    const source = String(stored.source || '');
+    /* Automatically refresh metadata previously inferred or copied from an older builtin table. */
+    if (source === 'heuristic' || /^builtin-/.test(source)) return cloneMeta(base);
+    return mergeMeta(base, stored);
   }
 
   function fromApiModel(raw) {
@@ -352,7 +438,7 @@ const MODEL_META = (() => {
       const id = modelId(item).trim();
       if (!id) return;
       if (typeof item === 'object') modelMeta[id] = mergeMeta(modelMeta[id], item);
-      const meta = mergeMeta(infer(id, provider.name), modelMeta[id]);
+      const meta = mergeStoredMeta(infer(id, provider.name), modelMeta[id]);
       if (isImageGenerationMeta(meta)) add(imageModels, id);
       else add(models, id);
     });
@@ -363,7 +449,7 @@ const MODEL_META = (() => {
       add(imageModels, id);
     });
     imageModels.forEach(id => {
-      const meta = mergeMeta(infer(id, provider.name), imageModelMeta[id] || modelMeta[id]);
+      const meta = mergeStoredMeta(infer(id, provider.name), imageModelMeta[id] || modelMeta[id]);
       imageModelMeta[id] = mergeMeta(meta, { capabilities: { imageGeneration: true, tools: false, structuredOutput: false } });
       const i = models.indexOf(id);
       if (i >= 0) models.splice(i, 1);
@@ -373,11 +459,11 @@ const MODEL_META = (() => {
     provider.imageModels = imageModels;
     provider.modelMeta = {};
     models.forEach(id => {
-      provider.modelMeta[id] = mergeMeta(infer(id, provider.name), modelMeta[id]);
+      provider.modelMeta[id] = mergeStoredMeta(infer(id, provider.name), modelMeta[id]);
     });
     provider.imageModelMeta = {};
     imageModels.forEach(id => {
-      provider.imageModelMeta[id] = mergeMeta(infer(id, provider.name), imageModelMeta[id]);
+      provider.imageModelMeta[id] = mergeStoredMeta(infer(id, provider.name), imageModelMeta[id]);
     });
     return provider;
   }

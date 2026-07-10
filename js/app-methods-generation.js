@@ -21,9 +21,12 @@
             return clone(m);
           });
       },
-      imageRequestModel() {
+      imageRequestModel(mode) {
         const provider = this.imageProvider;
-        const model = this.imageModelId;
+        let model = this.imageModelId;
+        if (mode === 'edit' && this.settings.imageEditModel && this.imageEditModelOptions.includes(this.settings.imageEditModel)) {
+          model = this.settings.imageEditModel;
+        }
         if (!provider) throw new Error('请先添加图片提供商');
         if (!provider.baseUrl) throw new Error('请先填写图片提供商 API 地址');
         if (!model) throw new Error('请先在图片生成设置中选择模型');
@@ -136,14 +139,15 @@
         args.background = args.background || this.settings.imageBackground || 'auto';
         args.outputFormat = args.outputFormat || this.settings.imageOutputFormat || 'png';
         args.count = U.clamp(parseInt(args.count || 1, 10) || 1, 1, 8);
-        const { provider, model } = this.imageRequestModel();
+        const referenceImages = this.imageReferencesFromArgs(args);
+        const requestMode = args.mode || (referenceImages.length ? 'edit' : 'generate');
+        const { provider, model } = this.imageRequestModel(requestMode);
         const meta = providerModelMeta(provider, model);
         const caps = meta && meta.capabilities || {};
         if (!(caps.imageGeneration || (meta.image && meta.image.generation))) {
           U.toast('当前图片模型元数据未标记生图能力，仍尝试调用接口', 3200);
         }
-        const referenceImages = this.imageReferencesFromArgs(args);
-        if (args.mode === 'edit' && !referenceImages.length) {
+        if (requestMode === 'edit' && !referenceImages.length) {
           throw new Error('图片编辑需要至少一张参考图');
         }
         let result;
@@ -152,7 +156,7 @@
             provider,
             model,
             prompt: args.prompt,
-            mode: args.mode || (referenceImages.length ? 'edit' : 'generate'),
+            mode: requestMode,
             referenceImages,
             size: args.size,
             count: args.count,

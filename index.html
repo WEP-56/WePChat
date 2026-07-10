@@ -34,12 +34,13 @@
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3H6a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2h13a2 2 0 0 0 2-2v-6"/><path d="M18.4 2.6a2.1 2.1 0 0 1 3 3L13 14l-4 1 1-4 8.4-8.4z"/></svg>
       </button>
     </div>
-    <button class="connection-banner" :class="connectionNotice.level" v-if="connectionNotice.visible" @click="clearConnectionNotice()" aria-live="assertive">
+    <div class="connection-banner" :class="connectionNotice.level" v-if="connectionNotice.visible" @click="clearConnectionNotice()" role="alert" aria-live="assertive">
       <span class="connection-code">{{ connectionNotice.code }}</span>
       <span class="connection-message">{{ connectionNotice.source ? connectionNotice.source + ' · ' : '' }}{{ connectionNotice.message }}</span>
       <span class="connection-attempt" v-if="connectionNotice.attempt">重连 {{ connectionNotice.attempt }}/{{ connectionNotice.max }}</span>
       <span class="connection-attempt" v-else-if="connectionNotice.progress">{{ connectionNotice.progress }}</span>
-    </button>
+      <button class="connection-close" @click.stop="clearConnectionNotice()" aria-label="关闭连接提示" title="关闭">×</button>
+    </div>
     <div class="chat-body">
       <!-- 空状态 -->
       <div class="empty-state" v-if="!session.messages.length">
@@ -272,6 +273,21 @@
         </div>
       </template>
 
+      <!-- 主题化选择器，替代 Android 原生 select 弹窗 -->
+      <template v-else-if="sheet === 'picker' && picker">
+        <div class="sheet-title">{{ picker.title }}</div>
+        <div class="sheet-body picker-list">
+          <button class="picker-item" v-for="option in picker.options" :key="String(option.value)"
+            :disabled="option.disabled" @click="pickOption(option)">
+            <span class="model-main">
+              <span class="model-name">{{ option.label }}</span>
+              <span class="model-sub" v-if="option.sub">{{ option.sub }}</span>
+            </span>
+            <svg class="check" v-if="option.value === picker.value" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12.5l5 5L20 6.5"/></svg>
+          </button>
+        </div>
+      </template>
+
       <!-- 会话菜单 -->
       <template v-else-if="sheet === 'sessionMenu' && sessionMenuFor">
         <div class="sheet-title">{{ sessionMenuFor.title || '新聊天' }}</div>
@@ -298,34 +314,23 @@
           <div class="card">
             <div class="row static">
               <span class="row-label">尺寸</span>
-              <select class="select-control" v-model="settings.imageDefaultSize" @change="persistSettings()">
-                <option v-for="size in imageSizeOptions" :value="size">{{ size }}</option>
-              </select>
+              <button class="select-button" @click="openSettingPicker('imageDefaultSize', '图片尺寸', imageSizeOptions.map(x => ({ value:x, label:x })))">{{ settings.imageDefaultSize }}</button>
             </div>
             <div class="row static">
               <span class="row-label">质量</span>
-              <select class="select-control" v-model="settings.imageQuality" @change="persistSettings()">
-                <option v-for="q in imageQualityOptions" :value="q.value">{{ q.label }}</option>
-              </select>
+              <button class="select-button" @click="openSettingPicker('imageQuality', '图片质量', imageQualityOptions)">{{ pickerValueLabel(imageQualityOptions, settings.imageQuality) }}</button>
             </div>
             <div class="row static">
               <span class="row-label">格式</span>
-              <select class="select-control" v-model="settings.imageOutputFormat" @change="persistSettings()">
-                <option v-for="fmt in imageFormatOptions" :value="fmt.value">{{ fmt.label }}</option>
-              </select>
+              <button class="select-button" @click="openSettingPicker('imageOutputFormat', '输出格式', imageFormatOptions)">{{ pickerValueLabel(imageFormatOptions, settings.imageOutputFormat) }}</button>
             </div>
             <div class="row static">
               <span class="row-label">背景</span>
-              <select class="select-control" v-model="settings.imageBackground" @change="persistSettings()">
-                <option v-for="bg in imageBackgroundOptions" :value="bg.value">{{ bg.label }}</option>
-              </select>
+              <button class="select-button" @click="openSettingPicker('imageBackground', '图片背景', imageBackgroundOptions)">{{ pickerValueLabel(imageBackgroundOptions, settings.imageBackground) }}</button>
             </div>
             <div class="row static">
               <span class="row-label">风格<span class="rl-sub" v-if="selectedImageStylePreset">{{ selectedImageStylePreset.name }}</span></span>
-              <select class="select-control" v-model="settings.imageStylePresetId" @change="persistSettings()">
-                <option value="">不使用预设</option>
-                <option v-for="preset in imageStylePresets" :value="preset.id">{{ preset.name }}</option>
-              </select>
+              <button class="select-button" @click="openSettingPicker('imageStylePresetId', '风格预设', [{value:'',label:'不使用预设'}].concat(imageStylePresets.map(x => ({value:x.id,label:x.name,sub:x.prompt}))))">{{ selectedImageStylePreset ? selectedImageStylePreset.name : '不使用预设' }}</button>
             </div>
           </div>
           <textarea class="textarea-block image-wb-prompt" v-model="imageWorkbenchPrompt" placeholder="描述要生成的图片"></textarea>
@@ -590,28 +595,45 @@
     <div class="page-body">
       <div class="sec-label">首选模型</div>
       <div class="card">
+        <button class="row" @click="openImageProviderPicker()" :disabled="!imageProviders.length">
+          <span class="row-label">提供商<span class="rl-sub">只显示至少有一个模型标记为生图或图片编辑能力的提供商</span></span>
+          <span class="row-value">{{ imageProvider ? imageProvider.name : '暂无可用提供商' }}</span>
+          <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 6l6 6-6 6"/></svg>
+        </button>
+        <button class="row" @click="openImageModelPicker(false)" :disabled="!imageProvider">
+          <span class="row-label">生成模型<span class="rl-sub">用于纯文字生成图片；自动选择会优先使用首个标记“图像生成”的模型</span></span>
+          <span class="row-value">{{ settings.imageModel || imageModelId || '自动选择' }}</span>
+          <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 6l6 6-6 6"/></svg>
+        </button>
+        <button class="row" @click="openImageModelPicker(true)" :disabled="!imageProvider || !imageEditModelOptions.length">
+          <span class="row-label">编辑模型<span class="rl-sub">上传参考图、局部修改或继续改图时使用；留空则沿用生成模型，仅列出标记“图像编辑”的模型</span></span>
+          <span class="row-value">{{ settings.imageEditModel || '跟随生成模型' }}</span>
+          <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 6l6 6-6 6"/></svg>
+        </button>
+      </div>
+
+      <div class="sec-label" v-if="imageProvider">接口配置</div>
+      <div class="card" v-if="imageProvider">
         <div class="row static">
-          <span class="row-label">提供商</span>
-          <select v-model="settings.imageProviderId" @change="settings.imageModel=''; persistSettings()" style="text-align:right;flex:1;direction:rtl">
-            <option value="">跟随当前</option>
-            <option v-for="p in providers" :value="p.id">{{ p.name }}</option>
-          </select>
+          <span class="row-label">图像 API 地址<span class="rl-sub">留空复用该提供商的文本 API 地址</span></span>
+          <input type="url" :value="imageProvider.imageBaseUrl || ''" @change="saveImageProviderField('imageBaseUrl', $event.target.value)" placeholder="复用文本地址">
         </div>
         <div class="row static">
-          <span class="row-label">生成模型<span class="rl-sub">{{ imageModelId ? modelSummary(imageProvider, imageModelId) : '请选择模型' }}</span></span>
-          <select v-model="settings.imageModel" @change="persistSettings()" style="text-align:right;flex:1;direction:rtl">
-            <option value="">自动选择</option>
-            <option v-for="md in imageModelOptions" :value="md">{{ md }}</option>
-          </select>
+          <span class="row-label">图像 API Key<span class="rl-sub">留空复用该提供商的 API Key</span></span>
+          <input :type="imageSettingsShowKey ? 'text' : 'password'" :value="imageProvider.imageApiKey || ''"
+            @focus="imageSettingsShowKey = true" @blur="imageSettingsShowKey = false"
+            @change="saveImageProviderField('imageApiKey', $event.target.value)" placeholder="复用提供商 Key">
         </div>
         <div class="row static">
-          <span class="row-label">编辑模型<span class="rl-sub">首版预留，后续用于图片对话编辑</span></span>
-          <select v-model="settings.imageEditModel" @change="persistSettings()" style="text-align:right;flex:1;direction:rtl">
-            <option value="">跟随生成模型</option>
-            <option v-for="md in imageModelOptions" :value="md">{{ md }}</option>
-          </select>
+          <span class="row-label">生图路径<span class="rl-sub">文本生成图片的接口路径；留空时自动使用 /v1/images/generations</span></span>
+          <input type="text" :value="settings.imageEndpointPath || imageProvider.imageEndpointPath || ''" @change="setImageEndpointPath('imageEndpointPath', $event.target.value)" placeholder="/v1/images/generations">
+        </div>
+        <div class="row static">
+          <span class="row-label">图片编辑路径<span class="rl-sub">携带参考图片进行编辑的接口路径；留空时自动使用 /v1/images/edits</span></span>
+          <input type="text" :value="settings.imageEditEndpointPath || imageProvider.imageEditEndpointPath || ''" @change="setImageEndpointPath('imageEditEndpointPath', $event.target.value)" placeholder="/v1/images/edits">
         </div>
       </div>
+      <div class="hint" v-if="!imageProviders.length">请先在提供商的模型列表中添加图片模型，或打开模型元数据中的“图像生成 / 图像编辑”能力。</div>
 
       <div class="sec-label">风格预设</div>
       <div class="card preset-card">
@@ -629,7 +651,7 @@
           </button>
         </div>
       </div>
-      <div class="hint">尺寸、质量、格式、背景和当前风格选择在生图工作台里调整。</div>
+      <div class="hint">尺寸、质量、格式、背景和当前风格在生图工作台中按任务调整。接口配置会优先于提供商旧配置，已有配置仍会兼容读取。</div>
     </div>
   </div>
 
@@ -861,75 +883,36 @@
       <div class="sec-label">基本信息</div>
       <div class="card">
         <div class="row static"><span class="row-label" style="flex:none">名称</span><input type="text" v-model="provForm.data.name" placeholder="如 OpenAI / DeepSeek"></div>
-        <div class="row static">
+        <button class="row" @click="openApiTypePicker()">
           <span class="row-label" style="flex:none">接口类型</span>
-          <select v-model="provForm.data.api" style="text-align:right;flex:1;direction:rtl">
-            <option v-for="t in API.API_TYPES" :value="t.value">{{ t.label }}</option>
-          </select>
-        </div>
+          <span class="row-value">{{ apiTypeLabel(provForm.data.api) }}</span>
+          <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 6l6 6-6 6"/></svg>
+        </button>
         <div class="row static"><span class="row-label" style="flex:none">API 地址</span><input type="url" v-model="provForm.data.baseUrl" placeholder="https://api.openai.com"></div>
         <div class="row static"><span class="row-label" style="flex:none">API Key</span><input :type="provForm.showKey ? 'text' : 'password'" v-model="provForm.data.apiKey" placeholder="sk-..." @focus="provForm.showKey = true" @blur="provForm.showKey = false"></div>
       </div>
       <div class="hint">地址只填域名时自动补 /v1；以 # 结尾表示按原样使用完整地址。</div>
 
-      <div class="sec-label">文本模型列表（每行一个）</div>
-      <textarea class="textarea-block" style="font-family:ui-monospace,Menlo,monospace;font-size:13px" v-model="provForm.modelsText" @input="syncProvModelsFromText()" placeholder="gpt-5.6-sol&#10;gpt-5.5"></textarea>
-      <button class="big-btn plain" :disabled="provForm.fetching" @click="fetchModels()">{{ provForm.fetching ? '获取中…' : '从接口获取模型列表' }}</button>
-      <button class="big-btn plain" :disabled="provForm.testing" @click="testProvider()">{{ provForm.testing ? '测试中…' : '测试连接' }}</button>
-
-      <div class="sec-label">图像生成</div>
-      <div class="card">
-        <div class="row static"><span class="row-label" style="flex:none">图像 API 地址<span class="rl-sub">留空复用上方地址</span></span><input type="url" v-model="provForm.data.imageBaseUrl" placeholder="https://api.openai.com/v1"></div>
-        <div class="row static"><span class="row-label" style="flex:none">图像 API Key<span class="rl-sub">留空复用上方 Key</span></span><input :type="provForm.showKey ? 'text' : 'password'" v-model="provForm.data.imageApiKey" placeholder="sk-..." @focus="provForm.showKey = true" @blur="provForm.showKey = false"></div>
-        <div class="row static"><span class="row-label" style="flex:none">生图路径<span class="rl-sub">留空自动拼 /images/generations</span></span><input type="text" v-model="provForm.data.imageEndpointPath" placeholder="/v1/images/generations"></div>
-        <div class="row static"><span class="row-label" style="flex:none">图像编辑路径<span class="rl-sub">留空自动拼 /images/edits</span></span><input type="text" v-model="provForm.data.imageEditEndpointPath" placeholder="/v1/images/edits"></div>
-      </div>
-      <textarea class="textarea-block" style="font-family:ui-monospace,Menlo,monospace;font-size:13px" v-model="provForm.imageModelsText" @input="syncProvImageModelsFromText()" placeholder="gpt-image-2&#10;gpt-image-1"></textarea>
-
-      <div class="sec-label" v-if="provForm.data && provForm.data.models && provForm.data.models.length">模型元数据</div>
-      <div class="card" v-if="provForm.data && provForm.data.models && provForm.data.models.length">
-        <div class="row static">
-          <span class="row-label">当前模型</span>
-          <select v-model="provForm.selectedModel" style="text-align:right;flex:1;direction:rtl">
-            <option v-for="md in provForm.data.models" :value="md">{{ md }}</option>
-          </select>
+      <div class="sec-label">模型列表</div>
+      <div class="card provider-model-list">
+        <div class="provider-model-empty" v-if="!providerModelIds(provForm.data).length">暂无模型，可从接口获取或手动添加</div>
+        <div class="provider-model-row" v-for="md in providerModelIds(provForm.data)" :key="md">
+          <button class="provider-model-main" @click="openProviderModelEditor(md)">
+            <span class="provider-model-name">{{ md }}</span>
+            <span class="provider-model-summary">{{ modelSummary(provForm.data, md) }}</span>
+          </button>
+          <span class="provider-model-result ok" v-if="providerModelTestState(md) === 'ok'">可达</span>
+          <span class="provider-model-result error" v-else-if="providerModelTestState(md) === 'error'">失败</span>
+          <button class="provider-model-test" :class="providerModelTestState(md)" :disabled="providerModelTestState(md) === 'testing'"
+            @click.stop="testProviderModel(md)" :aria-label="isProviderImageModel(provForm.data, md) ? '图片模型需在图片生成页测试' : '测试模型可达性'">
+            <span class="mini-spinner" v-if="providerModelTestState(md) === 'testing'"></span>
+            <svg v-else viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M8 12h8M9 8V5M15 8V5M7 8h10v8a3 3 0 0 1-3 3h-4a3 3 0 0 1-3-3V8zM12 19v3"/></svg>
+          </button>
         </div>
-        <template v-if="provSelectedMeta">
-          <div class="row static">
-            <span class="row-label">上下文容量<span class="rl-sub">用于 token 圆环和快满提醒</span></span>
-            <input type="text" inputmode="numeric" style="width:96px" :value="provSelectedMeta.contextWindow || ''" @change="setSelectedModelNumber('contextWindow', $event.target.value)">
-          </div>
-          <div class="row static">
-            <span class="row-label">最大输出 tokens</span>
-            <input type="text" inputmode="numeric" style="width:96px" :value="provSelectedMeta.maxOutputTokens || ''" @change="setSelectedModelNumber('maxOutputTokens', $event.target.value)">
-          </div>
-          <div class="row static">
-            <span class="row-label">视觉输入<span class="rl-sub">图片理解、多模态输入</span></span>
-            <button class="switch" :class="{on: provSelectedMeta.capabilities.vision}" @click="toggleSelectedModelCap('vision')"></button>
-          </div>
-          <div class="row static">
-            <span class="row-label">思考 / 推理<span class="rl-sub">reasoning、thinking、R 系列能力</span></span>
-            <button class="switch" :class="{on: provSelectedMeta.capabilities.reasoning}" @click="toggleSelectedModelCap('reasoning')"></button>
-          </div>
-          <div class="row static">
-            <span class="row-label">工具调用</span>
-            <button class="switch" :class="{on: provSelectedMeta.capabilities.tools}" @click="toggleSelectedModelCap('tools')"></button>
-          </div>
-          <div class="row static">
-            <span class="row-label">结构化输出</span>
-            <button class="switch" :class="{on: provSelectedMeta.capabilities.structuredOutput}" @click="toggleSelectedModelCap('structuredOutput')"></button>
-          </div>
-          <div class="row static">
-            <span class="row-label">图像生成</span>
-            <button class="switch" :class="{on: provSelectedMeta.capabilities.imageGeneration}" @click="toggleSelectedModelCap('imageGeneration')"></button>
-          </div>
-          <div class="row static">
-            <span class="row-label">图像编辑</span>
-            <button class="switch" :class="{on: provSelectedMeta.capabilities.imageEdit}" @click="toggleSelectedModelCap('imageEdit')"></button>
-          </div>
-        </template>
+        <button class="provider-model-add" @click="addProviderModel()">＋ 添加模型</button>
       </div>
-      <div class="hint" v-if="provForm.data && provForm.data.models && provForm.data.models.length">接口返回的 context/capabilities 会优先写入；缺失时使用内置模型库和名称推断。</div>
+      <div class="hint">点击模型条目编辑上下文、最大输出和能力；右侧插头会真实发送“Reply with exactly OK.”测试文本模型，因此可能产生极少量费用。图片模型请在图片生成页实际测试。</div>
+      <button class="big-btn plain" :disabled="provForm.fetching" @click="fetchModels()">{{ provForm.fetching ? '获取中…' : '从接口获取模型列表' }}</button>
       <button class="big-btn danger" v-if="!provForm.isNew" @click="deleteProviderAsk()">删除提供商</button>
     </div>
   </div>
@@ -1047,6 +1030,49 @@
       <div class="pv-console" v-show="preview.tab === 'console'">
         <div class="pv-empty" v-if="!preview.logs.length">暂无输出</div>
         <div class="pv-log" v-for="(l, i) in preview.logs" :key="i" :class="l.level">{{ l.text }}</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ================= 模型元数据编辑 ================= -->
+  <div class="model-editor-mask" v-if="modelEditor" @click.self="modelEditor = null">
+    <div class="model-editor-dialog">
+      <div class="model-editor-head">
+        <div>
+          <div class="model-editor-title">模型元数据</div>
+          <div class="model-editor-sub">用于请求限制、能力判断和模型筛选</div>
+        </div>
+        <button class="model-editor-close" @click="modelEditor = null" aria-label="关闭">×</button>
+      </div>
+      <div class="model-editor-body">
+        <label class="model-editor-field">
+          <span>模型名称</span>
+          <input type="text" v-model="modelEditor.id" placeholder="完整模型 ID">
+        </label>
+        <div class="model-editor-grid">
+          <label class="model-editor-field">
+            <span>上下文容量</span>
+            <input type="text" inputmode="numeric" v-model="modelEditor.contextWindow" placeholder="例如 128000">
+          </label>
+          <label class="model-editor-field">
+            <span>最大输出 tokens</span>
+            <input type="text" inputmode="numeric" v-model="modelEditor.maxOutputTokens" placeholder="例如 8192">
+          </label>
+        </div>
+        <div class="model-editor-caps">
+          <div class="model-editor-cap"><span>视觉输入<small>理解图片或多模态输入</small></span><button class="switch" :class="{on:modelEditor.capabilities.vision}" @click="toggleModelEditorCap('vision')"></button></div>
+          <div class="model-editor-cap"><span>思考 / 推理<small>reasoning、thinking 等推理能力</small></span><button class="switch" :class="{on:modelEditor.capabilities.reasoning}" @click="toggleModelEditorCap('reasoning')"></button></div>
+          <div class="model-editor-cap"><span>工具调用<small>函数调用和 WepChat 工具链</small></span><button class="switch" :class="{on:modelEditor.capabilities.tools}" @click="toggleModelEditorCap('tools')"></button></div>
+          <div class="model-editor-cap"><span>结构化输出<small>JSON Schema 等受约束输出</small></span><button class="switch" :class="{on:modelEditor.capabilities.structuredOutput}" @click="toggleModelEditorCap('structuredOutput')"></button></div>
+          <div class="model-editor-cap"><span>图像生成<small>可通过图片接口从文字生成图片</small></span><button class="switch" :class="{on:modelEditor.capabilities.imageGeneration}" @click="toggleModelEditorCap('imageGeneration')"></button></div>
+          <div class="model-editor-cap"><span>图像编辑<small>可接收参考图片进行修改</small></span><button class="switch" :class="{on:modelEditor.capabilities.imageEdit}" @click="toggleModelEditorCap('imageEdit')"></button></div>
+        </div>
+      </div>
+      <div class="model-editor-actions">
+        <button class="model-editor-delete" @click="deleteProviderModel()">删除模型</button>
+        <span class="model-editor-spacer"></span>
+        <button @click="modelEditor = null">取消</button>
+        <button class="primary" @click="saveProviderModelEditor()">保存</button>
       </div>
     </div>
   </div>
