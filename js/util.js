@@ -306,6 +306,111 @@ const U = {
     return '';
   },
 
+  /* 导出目录以 plus.io.PUBLIC_DOWNLOADS 的实际映射为准。不同基座、包名和
+     Android 版本的绝对路径可能不同，不能在界面层硬编码。 */
+  async exportDirectoryInfo() {
+    if (!U.isPlus()) {
+      return {
+        path: '浏览器默认下载目录',
+        localUrl: '',
+        isApp: false
+      };
+    }
+    const fsType = plus.io.PUBLIC_DOWNLOADS != null ? plus.io.PUBLIC_DOWNLOADS : plus.io.PUBLIC_DOCUMENTS;
+    const root = await U._withTimeout(U._plusFileSystem(fsType), 10000, '打开下载目录超时');
+    const dir = await U._withTimeout(U._plusGetDir(root, ['wepchat']), 10000, '打开 WepChat 导出目录超时');
+    const localUrl = U._plusEntryUrl(dir);
+    let path = U._plusEntryPath(dir);
+    if (!path && localUrl && plus.io && typeof plus.io.convertLocalFileSystemURL === 'function') {
+      try { path = plus.io.convertLocalFileSystemURL(localUrl) || ''; } catch (e) {}
+    }
+    return {
+      path: path || localUrl || '应用数据目录/Download/wepchat',
+      fullPath: path,
+      localUrl,
+      isApp: true
+    };
+  },
+
+  _androidDocumentUriForPath(path) {
+    if (!U.isPlus() || !plus.android || !path) return null;
+    const clean = String(path).replace(/^file:\/\//i, '').replace(/\\/g, '/').replace(/\/+$/, '');
+    let docId = '';
+    let m = clean.match(/^\/storage\/emulated\/0\/(.+)$/i);
+    if (m) docId = 'primary:' + m[1];
+    if (!docId) {
+      m = clean.match(/^\/storage\/([^/]+)\/(.+)$/i);
+      if (m) docId = m[1] + ':' + m[2];
+    }
+    if (!docId) return null;
+    try {
+      const DocumentsContract = plus.android.importClass('android.provider.DocumentsContract');
+      return DocumentsContract.buildDocumentUri('com.android.externalstorage.documents', docId);
+    } catch (e) {
+      return null;
+    }
+  },
+
+  async openExportDirectory() {
+    let info;
+    try {
+      info = await U.exportDirectoryInfo();
+    } catch (e) {
+      info = {
+        path: '应用数据目录/Download/wepchat',
+        fullPath: '',
+        localUrl: '',
+        isApp: U.isPlus(),
+        opened: false,
+        error: e && e.message || String(e)
+      };
+    }
+    if (!info.isApp || !plus.android) {
+      return Object.assign(info, {
+        opened: false,
+        error: info.error || '浏览器无法直接打开系统下载目录'
+      });
+    }
+
+    const uri = U._androidDocumentUriForPath(info.fullPath || info.path);
+    if (!uri) {
+      return Object.assign(info, {
+        opened: false,
+        error: info.error || '无法为导出目录创建系统 URI'
+      });
+    }
+
+    let firstError = null;
+    try {
+      const Intent = plus.android.importClass('android.content.Intent');
+      const activity = plus.android.runtimeMainActivity();
+      const intent = new Intent(Intent.ACTION_VIEW);
+      intent.setDataAndType(uri, 'vnd.android.document/directory');
+      if (Intent.FLAG_ACTIVITY_NEW_TASK != null) intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+      if (Intent.FLAG_GRANT_READ_URI_PERMISSION != null) intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+      activity.startActivity(intent);
+      return Object.assign(info, { opened: true, method: 'file-manager' });
+    } catch (e) {
+      firstError = e;
+    }
+
+    try {
+      const Intent = plus.android.importClass('android.content.Intent');
+      const activity = plus.android.runtimeMainActivity();
+      const intent = new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE);
+      if (Intent.FLAG_ACTIVITY_NEW_TASK != null) intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+      if (Intent.FLAG_GRANT_READ_URI_PERMISSION != null) intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+      try { intent.putExtra('android.provider.extra.INITIAL_URI', uri); } catch (e) {}
+      activity.startActivity(intent);
+      return Object.assign(info, { opened: true, method: 'document-tree' });
+    } catch (e) {
+      return Object.assign(info, {
+        opened: false,
+        error: (e && e.message) || (firstError && firstError.message) || '系统文件管理器无法打开此目录'
+      });
+    }
+  },
+
   /* 原生 Bitmap 保存图片：base64 原生解码、原生落盘，不让二进制数据过 JS 桥。
      Native.js 的 byte[] 跨桥会拿到 null（实机 NullPointerException），不能用 */
   _plusSaveBitmap(absPath, dataUrl) {
@@ -585,6 +690,71 @@ const U = {
     return new Blob(chunks, { type: 'application/zip' });
   },
 
+  async _inflateZipBytes(bytes) {
+    if (typeof DecompressionStream !== 'function') {
+      throw new Error('当前系统 WebView 不支持解压备份，请更新 Android System WebView');
+    }
+    const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream('deflate-raw'));
+    return new Uint8Array(await new Response(stream).arrayBuffer());
+  },
+
+  /* 仅读取 ZIP 中指定的文本文件，不向磁盘解压。支持 store/deflate，
+     同时限制条目数与解压体积，避免异常备份耗尽 WebView 内存。 */
+  async readZipTextFiles(blob, wantedNames) {
+    const bytes = new Uint8Array(await blob.arrayBuffer());
+    if (bytes.length < 22) throw new Error('备份包不是有效的 ZIP 文件');
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    let eocd = -1;
+    const min = Math.max(0, bytes.length - 22 - 0xffff);
+    for (let i = bytes.length - 22; i >= min; i--) {
+      if (view.getUint32(i, true) === 0x06054b50) { eocd = i; break; }
+    }
+    if (eocd < 0) throw new Error('备份包缺少 ZIP 目录信息');
+    const count = view.getUint16(eocd + 10, true);
+    const centralSize = view.getUint32(eocd + 12, true);
+    const centralOffset = view.getUint32(eocd + 16, true);
+    if (count > 1000) throw new Error('备份包文件条目过多');
+    if (centralOffset + centralSize > bytes.length) throw new Error('备份包目录已损坏');
+
+    const wanted = new Set((wantedNames || []).map(name => String(name).toLowerCase()));
+    const out = {};
+    const decoder = new TextDecoder('utf-8');
+    let offset = centralOffset;
+    for (let i = 0; i < count; i++) {
+      if (offset + 46 > bytes.length || view.getUint32(offset, true) !== 0x02014b50) {
+        throw new Error('备份包目录条目已损坏');
+      }
+      const method = view.getUint16(offset + 10, true);
+      const crc = view.getUint32(offset + 16, true);
+      const compressedSize = view.getUint32(offset + 20, true);
+      const plainSize = view.getUint32(offset + 24, true);
+      const nameLength = view.getUint16(offset + 28, true);
+      const extraLength = view.getUint16(offset + 30, true);
+      const commentLength = view.getUint16(offset + 32, true);
+      const localOffset = view.getUint32(offset + 42, true);
+      if (offset + 46 + nameLength + extraLength + commentLength > bytes.length) throw new Error('备份包文件名已损坏');
+      const rawName = decoder.decode(bytes.slice(offset + 46, offset + 46 + nameLength)).replace(/\\/g, '/');
+      const baseName = rawName.split('/').filter(Boolean).pop() || '';
+      if (wanted.has(baseName.toLowerCase())) {
+        if (plainSize > 64 * 1024 * 1024 || compressedSize > 64 * 1024 * 1024) throw new Error('备份数据超过 64 MB 上限');
+        if (localOffset + 30 > bytes.length || view.getUint32(localOffset, true) !== 0x04034b50) throw new Error('备份包本地条目已损坏');
+        const localNameLength = view.getUint16(localOffset + 26, true);
+        const localExtraLength = view.getUint16(localOffset + 28, true);
+        const dataOffset = localOffset + 30 + localNameLength + localExtraLength;
+        if (dataOffset + compressedSize > bytes.length) throw new Error('备份包数据已截断');
+        const packed = bytes.slice(dataOffset, dataOffset + compressedSize);
+        let plain;
+        if (method === 0) plain = packed;
+        else if (method === 8) plain = await U._inflateZipBytes(packed);
+        else throw new Error('备份包使用了不支持的压缩算法：' + method);
+        if (plainSize !== plain.length || U._crc32(plain) !== crc) throw new Error('备份包校验失败，文件可能已损坏');
+        out[baseName.toLowerCase()] = decoder.decode(plain).replace(/^\uFEFF/, '');
+      }
+      offset += 46 + nameLength + extraLength + commentLength;
+    }
+    return out;
+  },
+
   async _writeDirectoryHandleFile(root, parts, blob) {
     let dir = root;
     for (let i = 0; i < parts.length - 1; i++) {
@@ -616,7 +786,7 @@ const U = {
     await U._requestStoragePermission();
     const docRoot = await U._withTimeout(U._plusFileSystem(plus.io.PRIVATE_DOC), 10000, '打开应用目录超时');
     const stageName = 'wepchat-zip-' + Date.now();
-    const baseName = U._safeExportName(zipName.replace(/\.zip$/i, '')) || 'workspace';
+    const baseName = U._safeExportName(zipName.replace(/\.(?:zip|wepchat)$/i, '')) || 'workspace';
     const cleanup = () => {
       try {
         docRoot.getDirectory(stageName, {}, d => d.removeRecursively(() => {}, () => {}), () => {});

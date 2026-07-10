@@ -41,7 +41,7 @@ const API = (() => {
   }
 
   /* ---------- SSE 流式请求（XHR 增量解析，abort 可中断） ---------- */
-  function sseRequest({ url, headers, body, onEvent, signal }) {
+  function sseOnce({ url, headers, body, onEvent, signal }) {
     return new Promise((resolve, reject) => {
       const xhr = new XMLHttpRequest();
       xhr.open('POST', url, true);
@@ -49,7 +49,22 @@ const API = (() => {
       xhr.setRequestHeader('Accept', 'text/event-stream');
       Object.keys(headers || {}).forEach(k => { try { xhr.setRequestHeader(k, headers[k]); } catch (e) {} });
 
-      let seen = 0, buf = '', curEvent = '', aborted = false;
+      let seen = 0, buf = '', curEvent = '', aborted = false, forcedError = null;
+      let firstByteTimer = null, idleTimer = null;
+
+      const clearTimers = () => {
+        clearTimeout(firstByteTimer);
+        clearTimeout(idleTimer);
+      };
+      const failAfter = (code, message) => {
+        forcedError = NetStability.createError(code, message, { url, receivedBytes: seen });
+        try { xhr.abort(); } catch (e) { clearTimers(); reject(forcedError); }
+      };
+      const armIdle = () => {
+        clearTimeout(idleTimer);
+        idleTimer = setTimeout(() => failAfter('STREAM-IDLE-TIMEOUT', '流式响应超过 90 秒没有新数据'), 90000);
+      };
+      firstByteTimer = setTimeout(() => failAfter('STREAM-FIRST-BYTE-TIMEOUT', '等待模型首个响应超过 45 秒'), 45000);
 
       function feed(chunk) {
         buf += chunk;
@@ -70,10 +85,16 @@ const API = (() => {
       xhr.onprogress = () => {
         if (xhr.status >= 200 && xhr.status < 300) {
           const t = xhr.responseText;
-          if (t.length > seen) { feed(t.slice(seen)); seen = t.length; }
+          if (t.length > seen) {
+            clearTimeout(firstByteTimer);
+            feed(t.slice(seen));
+            seen = t.length;
+            armIdle();
+          }
         }
       };
       xhr.onload = () => {
+        clearTimers();
         if (aborted) return;
         if (xhr.status >= 200 && xhr.status < 300) {
           const t = xhr.responseText;
@@ -84,17 +105,47 @@ const API = (() => {
           }
           resolve();
         } else {
-          reject(new Error(extractError(xhr.responseText, xhr.status)));
+          reject(NetStability.createError(
+            xhr.status === 408 ? 'HTTP-408' : xhr.status === 429 ? 'HTTP-429' : xhr.status >= 500 ? 'HTTP-5XX' : 'HTTP-' + xhr.status,
+            extractError(xhr.responseText, xhr.status),
+            { status: xhr.status, url, receivedBytes: seen }
+          ));
         }
       };
-      xhr.onerror = () => reject(new Error('网络请求失败，请检查网络与接口地址'));
-      xhr.onabort = () => { aborted = true; resolve(); };
+      xhr.onerror = () => {
+        clearTimers();
+        reject(NetStability.createError('NET-CONNECT', '网络请求失败，请检查网络与接口地址', { url, receivedBytes: seen }));
+      };
+      xhr.onabort = () => {
+        clearTimers();
+        aborted = true;
+        if (forcedError) reject(forcedError);
+        else resolve();
+      };
       if (signal) {
         if (signal.aborted) { resolve(); return; }
         signal.addEventListener('abort', () => { try { xhr.abort(); } catch (e) {} });
       }
       xhr.send(JSON.stringify(body));
     });
+  }
+
+  async function sseRequest(options) {
+    options = options || {};
+    const headers = Object.assign({}, options.headers || {});
+    headers['Idempotency-Key'] = options.requestKey || NetStability.idempotencyKey('chat');
+    let retried = false;
+    const result = await NetStability.retry(() => sseOnce(Object.assign({}, options, { headers })), {
+      retries: 5,
+      signal: options.signal,
+      shouldRetry: err => !err.receivedBytes && NetStability.isRetryable(err),
+      onStatus: info => {
+        retried = true;
+        if (options.onStatus) options.onStatus(Object.assign({ source: '模型提供商' }, info));
+      }
+    });
+    if (retried && options.onStatus) options.onStatus({ state: 'recovered', source: '模型提供商', code: 'NET-RECOVERED', message: '模型连接已恢复' });
+    return result;
   }
 
   function extractError(text, status) {
@@ -198,7 +249,7 @@ const API = (() => {
     await sseRequest({
       url: joinUrl(provider.baseUrl, '/chat/completions', { autoV1: true }),
       headers: authHeaders(provider),
-      body, signal,
+      body, signal, onStatus: ctx.onStatus, requestKey: ctx.requestKey,
       onEvent(ev, data) {
         if (ev === '__json__') { applyJson(data.choices && data.choices[0] && data.choices[0].message); onUpdate(st); return; }
         const ch = data.choices && data.choices[0];
@@ -258,7 +309,7 @@ const API = (() => {
     await sseRequest({
       url: joinUrl(provider.baseUrl, '/responses', { autoV1: true }),
       headers: authHeaders(provider),
-      body, signal,
+      body, signal, onStatus: ctx.onStatus, requestKey: ctx.requestKey,
       onEvent(ev, data) {
         const type = data.type || ev;
         if (type === 'response.output_text.delta') { st.content += data.delta || ''; onUpdate(st); }
@@ -358,7 +409,7 @@ const API = (() => {
     const streamTools = () => st.toolCalls.concat(Object.keys(blocks).map(k => blocks[k]).filter(b => b && b.tool).map(b => b.tool));
     await sseRequest({
       url: anthropicUrl(provider.baseUrl),
-      headers, body, signal,
+      headers, body, signal, onStatus: ctx.onStatus, requestKey: ctx.requestKey,
       onEvent(ev, data) {
         const type = data.type || ev;
         if (type === 'content_block_start') {
@@ -417,7 +468,7 @@ const API = (() => {
     await sseRequest({
       url: joinUrl(provider.baseUrl, '/completions', { autoV1: true }),
       headers: authHeaders(provider),
-      body, signal,
+      body, signal, onStatus: ctx.onStatus, requestKey: ctx.requestKey,
       onEvent(ev, data) {
         const ch = data.choices && data.choices[0];
         if (ch && ch.text) { st.content += ch.text; onUpdate(st); }

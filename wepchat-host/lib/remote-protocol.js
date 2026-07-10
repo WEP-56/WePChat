@@ -61,6 +61,7 @@ class RemoteProtocol {
     this.approvals = new Map();
     this.events = [];
     this.eventSeq = 0;
+    this.requestCache = new Map();
 
     if (this.codex) {
       this.codex.on('notification', msg => this._onCodexNotification(msg));
@@ -103,44 +104,50 @@ class RemoteProtocol {
   async handleClientMessage(ws, msg) {
     const id = msg.id || null;
     try {
-      switch (msg.type) {
-        case 'remote.ping':
-          this._reply(ws, id, { pong: true, at: Date.now() });
-          return;
-        case 'remote.events.replay':
-          this._reply(ws, id, {
-            events: this.events.filter(ev => ev.seq > Number(msg.afterSeq || 0))
-          });
-          return;
-        case 'remote.threads.list':
-          this._reply(ws, id, await this._listThreadsMessage(msg));
-          return;
-        case 'remote.thread.start':
-          this._reply(ws, id, await this._startThread(msg));
-          return;
-        case 'remote.thread.resume':
-          this._reply(ws, id, await this._resumeThread(msg));
-          return;
-        case 'remote.thread.read':
-          this._reply(ws, id, await this._readThread(msg));
-          return;
-        case 'remote.turn.start':
-          this._reply(ws, id, await this._startTurn(msg));
-          return;
-        case 'remote.turn.steer':
-          this._reply(ws, id, await this._steerTurn(msg));
-          return;
-        case 'remote.turn.interrupt':
-          this._reply(ws, id, await this._interruptTurn(msg));
-          return;
-        case 'remote.approval.respond':
-          this._reply(ws, id, await this._respondApproval(msg));
-          return;
-        default:
-          throw new Error(`Unknown remote message type: ${msg.type}`);
-      }
+      const result = await this._cachedClientRequest(msg.requestKey, () => this._dispatchClientMessage(msg));
+      this._reply(ws, id, result);
     } catch (err) {
       this._replyError(ws, id, err);
+    }
+  }
+
+  _cachedClientRequest(requestKey, operation) {
+    const key = String(requestKey || '').trim();
+    if (!key) return Promise.resolve().then(operation);
+    if (this.requestCache.has(key)) return this.requestCache.get(key);
+    const promise = Promise.resolve().then(operation);
+    this.requestCache.set(key, promise);
+    while (this.requestCache.size > 500) {
+      const oldest = this.requestCache.keys().next().value;
+      this.requestCache.delete(oldest);
+    }
+    return promise;
+  }
+
+  async _dispatchClientMessage(msg) {
+    switch (msg.type) {
+      case 'remote.ping':
+        return { pong: true, at: Date.now() };
+      case 'remote.events.replay':
+        return { events: this.events.filter(ev => ev.seq > Number(msg.afterSeq || 0)) };
+      case 'remote.threads.list':
+        return this._listThreadsMessage(msg);
+      case 'remote.thread.start':
+        return this._startThread(msg);
+      case 'remote.thread.resume':
+        return this._resumeThread(msg);
+      case 'remote.thread.read':
+        return this._readThread(msg);
+      case 'remote.turn.start':
+        return this._startTurn(msg);
+      case 'remote.turn.steer':
+        return this._steerTurn(msg);
+      case 'remote.turn.interrupt':
+        return this._interruptTurn(msg);
+      case 'remote.approval.respond':
+        return this._respondApproval(msg);
+      default:
+        throw new Error(`Unknown remote message type: ${msg.type}`);
     }
   }
 

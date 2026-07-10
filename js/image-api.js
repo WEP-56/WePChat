@@ -78,18 +78,43 @@ const ImageAPI = (() => {
     return msg;
   }
 
-  function jsonRequest(method, url, headers, body, signal) {
+  function responseMeta(xhr) {
+    return {
+      status: xhr.status,
+      location: xhr.getResponseHeader('Location') || xhr.getResponseHeader('Content-Location') || '',
+      requestId: xhr.getResponseHeader('x-request-id') || xhr.getResponseHeader('request-id') || ''
+    };
+  }
+
+  function attachMeta(value, meta) {
+    if (value && typeof value === 'object') {
+      try { Object.defineProperty(value, '_wepchatMeta', { value: meta, enumerable: false }); } catch (e) { value._wepchatMeta = meta; }
+    }
+    return value;
+  }
+
+  function jsonRequest(method, url, headers, body, signal, options) {
+    options = options || {};
     return new Promise((resolve, reject) => {
       const xhr = new XMLHttpRequest();
       xhr.open(method, url, true);
       xhr.setRequestHeader('Content-Type', 'application/json');
       Object.keys(headers || {}).forEach(k => { try { xhr.setRequestHeader(k, headers[k]); } catch (e) {} });
-      xhr.timeout = 120000;
+      xhr.timeout = options.timeout || 600000;
+      if (options.requestKey) xhr.setRequestHeader('Idempotency-Key', options.requestKey);
+      xhr.onprogress = ev => {
+        if (options.onStatus && ev.loaded) options.onStatus({
+          state: 'progress', source: '图片生成', code: 'IMAGE-WAITING', message: '正在接收图片任务结果',
+          progress: ev.lengthComputable ? Math.round(ev.loaded / ev.total * 100) + '%' : U.fmtSize(ev.loaded)
+        });
+      };
       xhr.onload = () => {
         if (xhr.status >= 200 && xhr.status < 300) {
-          try { resolve(JSON.parse(xhr.responseText)); } catch (e) { resolve(xhr.responseText); }
+          const meta = responseMeta(xhr);
+          try { resolve(attachMeta(JSON.parse(xhr.responseText), meta)); } catch (e) { resolve(xhr.responseText); }
         } else {
           const err = new Error(extractError(xhr.responseText, xhr.status));
+          err.code = xhr.status === 408 ? 'HTTP-408' : xhr.status === 429 ? 'HTTP-429' : xhr.status >= 500 ? 'HTTP-5XX' : 'HTTP-' + xhr.status;
           err.status = xhr.status;
           err.body = xhr.responseText;
           err.url = url;
@@ -97,12 +122,16 @@ const ImageAPI = (() => {
         }
       };
       xhr.onerror = () => {
-        const err = new Error('图片生成请求失败，请检查网络与接口地址');
+        const err = options.safeRetry
+          ? NetStability.createError('NET-CONNECT', '查询图片任务状态时连接失败')
+          : NetStability.createError('IMAGE-SUBMIT-UNKNOWN', '图片任务可能已提交，但连接在返回结果前断开。为避免重复扣费，WepChat 不会自动重新创建任务。');
         err.url = url;
         reject(err);
       };
       xhr.ontimeout = () => {
-        const err = new Error('图片生成请求超时');
+        const err = options.safeRetry
+          ? NetStability.createError('NET-TIMEOUT', '查询图片任务状态超时')
+          : NetStability.createError('IMAGE-SUBMIT-UNKNOWN', '等待图片任务结果超过 10 分钟。任务可能已在提供商完成，为避免重复扣费，WepChat 不会自动重新创建任务。');
         err.url = url;
         reject(err);
       };
@@ -111,21 +140,31 @@ const ImageAPI = (() => {
         if (signal.aborted) { resolve({ aborted: true }); return; }
         signal.addEventListener('abort', () => { try { xhr.abort(); } catch (e) {} });
       }
-      xhr.send(JSON.stringify(body || {}));
+      xhr.send(method === 'GET' ? null : JSON.stringify(body || {}));
     });
   }
 
-  function formRequest(method, url, headers, form, signal) {
+  function formRequest(method, url, headers, form, signal, options) {
+    options = options || {};
     return new Promise((resolve, reject) => {
       const xhr = new XMLHttpRequest();
       xhr.open(method, url, true);
       Object.keys(headers || {}).forEach(k => { try { xhr.setRequestHeader(k, headers[k]); } catch (e) {} });
-      xhr.timeout = 120000;
+      xhr.timeout = options.timeout || 600000;
+      if (options.requestKey) xhr.setRequestHeader('Idempotency-Key', options.requestKey);
+      xhr.onprogress = ev => {
+        if (options.onStatus && ev.loaded) options.onStatus({
+          state: 'progress', source: '图片生成', code: 'IMAGE-WAITING', message: '正在接收图片编辑结果',
+          progress: ev.lengthComputable ? Math.round(ev.loaded / ev.total * 100) + '%' : U.fmtSize(ev.loaded)
+        });
+      };
       xhr.onload = () => {
         if (xhr.status >= 200 && xhr.status < 300) {
-          try { resolve(JSON.parse(xhr.responseText)); } catch (e) { resolve(xhr.responseText); }
+          const meta = responseMeta(xhr);
+          try { resolve(attachMeta(JSON.parse(xhr.responseText), meta)); } catch (e) { resolve(xhr.responseText); }
         } else {
           const err = new Error(extractError(xhr.responseText, xhr.status));
+          err.code = xhr.status === 408 ? 'HTTP-408' : xhr.status === 429 ? 'HTTP-429' : xhr.status >= 500 ? 'HTTP-5XX' : 'HTTP-' + xhr.status;
           err.status = xhr.status;
           err.body = xhr.responseText;
           err.url = url;
@@ -133,12 +172,12 @@ const ImageAPI = (() => {
         }
       };
       xhr.onerror = () => {
-        const err = new Error('图片编辑请求失败，请检查网络与接口地址');
+        const err = NetStability.createError('IMAGE-SUBMIT-UNKNOWN', '图片编辑任务可能已提交，但连接在返回结果前断开。为避免重复扣费，WepChat 不会自动重新创建任务。');
         err.url = url;
         reject(err);
       };
       xhr.ontimeout = () => {
-        const err = new Error('图片编辑请求超时');
+        const err = NetStability.createError('IMAGE-SUBMIT-UNKNOWN', '等待图片编辑结果超过 10 分钟。任务可能已完成，为避免重复扣费，WepChat 不会自动重新创建任务。');
         err.url = url;
         reject(err);
       };
@@ -155,15 +194,88 @@ const ImageAPI = (() => {
     return new Promise((resolve, reject) => {
       const reader = new FileReader();
       reader.onload = () => resolve(reader.result);
-      reader.onerror = () => reject(new Error('图片读取失败'));
+      reader.onerror = () => reject(NetStability.createError('IMAGE-DOWNLOAD-DECODE', '图片下载完成，但读取结果失败'));
       reader.readAsDataURL(blob);
     });
   }
 
-  async function urlToDataUrl(url) {
-    const res = await fetch(url);
-    if (!res.ok) throw new Error('图片下载失败：HTTP ' + res.status);
-    return await blobToDataUrl(await res.blob());
+  function detectedImageMime(blob, bytes) {
+    const declared = String(blob && blob.type || '').toLowerCase();
+    if (/^image\/(png|jpeg|jpg|webp|gif)/.test(declared)) return declared.replace('image/jpg', 'image/jpeg');
+    if (bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47) return 'image/png';
+    if (bytes[0] === 0xff && bytes[1] === 0xd8) return 'image/jpeg';
+    if (bytes[0] === 0x52 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x46 && bytes[8] === 0x57) return 'image/webp';
+    if (bytes[0] === 0x47 && bytes[1] === 0x49 && bytes[2] === 0x46) return 'image/gif';
+    return '';
+  }
+
+  function imageBlobRequest(url, ctx) {
+    return new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open('GET', url, true);
+      xhr.responseType = 'blob';
+      xhr.timeout = 180000;
+      try {
+        const imageOrigin = new URL(url).origin;
+        const providerOrigin = new URL(ctx.provider && ctx.provider.baseUrl || '').origin;
+        if (imageOrigin === providerOrigin) {
+          Object.keys(authHeaders(ctx.provider)).forEach(k => xhr.setRequestHeader(k, authHeaders(ctx.provider)[k]));
+        }
+      } catch (e) {}
+      xhr.onprogress = ev => {
+        if (ev.loaded > 64 * 1024 * 1024) {
+          try { xhr.abort(); } catch (e) {}
+          reject(NetStability.createError('IMAGE-TOO-LARGE', '单张图片超过 64 MB 安全上限'));
+          return;
+        }
+        if (ctx.onStatus) ctx.onStatus({
+          state: 'progress', source: '图片下载', code: 'IMAGE-DOWNLOAD', message: '图片已生成，正在下载结果',
+          progress: ev.lengthComputable ? Math.round(ev.loaded / ev.total * 100) + '%' : U.fmtSize(ev.loaded)
+        });
+      };
+      xhr.onload = async () => {
+        if (xhr.status < 200 || xhr.status >= 300) {
+          return reject(NetStability.createError(xhr.status >= 500 ? 'HTTP-5XX' : 'HTTP-' + xhr.status, '图片下载失败：HTTP ' + xhr.status, { status: xhr.status, url }));
+        }
+        const blob = xhr.response;
+        if (!blob || blob.size > 64 * 1024 * 1024) return reject(NetStability.createError('IMAGE-TOO-LARGE', '单张图片超过 64 MB 安全上限'));
+        const head = new Uint8Array(await blob.slice(0, 16).arrayBuffer());
+        const mime = detectedImageMime(blob, head);
+        if (!mime) return reject(NetStability.createError('IMAGE-DOWNLOAD-NOT-IMAGE', '结果地址没有返回有效图片'));
+        resolve(blob.type === mime ? blob : new Blob([blob], { type: mime }));
+      };
+      xhr.onerror = () => reject(NetStability.createError('IMAGE-DOWNLOAD-CONNECT', '图片结果下载连接失败', { url }));
+      xhr.ontimeout = () => reject(NetStability.createError('IMAGE-DOWNLOAD-TIMEOUT', '图片结果下载超过 3 分钟', { url }));
+      xhr.onabort = () => {
+        if (ctx.signal && ctx.signal.aborted) reject(NetStability.createError('NET-ABORTED', '用户已停止图片下载'));
+      };
+      if (ctx.signal) {
+        if (ctx.signal.aborted) return reject(NetStability.createError('NET-ABORTED', '用户已停止图片下载'));
+        ctx.signal.addEventListener('abort', () => { try { xhr.abort(); } catch (e) {} }, { once: true });
+      }
+      xhr.send();
+    });
+  }
+
+  async function urlToDataUrl(url, ctx) {
+    let retried = false;
+    try {
+      const blob = await NetStability.retry(() => imageBlobRequest(url, ctx), {
+        retries: 5,
+        signal: ctx.signal,
+        fallbackCode: 'IMAGE-DOWNLOAD-CONNECT',
+        shouldRetry: err => /^IMAGE-DOWNLOAD-|^HTTP-5XX$/.test(err.code) && err.code !== 'IMAGE-DOWNLOAD-NOT-IMAGE',
+        onStatus: info => {
+          retried = true;
+          if (ctx.onStatus) ctx.onStatus(Object.assign({ source: '图片下载' }, info));
+        }
+      });
+      if (retried && ctx.onStatus) ctx.onStatus({ state: 'recovered', source: '图片下载', code: 'IMAGE-DOWNLOAD-RECOVERED', message: '图片下载连接已恢复' });
+      return await blobToDataUrl(blob);
+    } catch (e) {
+      e.resultUrl = url;
+      throw e;
+    }
   }
 
   function mimeForFormat(format) {
@@ -239,7 +351,7 @@ const ImageAPI = (() => {
     );
     pushCandidate(out, obj.data_url || obj.dataUrl, obj.output_format || format, obj);
     pushCandidate(out, obj.url || obj.uri || obj.src || obj.href || obj.file_url || obj.fileUrl ||
-      obj.download_url || obj.downloadUrl || obj.output_url || obj.outputUrl, format, obj);
+      obj.download_url || obj.downloadUrl || obj.output_url || obj.outputUrl || obj.result_url || obj.resultUrl, format, obj);
     if (obj.image_url) pushCandidate(out, typeof obj.image_url === 'string' ? obj.image_url : obj.image_url.url, format, obj);
     if (obj.imageUrl) pushCandidate(out, typeof obj.imageUrl === 'string' ? obj.imageUrl : obj.imageUrl.url, format, obj);
     if (obj.file && typeof obj.file === 'object') collectImageCandidates(obj.file, out, format, depth + 1);
@@ -270,13 +382,19 @@ const ImageAPI = (() => {
     }
   }
 
-  async function materialize(candidates, format) {
+  async function materialize(candidates, format, ctx) {
     const seen = new Set();
+    const seenSources = new Set();
     const images = [];
     for (const c of candidates || []) {
+      const sourceKey = c.dataUrl || c.url || '';
+      if (sourceKey && seenSources.has(sourceKey)) continue;
+      if (sourceKey) seenSources.add(sourceKey);
       let dataUrl = c.dataUrl || '';
-      if (!dataUrl && c.url) dataUrl = await urlToDataUrl(c.url);
+      if (!dataUrl && c.url) dataUrl = await urlToDataUrl(c.url, ctx);
       if (!dataUrl || seen.has(dataUrl)) continue;
+      const approxBytes = Math.ceil(Math.max(0, dataUrl.length - dataUrl.indexOf(',') - 1) * 0.75);
+      if (approxBytes > 64 * 1024 * 1024) throw NetStability.createError('IMAGE-TOO-LARGE', '单张图片超过 64 MB 安全上限');
       seen.add(dataUrl);
       images.push({
         dataUrl,
@@ -286,6 +404,87 @@ const ImageAPI = (() => {
       });
     }
     return images;
+  }
+
+  function taskStatus(res) {
+    const node = res && typeof res === 'object' ? (res.data && !Array.isArray(res.data) && typeof res.data === 'object' ? res.data : res) : {};
+    return String(node.status || node.state || node.phase || '').toLowerCase();
+  }
+
+  function taskPollUrl(res, baseUrl) {
+    if (!res || typeof res !== 'object') return '';
+    const node = res.data && !Array.isArray(res.data) && typeof res.data === 'object' ? res.data : res;
+    let value = node.status_url || node.statusUrl || node.poll_url || node.pollUrl ||
+      (node.urls && (node.urls.status || node.urls.poll)) ||
+      (res._wepchatMeta && res._wepchatMeta.location) || '';
+    if (!value) return '';
+    try { return new URL(String(value), baseUrl).toString(); }
+    catch (e) { return ''; }
+  }
+
+  async function resolveImageResponse(ctx, initial, format, requestUrl) {
+    let current = initial;
+    let pollUrl = taskPollUrl(current, requestUrl || ctx.provider.baseUrl);
+    const deadline = Date.now() + 10 * 60 * 1000;
+    while (true) {
+      const candidates = [];
+      collectImageCandidates(current, candidates, format, 0);
+      const images = await materialize(candidates.filter(c => !c.url || c.url !== pollUrl), format, ctx);
+      if (images.length) return { images, raw: current, url: requestUrl };
+
+      const status = taskStatus(current);
+      if (/fail|error|cancel|reject/.test(status)) {
+        throw NetStability.createError('IMAGE-TASK-FAILED', '提供商图片任务失败：' + (status || 'unknown'));
+      }
+      if (!pollUrl) return { images: [], raw: current, url: requestUrl, preview: rawPreview(current) };
+      if (/complete|completed|success|succeeded|done/.test(status)) {
+        throw NetStability.createError('IMAGE-RESULT-MISSING', '图片任务已完成，但状态接口没有返回可下载图片');
+      }
+      if (Date.now() >= deadline) {
+        const err = NetStability.createError('IMAGE-SUBMIT-UNKNOWN', '轮询图片任务超过 10 分钟，任务可能仍在提供商处理中');
+        err.pollUrl = pollUrl;
+        throw err;
+      }
+      if (ctx.onStatus) ctx.onStatus({
+        state: 'progress', source: '图片生成', code: 'IMAGE-TASK-POLLING',
+        message: '图片任务已提交，正在等待提供商完成', progress: status || '处理中'
+      });
+      await NetStability.wait(2200, ctx.signal);
+      try {
+        current = await NetStability.retry(() => jsonRequest('GET', pollUrl, authHeaders(ctx.provider), null, ctx.signal, {
+          timeout: 30000,
+          safeRetry: true
+        }), {
+          retries: 5,
+          signal: ctx.signal,
+          onStatus: info => ctx.onStatus && ctx.onStatus(Object.assign({ source: '图片任务状态' }, info))
+        });
+      } catch (e) {
+        e.pollUrl = pollUrl;
+        throw e;
+      }
+      pollUrl = taskPollUrl(current, pollUrl) || pollUrl;
+    }
+  }
+
+  async function recover(ctx) {
+    const format = ctx.format || ctx.settings && ctx.settings.outputFormat || 'png';
+    if (ctx.resultUrl) {
+      const dataUrl = await urlToDataUrl(ctx.resultUrl, ctx);
+      return { images: [{ dataUrl, mime: (dataUrl.match(/^data:([^;]+)/) || [])[1] || mimeForFormat(format) }] };
+    }
+    if (ctx.pollUrl) {
+      const initial = await NetStability.retry(() => jsonRequest('GET', ctx.pollUrl, authHeaders(ctx.provider), null, ctx.signal, {
+        timeout: 30000,
+        safeRetry: true
+      }), {
+        retries: 5,
+        signal: ctx.signal,
+        onStatus: info => ctx.onStatus && ctx.onStatus(Object.assign({ source: '图片任务状态' }, info))
+      });
+      return resolveImageResponse(ctx, initial, format, ctx.pollUrl);
+    }
+    throw NetStability.createError('IMAGE-RECOVERY-UNAVAILABLE', '没有可用于续接的图片结果地址');
   }
 
   function requestBase(ctx) {
@@ -352,15 +551,17 @@ const ImageAPI = (() => {
     const errors = [];
     for (let i = 0; i < variants.length; i++) {
       try {
-        const res = await jsonRequest('POST', url, authHeaders(provider), variants[i], ctx.signal);
+        const res = await jsonRequest('POST', url, authHeaders(provider), variants[i], ctx.signal, {
+          timeout: 600000,
+          requestKey: (ctx.requestKey || NetStability.idempotencyKey('image')) + '-payload-' + i,
+          onStatus: ctx.onStatus
+        });
         if (res && res.aborted) return { images: [] };
-        const candidates = [];
-        collectImageCandidates(res, candidates, format, 0);
-        const images = await materialize(candidates, format);
-        return { images, raw: res, url, preview: images.length ? '' : rawPreview(res) };
+        return await resolveImageResponse(ctx, res, format, url);
       } catch (e) {
         errors.push('payload' + (i + 1) + ': ' + (e && e.message || String(e)));
         if (ctx.signal && ctx.signal.aborted) throw e;
+        if (e && e.code && e.code !== 'HTTP-400' && e.code !== 'HTTP-422') throw e;
         if (e && e.status && ![400, 422].includes(e.status)) throw e;
       }
     }
@@ -390,12 +591,13 @@ const ImageAPI = (() => {
       form.append('image', blob, name);
     });
     const url = endpointUrl(ctx, '/images/edits', 'editsEndpointPath');
-    const res = await formRequest('POST', url, authHeaders(provider), form, ctx.signal);
+    const res = await formRequest('POST', url, authHeaders(provider), form, ctx.signal, {
+      timeout: 600000,
+      requestKey: ctx.requestKey,
+      onStatus: ctx.onStatus
+    });
     if (res && res.aborted) return { images: [] };
-    const candidates = [];
-    collectImageCandidates(res, candidates, format, 0);
-    const images = await materialize(candidates, format);
-    return { images, raw: res, url, preview: images.length ? '' : rawPreview(res) };
+    return await resolveImageResponse(ctx, res, format, url);
   }
 
   async function generateViaChat(ctx) {
@@ -405,12 +607,13 @@ const ImageAPI = (() => {
       messages: [{ role: 'user', content: prompt }],
       stream: false
     };
-    const res = await jsonRequest('POST', endpointUrl(ctx, '/chat/completions', 'chatEndpointPath'), authHeaders(provider), body, ctx.signal);
+    const res = await jsonRequest('POST', endpointUrl(ctx, '/chat/completions', 'chatEndpointPath'), authHeaders(provider), body, ctx.signal, {
+      timeout: 600000,
+      requestKey: ctx.requestKey,
+      onStatus: ctx.onStatus
+    });
     if (res && res.aborted) return { images: [] };
-    const candidates = [];
-    collectImageCandidates(res, candidates, format, 0);
-    const images = await materialize(candidates, format);
-    return { images, raw: res, preview: images.length ? '' : rawPreview(res) };
+    return await resolveImageResponse(ctx, res, format, endpointUrl(ctx, '/chat/completions', 'chatEndpointPath'));
   }
 
   async function generateViaResponses(ctx) {
@@ -420,12 +623,13 @@ const ImageAPI = (() => {
       input: prompt,
       tools: [{ type: 'image_generation' }]
     };
-    const res = await jsonRequest('POST', endpointUrl(ctx, '/responses', 'responsesEndpointPath'), authHeaders(provider), body, ctx.signal);
+    const res = await jsonRequest('POST', endpointUrl(ctx, '/responses', 'responsesEndpointPath'), authHeaders(provider), body, ctx.signal, {
+      timeout: 600000,
+      requestKey: ctx.requestKey,
+      onStatus: ctx.onStatus
+    });
     if (res && res.aborted) return { images: [] };
-    const candidates = [];
-    collectImageCandidates(res, candidates, format, 0);
-    const images = await materialize(candidates, format);
-    return { images, raw: res, preview: images.length ? '' : rawPreview(res) };
+    return await resolveImageResponse(ctx, res, format, endpointUrl(ctx, '/responses', 'responsesEndpointPath'));
   }
 
   async function generate(ctx) {
@@ -448,17 +652,21 @@ const ImageAPI = (() => {
       } catch (e) {
         const line = step + (e && e.url ? ' @ ' + e.url : '') + ': ' + (e && e.message || String(e));
         errors.push(line);
+        if (e && /^(IMAGE-SUBMIT-UNKNOWN|IMAGE-TOO-LARGE|IMAGE-DOWNLOAD-|IMAGE-TASK-|NET-ABORTED)/.test(e.code || '')) throw e;
         if (mode !== 'auto') {
           const err = new Error('图片生成失败：' + line);
+          err.code = e && e.code || 'IMAGE-GENERATION-FAILED';
           err.url = e && e.url;
           throw err;
         }
       }
     }
-    throw new Error('图片生成失败。已尝试 ' + order.join(' / ') + '：\n' + errors.join('\n'));
+    const err = new Error('图片生成失败。已尝试 ' + order.join(' / ') + '：\n' + errors.join('\n'));
+    err.code = 'IMAGE-GENERATION-FAILED';
+    throw err;
   }
 
-  return { generate, generateViaImages, editViaImages, generateViaChat, generateViaResponses };
+  return { generate, recover, generateViaImages, editViaImages, generateViaChat, generateViaResponses };
 })();
 
 window.ImageAPI = ImageAPI;

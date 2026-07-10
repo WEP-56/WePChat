@@ -1,8 +1,67 @@
 # WepChat Tools 文档
 
-更新时间：2026-07-07
+更新时间：2026-07-10
 
-本文档记录当前发送给模型的工具列表和相关 system hint。模型可见工具来自 `js/tools.js` 的 `Tools.DEFS`；`create_workspace`、`run_service` 等历史执行入口仍可被执行层识别，但当前不在模型可见工具列表中。
+本文档记录当前发送给模型的工具列表、system hint 以及工具模块的维护方式。模型可见工具由 `js/tools/` 下的独立模块注册，并通过 `js/tools.js` 兼容门面暴露为 `Tools.DEFS`；`create_workspace`、`run_service` 等历史执行入口仍可被执行层识别，但当前不在模型可见工具列表中。
+
+## 代码结构与维护
+
+工具系统使用普通 `<script>` 顺序加载，不依赖打包器。核心结构如下：
+
+```text
+js/tools/registry.js          工具注册、参数解析、统一执行和重复检测
+js/tools/workspace.js         路径、文件夹、MIME、diff、服务等共享能力
+js/tools/run-js.js            run_js 与 JavaScript 沙盒
+js/tools/read-file.js         read_file
+js/tools/write-file.js        write_file
+js/tools/edit-file.js         edit_file
+js/tools/delete-file.js       delete_file
+js/tools/list-files.js        list_files
+js/tools/create-folder.js     create_folder
+js/tools/move-path.js         move_path
+js/tools/path-exists.js       path_exists
+js/tools/preview-file.js      preview_file
+js/tools/web-fetch.js         web_fetch
+js/tools/image-go.js          image_go 与 image_generation 兼容别名
+js/tools/create-workspace.js  create_workspace 历史兼容入口
+js/tools/run-service.js       run_service 历史兼容入口
+js/tools/stop-service.js      stop_service 历史兼容入口
+js/tools/list-services.js     list_services 历史兼容入口
+js/tools/system-hint.js       跨工具公共 system hint
+js/tools.js                   window.Tools 兼容门面
+```
+
+每个公开工具模块同时维护自己的名称、schema、参数校验和执行函数，并通过注册表注册：
+
+```js
+WepChatTools.register({
+  name: 'example_tool',
+  definition: {
+    name: 'example_tool',
+    description: '工具说明',
+    parameters: {
+      type: 'object',
+      properties: {}
+    }
+  },
+  async execute(args, ctx) {
+    return '执行结果';
+  }
+});
+```
+
+维护约定：
+
+- 工具名必须唯一，重复注册会在页面加载时直接报错，不会静默覆盖。
+- 需要发送给模型的公开工具必须提供 `definition`；只为历史调用保留的兼容工具不提供 `definition`。
+- 工作区路径、文件数量限制、MIME 等公共逻辑放在 `workspace.js`，不要复制到各工具文件。
+- 新增工具后，在 `index.html` 中把脚本放在 `tools/registry.js`、`tools/workspace.js` 之后，`tools/system-hint.js` 和 `tools.js` 之前。
+- 如果工具改变了模型使用方式，同步更新 `tools/system-hint.js` 和本文档；只改变内部实现时不要无故改 system hint。
+- `js/tools.js` 只维护兼容门面，不再放入具体工具实现。
+
+当前公开工具共 12 个：`run_js`、`read_file`、`write_file`、`edit_file`、`delete_file`、`list_files`、`create_folder`、`move_path`、`path_exists`、`preview_file`、`web_fetch`、`image_go`。
+
+当前执行层还保留 5 个非公开名称：`image_generation` 是 `image_go` 的历史别名；`create_workspace`、`run_service`、`stop_service`、`list_services` 是历史兼容工具。它们不会进入 `Tools.DEFS`。
 
 ## System Hint
 

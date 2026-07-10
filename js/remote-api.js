@@ -151,7 +151,10 @@
       this.seq = 0;
       this.pending = {};
       this.openPromise = null;
-      this.closed = false;
+      this.reconnectPromise = null;
+      this.manualClose = false;
+      this.lastSeq = 0;
+      this.heartbeatTimer = null;
     }
 
     wsUrl() {
@@ -161,38 +164,83 @@
       return url.toString();
     }
 
-    connect() {
+    status(info) {
+      if (this.handlers.onStatus) this.handlers.onStatus(Object.assign({ source: 'remote' }, info || {}));
+    }
+
+    _connectOnce() {
       if (this.ws && this.ws.readyState === WebSocket.OPEN) return Promise.resolve(this);
       if (this.openPromise) return this.openPromise;
-      this.closed = false;
+      this.manualClose = false;
       this.openPromise = new Promise((resolve, reject) => {
         let ws;
-        try { ws = new WebSocket(this.wsUrl()); } catch (e) { reject(e); return; }
+        let opened = false;
+        let settled = false;
+        try { ws = new WebSocket(this.wsUrl()); }
+        catch (e) { reject(NetStability.normalizeError(e, 'REMOTE-WS-CONNECT')); return; }
         this.ws = ws;
         const timeout = setTimeout(() => {
           this.openPromise = null;
-          reject(new Error('连接 Host 超时'));
+          if (!settled) {
+            settled = true;
+            reject(NetStability.createError('REMOTE-WS-TIMEOUT', '连接 Host 超时'));
+          }
           try { ws.close(); } catch (e) {}
         }, 10000);
         ws.onopen = () => {
           clearTimeout(timeout);
+          opened = true;
+          settled = true;
           this.openPromise = null;
+          this._startHeartbeat();
           resolve(this);
         };
         ws.onerror = () => {
+          if (opened || settled) return;
           clearTimeout(timeout);
+          settled = true;
           this.openPromise = null;
-          reject(new Error('无法连接 Host WebSocket'));
+          reject(NetStability.createError('REMOTE-WS-CONNECT', '无法连接 Host WebSocket'));
         };
         ws.onmessage = ev => this.onMessage(ev.data);
-        ws.onclose = () => this.onClose();
+        ws.onclose = ev => {
+          clearTimeout(timeout);
+          if (this.ws === ws) this.ws = null;
+          this._stopHeartbeat();
+          this.openPromise = null;
+          if (!opened) {
+            if (!settled) {
+              settled = true;
+              reject(NetStability.createError('REMOTE-WS-CLOSED', 'Host 在连接建立前关闭'));
+            }
+            return;
+          }
+          if (!this.manualClose) this._beginReconnect(ev);
+        };
       });
       return this.openPromise;
+    }
+
+    async connect() {
+      if (this.ws && this.ws.readyState === WebSocket.OPEN) return this;
+      if (this.reconnectPromise) return this.reconnectPromise;
+      let retried = false;
+      await NetStability.retry(() => this._connectOnce(), {
+        retries: 5,
+        fallbackCode: 'REMOTE-WS-CONNECT',
+        onStatus: info => {
+          retried = true;
+          this.status(info);
+        }
+      });
+      if (retried) this.status({ state: 'recovered', code: 'REMOTE-RECOVERED', message: 'Host 连接已恢复' });
+      return this;
     }
 
     onMessage(data) {
       let msg;
       try { msg = JSON.parse(data); } catch (e) { return; }
+      if (msg.seq) this.lastSeq = Math.max(this.lastSeq, Number(msg.seq) || 0);
       if (msg.type === 'response' && msg.id && this.pending[msg.id]) {
         const p = this.pending[msg.id];
         delete this.pending[msg.id];
@@ -203,26 +251,104 @@
       if (this.handlers.onEvent) this.handlers.onEvent(msg);
     }
 
-    onClose() {
-      this.closed = true;
-      this.openPromise = null;
+    _failPending(err) {
       Object.keys(this.pending).forEach(id => {
-        this.pending[id].reject(new Error('Host 连接已断开'));
+        this.pending[id].reject(err);
         delete this.pending[id];
       });
-      if (this.handlers.onClose) this.handlers.onClose();
     }
 
-    async request(type, payload) {
-      await this.connect();
+    _stopHeartbeat() {
+      clearInterval(this.heartbeatTimer);
+      this.heartbeatTimer = null;
+    }
+
+    _startHeartbeat() {
+      this._stopHeartbeat();
+      this.heartbeatTimer = setInterval(() => {
+        if (this.manualClose || this.reconnectPromise || !this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+        this.ensureAlive().catch(() => {});
+      }, 20000);
+    }
+
+    async ensureAlive() {
+      try {
+        await this.request('remote.ping', {}, { timeout: 10000 });
+        return true;
+      } catch (e) {
+        if (this.manualClose) throw e;
+        const ws = this.ws;
+        try { if (ws) ws.close(); } catch (closeError) {}
+        if (!this.reconnectPromise) this._beginReconnect({ code: 1006 });
+        if (this.reconnectPromise) await this.reconnectPromise;
+        return true;
+      }
+    }
+
+    async _replayAndResend() {
+      const replay = await this._requestConnected('remote.events.replay', { afterSeq: this.lastSeq }, {
+        timeout: 20000,
+        timeoutCode: 'REMOTE-WS-TIMEOUT',
+        internal: true
+      });
+      (replay && replay.events || []).forEach(ev => this.onMessage(JSON.stringify(ev)));
+      Object.keys(this.pending).forEach(id => {
+        const p = this.pending[id];
+        if (!p || p.internal) return;
+        try { this.ws.send(JSON.stringify(p.message)); }
+        catch (e) { throw NetStability.normalizeError(e, 'REMOTE-WS-CLOSED'); }
+      });
+    }
+
+    _beginReconnect(closeEvent) {
+      if (this.manualClose || this.reconnectPromise) return this.reconnectPromise;
+      this.status({
+        state: 'disconnected',
+        code: 'REMOTE-WS-CLOSED',
+        message: 'Host 连接已断开，正在续接',
+        closeCode: closeEvent && closeEvent.code
+      });
+      this.reconnectPromise = NetStability.retry(async () => {
+        await this._connectOnce();
+        await this._replayAndResend();
+        return this;
+      }, {
+        retries: 5,
+        fallbackCode: 'REMOTE-WS-CLOSED',
+        onStatus: info => this.status(info)
+      }).then(() => {
+        this.status({ state: 'recovered', code: 'REMOTE-RECOVERED', message: 'Host 已重连，远程任务已续接' });
+        return this;
+      }).catch(err => {
+        const finalError = NetStability.createError('REMOTE-RECONNECT-EXHAUSTED', 'Host 五次重连均失败', {
+          cause: err,
+          attempt: 5,
+          max: 5
+        });
+        this.status({ state: 'error', code: finalError.code, message: finalError.message, attempt: 5, max: 5 });
+        this._failPending(finalError);
+        if (this.handlers.onClose) this.handlers.onClose({ final: true, error: finalError });
+        throw finalError;
+      }).finally(() => {
+        this.reconnectPromise = null;
+      });
+      this.reconnectPromise.catch(() => {});
+      return this.reconnectPromise;
+    }
+
+    _requestConnected(type, payload, options) {
+      options = options || {};
       const id = 'r' + (++this.seq);
-      const msg = Object.assign({ type, id }, payload || {});
+      const requestKey = options.requestKey || NetStability.idempotencyKey('remote');
+      const msg = Object.assign({ type, id, requestKey }, payload || {});
       return new Promise((resolve, reject) => {
         const timer = setTimeout(() => {
           delete this.pending[id];
-          reject(new Error('Host 请求超时：' + type));
-        }, 60000);
+          reject(NetStability.createError(options.timeoutCode || 'REMOTE-REQUEST-TIMEOUT', 'Host 请求超时：' + type));
+        }, options.timeout || 120000);
         this.pending[id] = {
+          message: msg,
+          internal: !!options.internal,
           resolve: value => {
             clearTimeout(timer);
             resolve(value);
@@ -232,14 +358,18 @@
             reject(err);
           }
         };
-        try {
-          this.ws.send(JSON.stringify(msg));
-        } catch (e) {
+        try { this.ws.send(JSON.stringify(msg)); }
+        catch (e) {
           clearTimeout(timer);
           delete this.pending[id];
-          reject(e);
+          reject(NetStability.normalizeError(e, 'REMOTE-WS-CLOSED'));
         }
       });
+    }
+
+    async request(type, payload, options) {
+      await this.connect();
+      return this._requestConnected(type, payload, options);
     }
 
     send(type, payload) {
@@ -247,7 +377,9 @@
     }
 
     close() {
-      this.closed = true;
+      this.manualClose = true;
+      this._stopHeartbeat();
+      this._failPending(NetStability.createError('NET-ABORTED', '连接已由用户关闭'));
       try { if (this.ws) this.ws.close(); } catch (e) {}
       this.ws = null;
     }

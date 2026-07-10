@@ -107,6 +107,23 @@ html.plus-app .topbar { padding-top: 6px; }
 .icon-btn.danger { color: var(--danger); }
 .topbar .model-pill + .icon-btn { margin-left: auto; }
 
+.connection-banner {
+  flex: 0 0 auto; width: calc(100% - 20px); margin: 8px 10px 0; padding: 9px 11px;
+  border: 1px solid rgba(210,45,45,.42); border-radius: 10px; background: rgba(215,45,45,.12);
+  color: #b42323; display: flex; align-items: center; gap: 8px; text-align: left;
+  font-size: 12px; line-height: 1.35;
+}
+.connection-banner.ok { border-color: rgba(28,140,79,.35); background: rgba(28,140,79,.11); color: #167044; }
+.connection-banner.info { border-color: rgba(45,105,190,.35); background: rgba(45,105,190,.1); color: #285caa; }
+.connection-code { flex: 0 0 auto; font-weight: 800; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
+.connection-message { min-width: 0; flex: 1; overflow-wrap: anywhere; }
+.connection-attempt { flex: 0 0 auto; font-weight: 700; }
+.image-recovery-btn { margin-top: 9px; padding: 8px 11px; border: 1px solid rgba(210,45,45,.35); border-radius: 9px; background: rgba(215,45,45,.08); color: var(--danger); font-size: 12px; font-weight: 700; }
+.image-recovery-btn:disabled { opacity: .45; }
+html.dark .connection-banner { color: #ff8b86; background: rgba(220,55,55,.18); border-color: rgba(255,100,95,.38); }
+html.dark .connection-banner.ok { color: #69d79b; background: rgba(40,160,95,.16); border-color: rgba(80,210,135,.35); }
+html.dark .connection-banner.info { color: #8ab8ff; background: rgba(50,105,190,.16); border-color: rgba(100,155,235,.35); }
+
 .model-pill {
   position: absolute; left: 50%; transform: translateX(-50%);
   width: min(52vw, 280px); min-width: 0;

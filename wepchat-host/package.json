@@ -1,6 +1,6 @@
 {
   "name": "wepchat-host",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "LAN bridge for controlling Codex app-server from WepChat.",
   "type": "commonjs",
   "bin": {
