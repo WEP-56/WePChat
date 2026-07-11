@@ -62,6 +62,8 @@
         stopRequested: false,
         showScrollDown: false,
         autoFollow: true,
+        liquidScrolling: false,
+        liquidScrollTimer: null,
         lastBackAt: 0,
         plusReady: false,
         backHandler: null,
@@ -355,15 +357,10 @@
           source: meta.source || 'estimate'
         };
       },
-      tokenRingStyle() {
-        const p = this.tokenStats.pct;
-        const fg = this.tokenStats.danger ? 'var(--danger)' : (this.tokenStats.warn ? 'var(--warning)' : 'var(--text)');
-        const visible = p < 2 ? 0 : p;
-        return {
-          background: visible
-            ? 'conic-gradient(' + fg + ' ' + visible + '%, var(--surface2) 0)'
-            : 'var(--surface2)'
-        };
+      tokenRingLabel() {
+        const p = Number(this.tokenStats.pct) || 0;
+        if (p > 0 && p < 1) return '<1%';
+        return Math.min(100, Math.round(p)) + '%';
       },
       provSelectedMeta() {
         const p = this.provForm && this.provForm.data;

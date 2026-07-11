@@ -5,17 +5,25 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
 <meta name="theme-color" content="#ffffff">
 <title>WepChat</title>
+<link rel="stylesheet" href="css/liquid-glass-vue.css">
 <link rel="stylesheet" href="css/app.css">
 <script src="libs/vue.global.prod.js"></script>
 <script src="libs/marked.min.js"></script>
 <script src="libs/purify.min.js"></script>
 <script src="libs/highlight.min.js"></script>
+<script src="libs/liquid-glass-vue.global.js"></script>
 </head>
 <body>
 <div id="app" v-cloak>
+  <div class="liquid-glass-defs" aria-hidden="true">
+    <glass-filter id="wc-liquid-token" width="100%" height="100%" mode="polar" :displacement-scale="58" :aberration-intensity="5"></glass-filter>
+    <glass-filter id="wc-liquid-panel" width="100%" height="100%" mode="prominent" :displacement-scale="42" :aberration-intensity="5"></glass-filter>
+    <glass-filter id="wc-liquid-composer" width="100%" height="100%" mode="prominent" :displacement-scale="52" :aberration-intensity="5"></glass-filter>
+    <glass-filter id="wc-liquid-confirm" width="100%" height="100%" mode="prominent" :displacement-scale="42" :aberration-intensity="5"></glass-filter>
+  </div>
 
   <!-- ================= 主界面 ================= -->
-  <div class="shell">
+  <div class="shell" :class="{'liquid-scrolling': liquidScrolling, 'page-covered': pages.length}">
     <div class="topbar">
       <button class="icon-btn" @click="drawerOpen = true" aria-label="菜单">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 7h16M4 12h10"/></svg>
@@ -162,8 +170,8 @@
       </transition>
 
       <div class="token-widget" :class="{open: tokenPanelOpen, warn: tokenStats.warn, danger: tokenStats.danger}" v-if="appMode === 'chat' && currentProvider && currentModelId">
-        <button class="token-orb" :style="tokenRingStyle" @click="tokenPanelOpen = !tokenPanelOpen" aria-label="上下文用量">
-          <span></span>
+        <button class="token-orb" @click="tokenPanelOpen = !tokenPanelOpen" :aria-label="'上下文用量 ' + tokenRingLabel">
+          <span class="token-orb-value">{{ tokenRingLabel }}</span>
         </button>
         <div class="token-panel" v-if="tokenPanelOpen">
           <div class="tp-head">
@@ -1114,8 +1122,8 @@
   </div>
 
   <!-- ================= 对话框 ================= -->
-  <div class="dlg-mask" v-if="dlg" @click.self="dlgAnswer(null)">
-    <div class="dlg">
+  <div class="dlg-mask" :class="{'dlg-mask-liquid': dlg && dlg.liquid}" v-if="dlg" @click.self="dlgAnswer(null)">
+    <div class="dlg" :class="{'dlg-liquid': dlg && dlg.liquid}">
       <div class="dlg-title" v-if="dlg.title">{{ dlg.title }}</div>
       <div class="dlg-msg" v-if="dlg.msg">{{ dlg.msg }}</div>
       <input class="dlg-input" v-if="dlg.input != null" v-model="dlg.value" :placeholder="dlg.placeholder || ''" ref="dlgInput">

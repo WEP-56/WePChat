@@ -17,5 +17,27 @@
     window.WepChatAppMethodsStability,
     window.WepChatAppMethodsImageRecovery
   );
-  Vue.createApp(options).mount('#app');
+  const app = Vue.createApp(options);
+  const liquidGlass = window.WepChatLiquidGlassVue;
+  if (liquidGlass) {
+    if (liquidGlass.default) app.use(liquidGlass.default);
+    if (liquidGlass.GlassFilter) app.component('GlassFilter', liquidGlass.GlassFilter);
+  }
+  app.mount('#app');
+  requestAnimationFrame(() => {
+    const regions = {
+      'wc-liquid-panel': ['-18%', '-18%', '136%', '136%'],
+      'wc-liquid-composer': ['-6%', '-35%', '112%', '170%'],
+      'wc-liquid-confirm': ['-8%', '-12%', '116%', '124%']
+    };
+    Object.keys(regions).forEach(id => {
+      const filter = document.getElementById(id);
+      const region = regions[id];
+      if (!filter || !region) return;
+      filter.setAttribute('x', region[0]);
+      filter.setAttribute('y', region[1]);
+      filter.setAttribute('width', region[2]);
+      filter.setAttribute('height', region[3]);
+    });
+  });
 })();

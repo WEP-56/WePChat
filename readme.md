@@ -219,5 +219,11 @@ git diff --check
 
 更多当前状态、风险和下一阶段计划见 `docs/handoff.md`。
 
+## 许可证
+
+WePChat 使用 [MIT License](LICENSE) 开源。
+
+项目包含的第三方组件保留各自的许可证与版权声明；Liquid Glass 适配运行时的声明位于 `libs/liquid-glass-vue.LICENSE.txt`。
+
 ## Linux.do
 [学ai，上L站](https://linux.do/)

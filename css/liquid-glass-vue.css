@@ -1,0 +1,13 @@
+/* Minimal utilities used by @wxperia/liquid-glass-vue 1.0.9.
+   The published library references Tailwind utility names but ships no CSS. */
+.relative { position: relative; }
+.cursor-pointer { cursor: pointer; }
+.bg-black { background-color: #000; }
+.transition-all { transition-property: all; }
+.duration-150 { transition-duration: 150ms; }
+.ease-in-out { transition-timing-function: ease-in-out; }
+.pointer-events-none { pointer-events: none; }
+.mix-blend-overlay { mix-blend-mode: overlay; }
+.opacity-0 { opacity: 0; }
+.opacity-20 { opacity: .2; }
+.opacity-100 { opacity: 1; }

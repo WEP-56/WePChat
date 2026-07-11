@@ -13,6 +13,12 @@
       onScroll() {
         const el = this.$refs.scroller;
         if (!el) return;
+        this.liquidScrolling = true;
+        if (this.liquidScrollTimer) clearTimeout(this.liquidScrollTimer);
+        this.liquidScrollTimer = setTimeout(() => {
+          this.liquidScrolling = false;
+          this.liquidScrollTimer = null;
+        }, 120);
         const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
         this.showScrollDown = distance > 160;
         this.autoFollow = distance < 80;
@@ -526,7 +532,7 @@
       },
       async deleteWorkspaceFile() {
         if (!this.viewer.name) return;
-        const ok = await this.confirm('删除文件：' + this.viewer.name, '删除文件');
+        const ok = await this.confirm('删除文件：' + this.viewer.name, '删除文件', { liquid: true });
         if (!ok) return;
         delete this.session.files[this.viewer.name];
         this.persistSession();
@@ -538,7 +544,7 @@
           await this.deleteWorkspaceFolder(row.path);
           return;
         }
-        const ok = await this.confirm('删除文件：' + row.path, '删除文件');
+        const ok = await this.confirm('删除文件：' + row.path, '删除文件', { liquid: true });
         if (!ok) return;
         delete this.session.files[row.path];
         this.persistSession();
@@ -546,7 +552,7 @@
       async deleteWorkspaceFolder(path) {
         const prefix = path + '/';
         const files = Object.keys(this.session.files || {}).filter(name => name === path || name.startsWith(prefix));
-        const ok = await this.confirm('删除文件夹：' + path + '\n包含 ' + files.length + ' 个文件。', '删除文件夹');
+        const ok = await this.confirm('删除文件夹：' + path + '\n包含 ' + files.length + ' 个文件。', '删除文件夹', { liquid: true });
         if (!ok) return;
         files.forEach(name => delete this.session.files[name]);
         this.session.folders = (this.session.folders || []).filter(name => name !== path && !name.startsWith(prefix));

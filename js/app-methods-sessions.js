@@ -18,10 +18,11 @@
         this.dlg = null;
         if (d && d._resolve) d._resolve(value);
       },
-      confirm(msg, title) {
+      confirm(msg, title, opts) {
         return this.dialog({
           title: title || '确认',
           msg,
+          liquid: !!(opts && opts.liquid),
           buttons: [
             { text: '取消', value: false },
             { text: '确定', value: true, style: 'primary' }
@@ -71,6 +72,7 @@
         const mode = await this.dialog({
           title: '新建会话',
           msg: '选择这次会话的模式。创建后不可修改。',
+          liquid: true,
           buttons: [
             { text: '取消', value: null },
             { text: '常规', value: 'chat', style: 'primary' },
@@ -141,7 +143,7 @@
         this.sheet = '';
       },
       async deleteSessionAsk(it) {
-        const ok = await this.confirm('删除后无法恢复：\n' + (it.title || '新聊天'), '删除会话');
+        const ok = await this.confirm('删除后无法恢复：\n' + (it.title || '新聊天'), '删除会话', { liquid: true });
         if (!ok) return;
         if (it && this.session.id === it.id) {
           const canLeave = await this.confirmStopRunning('删除当前会话');
@@ -192,7 +194,8 @@
         }
         const ok = await this.confirm(
           '这会真正删除该会话工作区内的 ' + item.fileCount + ' 个文件，无法恢复。\n\n会话消息、名称和模型配置会保留。\n\n会话：' + item.title,
-          '删除工作区文件'
+          '删除工作区文件',
+          { liquid: true }
         );
         if (!ok) return;
         const s = Store.loadSession(item.id);
@@ -219,7 +222,8 @@
         if (!item) return;
         const ok = await this.confirm(
           '这会真正删除该会话、全部消息和它的工作区文件，无法恢复。\n\n会话：' + item.title + '\n工作区：' + item.fileCount + ' 个文件，约 ' + U.fmtSize(item.workspaceSize),
-          '真正删除会话'
+          '真正删除会话',
+          { liquid: true }
         );
         if (!ok) return;
         if (this.session.id === item.id) {
