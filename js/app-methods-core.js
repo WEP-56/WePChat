@@ -17,6 +17,10 @@
         }
       },
       async handleBackButton() {
+        if (this.appLocked) {
+          U.toast('请先解锁 WepChat');
+          return;
+        }
         if (this.onboardingOpen) {
           const now = Date.now();
           if (now - this.lastBackAt < 1800) {
@@ -40,6 +44,7 @@
         if (this.drawerOpen) {
           this.lastBackAt = 0;
           this.drawerOpen = false;
+          this.globalSearchOpen = false;
           return;
         }
         if (this.pages.length) {
@@ -164,6 +169,7 @@
         this.storageUsed = Store.usage();
       },
       persistSession() {
+        if (this.captureCurrentDraft) this.captureCurrentDraft();
         this.session = normalizeSession(this.session);
         Store.saveSession(this.session);
         this.upsertIndex(this.session);
@@ -190,17 +196,21 @@
       },
       handleVisibilityPersist() {
         if (document.visibilityState === 'hidden') {
+          if (this.noteAppBackgroundForLock) this.noteAppBackgroundForLock();
           this.flushSessionPersist(1200);
           this.showRunningNotification();
         } else {
+          if (this.lockAppIfNeeded) this.lockAppIfNeeded();
           this.clearRunningNotification();
         }
       },
       handleAppPause() {
+        if (this.noteAppBackgroundForLock) this.noteAppBackgroundForLock();
         this.flushSessionPersist(1200);
         this.showRunningNotification();
       },
       handleAppResume() {
+        if (this.lockAppIfNeeded) this.lockAppIfNeeded();
         this.clearRunningNotification();
         const client = this.remoteRuntime && this.remoteRuntime.client;
         if (this.generating && client && typeof client.ensureAlive === 'function') client.ensureAlive().catch(() => {});
@@ -879,6 +889,10 @@
         if (!canLeave) return;
         const remote = await this.prepareRemoteSession({ resumeOnly: true });
         if (!remote) return;
+        if (this.captureCurrentDraft) {
+          this.captureCurrentDraft();
+          this.persistSession();
+        }
         const historyMessages = remote._historyMessages || [];
         delete remote._historyMessages;
         this.session = Store.newSession();
@@ -888,8 +902,7 @@
         this.session.title = '远程：' + (remote.workspaceName || 'Codex');
         this.session.providerId = this.settings.activeProviderId || '';
         this.session.model = this.settings.activeModel || '';
-        this.input = '';
-        this.attachments = [];
+        this.restoreSessionDraft();
         this.pages = [];
         this.drawerOpen = false;
         this.persistSession();

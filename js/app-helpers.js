@@ -14,11 +14,36 @@
   function normalizeSession(sess) {
     sess = sess || Store.newSession();
     sess.messages = Array.isArray(sess.messages) ? sess.messages : [];
+    sess.draft = sess.draft && typeof sess.draft === 'object' ? sess.draft : {};
+    sess.draft.input = String(sess.draft.input || '');
+    sess.draft.attachments = Array.isArray(sess.draft.attachments) ? sess.draft.attachments : [];
+    let previousAssistant = null;
     sess.messages.forEach(m => {
+      m.id = m.id || U.uuid();
       if (Array.isArray(m.toolCalls)) {
         m.toolCalls.forEach(t => { t._open = false; });
       }
       m.previews = Array.isArray(m.previews) ? m.previews : [];
+      if (m.role === 'assistant') {
+        m.variantBaseId = m.variantBaseId || (m.id + ':v1');
+        m.variants = Array.isArray(m.variants) ? m.variants.slice(0, 6) : [];
+        m.variants.forEach((v, idx) => {
+          v.id = v.id || (idx === 0 ? m.variantBaseId : U.uuid());
+          v.content = String(v.content || '');
+          v.reasoning = String(v.reasoning || '');
+          v.toolCalls = Array.isArray(v.toolCalls) ? v.toolCalls : [];
+          v.previews = Array.isArray(v.previews) ? v.previews : [];
+          v.images = Array.isArray(v.images) ? v.images : [];
+        });
+        if (m.variants.length) {
+          m.activeVariantIndex = Math.max(0, Math.min(m.variants.length - 1, parseInt(m.activeVariantIndex || 0, 10) || 0));
+        } else m.activeVariantIndex = 0;
+        previousAssistant = m;
+      } else if (m.role === 'user' && previousAssistant && !m.parentAssistantId) {
+        m.parentAssistantId = previousAssistant.id;
+        const active = previousAssistant.variants && previousAssistant.variants[previousAssistant.activeVariantIndex];
+        m.parentVariantId = active && active.id || previousAssistant.variantBaseId;
+      }
     });
     sess.files = sess.files || {};
     sess.folders = Array.isArray(sess.folders) ? sess.folders : [];

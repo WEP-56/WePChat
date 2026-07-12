@@ -257,9 +257,13 @@
         };
         this.session.messages.push(assistant);
         const assistantMsg = this.session.messages[this.session.messages.length - 1];
-        if (usingOverride) this.imageWorkbenchPrompt = '';
-        else this.input = '';
-        this.attachments = [];
+        if (usingOverride) {
+          this.imageWorkbenchPrompt = '';
+          this.attachments = [];
+          this.captureCurrentDraft();
+        } else {
+          this.clearCurrentDraft();
+        }
         this.generating = true;
         this.requestNotificationPermission();
         this.stopRequested = false;
@@ -703,8 +707,7 @@
         };
         this.session.messages.push(user, assistant);
         if (!this.session.title) this.session.title = cleanTitle(content || (remoteImages[0] && remoteImages[0].name) || '图片');
-        this.input = '';
-        this.attachments = [];
+        this.clearCurrentDraft();
         this.persistSession();
         nextTick(() => {
           this.growInput();
@@ -810,19 +813,21 @@
           U.toast('当前模型元数据未开启视觉能力，图片可能无法被理解', 3600);
         }
         const content = this.input.trim();
+        const parentAssistant = this.session.messages.slice().reverse().find(m => m.role === 'assistant');
         const user = {
           id: U.uuid(),
           role: 'user',
           content,
           attachments: clone(this.attachments),
-          createdAt: U.now()
+          createdAt: U.now(),
+          parentAssistantId: parentAssistant && parentAssistant.id || '',
+          parentVariantId: parentAssistant ? this.activeAssistantVariantId(parentAssistant) : ''
         };
         this.session.messages.push(user);
         if (!this.session.title && content) this.session.title = cleanTitle(content);
         this.session.providerId = provider.id;
         this.session.model = model;
-        this.input = '';
-        this.attachments = [];
+        this.clearCurrentDraft();
         this.persistSession();
         nextTick(() => {
           this.growInput();
@@ -830,26 +835,45 @@
         });
         await this.generateAssistant();
       },
-      async generateAssistant() {
+      async generateAssistant(opts) {
+        opts = opts || {};
         const provider = this.currentProvider;
         const model = this.settings.activeModel || this.session.model || provider && provider.models[0] || '';
         if (!provider || !model) return;
 
-        const assistant = {
-          id: U.uuid(),
-          role: 'assistant',
-          content: '',
-          reasoning: '',
-          toolCalls: [],
-          previews: [],
-          status: 'streaming',
-          model,
-          createdAt: U.now()
-        };
-        this.session.messages.push(assistant);
-        const assistantMsg = this.session.messages[this.session.messages.length - 1];
+        const targetIndex = Number.isInteger(opts.targetIndex) ? opts.targetIndex : -1;
+        let assistantMsg;
+        if (targetIndex >= 0) {
+          assistantMsg = this.session.messages[targetIndex];
+          if (!assistantMsg || assistantMsg.role !== 'assistant') return;
+          const variants = this.ensureAssistantVariants(assistantMsg);
+          const nextVariant = this.snapshotAssistantVariant({
+            content: '', reasoning: '', toolCalls: [], previews: [], images: [], imageRecovery: null,
+            error: '', usage: null, model, createdAt: U.now(), status: 'streaming'
+          }, U.uuid());
+          variants.push(nextVariant);
+          assistantMsg.activeVariantIndex = variants.length - 1;
+          this.applyAssistantVariant(assistantMsg, assistantMsg.activeVariantIndex);
+          assistantMsg.status = 'streaming';
+        } else {
+          assistantMsg = {
+            id: U.uuid(),
+            role: 'assistant',
+            content: '',
+            reasoning: '',
+            toolCalls: [],
+            previews: [],
+            status: 'streaming',
+            model,
+            createdAt: U.now()
+          };
+          assistantMsg.variantBaseId = assistantMsg.id + ':v1';
+          this.session.messages.push(assistantMsg);
+        }
+        const assistantIndex = this.session.messages.indexOf(assistantMsg);
         const workingMessages = this.session.messages
-          .filter(m => m.id !== assistantMsg.id && (m.role === 'user' || m.role === 'assistant'))
+          .slice(0, assistantIndex)
+          .filter(m => m.role === 'user' || m.role === 'assistant')
           .map(m => {
             if (m.role === 'assistant') {
               return { role: 'assistant', content: m.content || '', reasoning: m.reasoning || '' };
@@ -867,6 +891,14 @@
         const maxToolCalls = U.clamp(parseInt(this.settings.maxToolCalls || 24, 10), 1, 128);
         let totalToolCalls = 0;
         const previousToolResults = [];
+        const usageTotals = { inputTokens: 0, outputTokens: 0, totalTokens: 0, source: '' };
+        const addUsage = usage => {
+          if (!usage) return;
+          usageTotals.inputTokens += Number(usage.inputTokens) || 0;
+          usageTotals.outputTokens += Number(usage.outputTokens) || 0;
+          usageTotals.totalTokens += Number(usage.totalTokens) || 0;
+          if (usage.source === 'api') usageTotals.source = 'api';
+        };
 
         try {
           for (let step = 0; step <= maxToolRounds; step++) {
@@ -884,12 +916,14 @@
                 assistantMsg.reasoning = st.reasoning || '';
                 if (st.streamTools && st.streamTools.length) syncStreamToolCalls(assistantMsg, st.streamTools, step);
                 assistantMsg.status = 'streaming';
+                if (assistantMsg.variants && assistantMsg.variants.length) this.syncActiveAssistantVariant(assistantMsg);
                 nextTick(() => this.scrollToBottom(false));
               }
             });
 
             smoothText(this, assistantMsg, result.content || assistantMsg.content || '');
             assistantMsg.reasoning = result.reasoning || assistantMsg.reasoning || '';
+            addUsage(result.usage);
 
             if (this.stopRequested) {
               cancelStreamToolCalls(assistantMsg, step);
@@ -927,6 +961,7 @@
                 arguments: t.arguments || '{}'
               }))
             });
+            if (assistantMsg.variants && assistantMsg.variants.length) this.syncActiveAssistantVariant(assistantMsg);
             this.persistSession();
 
             for (let ti = 0; ti < displayCalls.length; ti++) {
@@ -946,6 +981,7 @@
               t.status = String(out).startsWith('错误：') ? 'error' : 'done';
               previousToolResults.push({ name: t.name, result: out });
               workingMessages.push({ role: 'tool', toolCallId: t.id, content: out });
+              if (assistantMsg.variants && assistantMsg.variants.length) this.syncActiveAssistantVariant(assistantMsg);
               this.persistSession();
               nextTick(() => this.scrollToBottom(false));
             }
@@ -953,6 +989,16 @@
           if (!assistantMsg.content && !assistantMsg.toolCalls.length && this.stopRequested) smoothText(this, assistantMsg, '已停止。');
           await waitSmoothText(assistantMsg);
           assistantMsg.status = 'done';
+          if (usageTotals.source === 'api' && (usageTotals.outputTokens || usageTotals.totalTokens)) {
+            assistantMsg.usage = usageTotals;
+          } else {
+            assistantMsg.usage = {
+              inputTokens: 0,
+              outputTokens: MODEL_META.estimateTokens(tokenMessageText(assistantMsg)),
+              totalTokens: MODEL_META.estimateTokens(tokenMessageText(assistantMsg)),
+              source: 'estimate'
+            };
+          }
         } catch (e) {
           assistantMsg.status = 'done';
           if (this.stopRequested || e && e.code === 'NET-ABORTED') {
@@ -963,6 +1009,11 @@
           }
         } finally {
           await waitSmoothText(assistantMsg);
+          if (!assistantMsg.usage && (assistantMsg.content || assistantMsg.reasoning)) {
+            const estimated = MODEL_META.estimateTokens(tokenMessageText(assistantMsg));
+            assistantMsg.usage = { inputTokens: 0, outputTokens: estimated, totalTokens: estimated, source: 'estimate' };
+          }
+          if (assistantMsg.variants && assistantMsg.variants.length) this.syncActiveAssistantVariant(assistantMsg);
           this.generating = false;
           this.abortCtl = null;
           this.stopRequested = false;

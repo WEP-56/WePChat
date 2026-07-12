@@ -32,11 +32,15 @@
         sheet: '',
         pages: [],
         searchQ: '',
+        globalSearchOpen: false,
+        globalSearchQ: '',
+        globalSearchHighlightId: '',
         sessionMenuFor: null,
 
         input: '',
         imageWorkbenchPrompt: '',
         attachments: [],
+        draftSaveTimer: null,
         generating: false,
         abortCtl: null,
         connectionNotice: {
@@ -69,6 +73,11 @@
         onboardingDirection: 1,
         onboardingTouchX: 0,
         onboardingTouchY: 0,
+        appLocked: settings.appLock && settings.appLock.enabled === true,
+        appLockPin: '',
+        appLockError: '',
+        appLockBusy: false,
+        appBackgroundAt: 0,
         lastBackAt: 0,
         plusReady: false,
         backHandler: null,
@@ -578,11 +587,50 @@
       viewerCanSave() {
         return !!this.viewer.name && !this.viewer.isImage;
       },
+      branchBlocked() {
+        const messages = this.session && this.session.messages || [];
+        const assistants = new Map(messages.filter(m => m.role === 'assistant').map(m => [m.id, m]));
+        return messages.some(m => {
+          if (m.role !== 'user' || !m.parentAssistantId || !m.parentVariantId) return false;
+          const parent = assistants.get(m.parentAssistantId);
+          if (!parent) return false;
+          const variants = Array.isArray(parent.variants) ? parent.variants : [];
+          const active = variants[parent.activeVariantIndex || 0];
+          const activeId = active && active.id || parent.variantBaseId || (parent.id + ':v1');
+          return activeId !== m.parentVariantId;
+        });
+      },
       canSend() {
+        if (this.branchBlocked) return false;
         if (this.appMode === 'remote') {
           return !this.generating && (!!this.input.trim() || (this.attachments || []).some(a => a.kind === 'image'));
         }
         return !this.generating && (!!this.input.trim() || this.attachments.length > 0);
+      },
+      globalSearchResults() {
+        const q = String(this.globalSearchQ || '').trim().toLowerCase();
+        if (!q) return [];
+        const rows = [], seen = new Set();
+        (this.index || []).forEach(meta => {
+          const sess = Store.loadSession(meta.id);
+          if (!sess) return;
+          const title = String(sess.title || meta.title || '新聊天');
+          if (title.toLowerCase().includes(q)) {
+            rows.push({ sessionId: sess.id, messageId: '', title, role: '', snippet: '会话标题匹配', updatedAt: sess.updatedAt || meta.updatedAt || 0 });
+            seen.add(sess.id + ':title');
+          }
+          (sess.messages || []).forEach(m => {
+            const text = String(m.content || ''), at = text.toLowerCase().indexOf(q);
+            if (at < 0 || rows.length >= 60) return;
+            const start = Math.max(0, at - 42);
+            const snippet = (start ? '…' : '') + text.slice(start, at + q.length + 74).replace(/\s+/g, ' ').trim() + (at + q.length + 74 < text.length ? '…' : '');
+            const key = sess.id + ':' + m.id;
+            if (seen.has(key)) return;
+            seen.add(key);
+            rows.push({ sessionId: sess.id, messageId: m.id, title, role: m.role, snippet, updatedAt: sess.updatedAt || meta.updatedAt || 0 });
+          });
+        });
+        return rows.sort((a, b) => b.updatedAt - a.updatedAt).slice(0, 60);
       },
       groupedIndex() {
         const q = this.searchQ.trim().toLowerCase();
@@ -609,6 +657,8 @@
 
     mounted() {
       this.applyTheme();
+      this.restoreSessionDraft();
+      if (this.appLocked) this.focusAppLockInput();
       this.persistSettings();
       window.addEventListener('message', this.onPreviewMessage);
       window.addEventListener('pagehide', this.flushSessionPersist);
@@ -633,5 +683,12 @@
         if (this.settings.updateAutoCheck) this.checkReleaseUpdate({ silent: true });
       });
     },
+    watch: {
+      input() { this.scheduleDraftSave(); },
+      attachments: {
+        deep: true,
+        handler() { this.scheduleDraftSave(); }
+      }
+    }
   };
 })();

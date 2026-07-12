@@ -336,6 +336,7 @@
           this.index = Store.loadIndex();
           const first = this.index[0] && Store.loadSession(this.index[0].id);
           this.session = normalizeSession(first || Store.newSession());
+          this.restoreSessionDraft();
           this.storageUsed = Store.usage();
           U.toast('已导入 ' + res.sessions + ' 个会话');
         } catch (e) {
@@ -352,6 +353,7 @@
         this.providers = [];
         this.index = [];
         this.session = Store.newSession();
+        this.restoreSessionDraft();
         this.storageUsed = Store.usage();
         U.toast('已清空');
       }

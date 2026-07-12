@@ -66,9 +66,61 @@
         });
       },
 
+      captureCurrentDraft() {
+        if (!this.session) return;
+        this.session.draft = {
+          input: String(this.input || ''),
+          attachments: clone(this.attachments || [])
+        };
+      },
+      restoreSessionDraft() {
+        const draft = this.session && this.session.draft || {};
+        this.input = String(draft.input || '');
+        this.attachments = clone(Array.isArray(draft.attachments) ? draft.attachments : []);
+        nextTick(() => this.growInput());
+      },
+      scheduleDraftSave() {
+        if (this.draftSaveTimer) clearTimeout(this.draftSaveTimer);
+        this.draftSaveTimer = setTimeout(() => {
+          this.draftSaveTimer = null;
+          this.captureCurrentDraft();
+          if (this.session && this.session.id) this.persistSession();
+        }, 320);
+      },
+      clearCurrentDraft() {
+        if (this.draftSaveTimer) clearTimeout(this.draftSaveTimer);
+        this.draftSaveTimer = null;
+        this.input = '';
+        this.attachments = [];
+        if (this.session) this.session.draft = { input: '', attachments: [] };
+      },
+      toggleGlobalSearch() {
+        this.globalSearchOpen = !this.globalSearchOpen;
+        if (this.globalSearchOpen) nextTick(() => {
+          const el = this.$refs.globalSearchInput;
+          if (el && el.focus) el.focus();
+        });
+      },
+      async openGlobalSearchResult(row) {
+        if (!row) return;
+        await this.openSession(row.sessionId);
+        this.globalSearchOpen = false;
+        this.globalSearchQ = '';
+        this.drawerOpen = false;
+        if (!row.messageId) return;
+        this.globalSearchHighlightId = row.messageId;
+        nextTick(() => {
+          const el = document.querySelector('[data-message-id="' + row.messageId + '"]');
+          if (el && el.scrollIntoView) el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+          setTimeout(() => { if (this.globalSearchHighlightId === row.messageId) this.globalSearchHighlightId = ''; }, 1900);
+        });
+      },
+
       async newSession() {
         const canLeave = await this.confirmStopRunning('新建会话');
         if (!canLeave) return;
+        this.captureCurrentDraft();
+        if (this.session && this.session.id) this.persistSession();
         const mode = await this.dialog({
           title: '新建会话',
           msg: '选择这次会话的模式。创建后不可修改。',
@@ -93,8 +145,7 @@
         this.session.providerId = this.settings.activeProviderId || '';
         this.session.model = this.settings.activeModel || '';
         this.persistSession();
-        this.input = '';
-        this.attachments = [];
+        this.restoreSessionDraft();
         this.drawerOpen = false;
         nextTick(() => this.scrollToBottom(true));
       },
@@ -110,7 +161,10 @@
         }
         const canLeave = await this.confirmStopRunning('切换会话');
         if (!canLeave) return;
+        this.captureCurrentDraft();
+        this.persistSession();
         this.session = normalizeSession(s);
+        this.restoreSessionDraft();
         this.drawerOpen = false;
         nextTick(() => this.scrollToBottom(true));
       },
@@ -155,6 +209,7 @@
         if (this.session.id === it.id) {
           const next = this.index[0] && Store.loadSession(this.index[0].id);
           this.session = normalizeSession(next || Store.newSession());
+          this.restoreSessionDraft();
         }
         this.sheet = '';
       },
@@ -238,6 +293,7 @@
         if (this.session.id === item.id) {
           const next = this.index[0] && Store.loadSession(this.index[0].id);
           this.session = normalizeSession(next || Store.newSession());
+          this.restoreSessionDraft();
         }
         this.storageUsed = Store.usage();
         U.toast('会话已删除');
@@ -779,6 +835,83 @@
         );
         return ok ? '' : '错误：用户拒绝了工具调用：' + label;
       },
+      snapshotAssistantVariant(m, id) {
+        return {
+          id: id || U.uuid(),
+          content: String(m.content || ''),
+          reasoning: String(m.reasoning || ''),
+          toolCalls: clone(Array.isArray(m.toolCalls) ? m.toolCalls : []),
+          previews: clone(Array.isArray(m.previews) ? m.previews : []),
+          images: clone(Array.isArray(m.images) ? m.images : []),
+          imageRecovery: m.imageRecovery ? clone(m.imageRecovery) : null,
+          error: String(m.error || ''),
+          usage: m.usage ? clone(m.usage) : null,
+          model: m.model || '',
+          createdAt: m.createdAt || U.now(),
+          status: m.status || 'done'
+        };
+      },
+      ensureAssistantVariants(m) {
+        if (!m || m.role !== 'assistant') return [];
+        m.variantBaseId = m.variantBaseId || (m.id + ':v1');
+        if (!Array.isArray(m.variants) || !m.variants.length) {
+          m.variants = [this.snapshotAssistantVariant(m, m.variantBaseId)];
+          m.activeVariantIndex = 0;
+        }
+        return m.variants;
+      },
+      activeAssistantVariantId(m) {
+        if (!m) return '';
+        const variants = Array.isArray(m.variants) ? m.variants : [];
+        const active = variants[m.activeVariantIndex || 0];
+        return active && active.id || m.variantBaseId || (m.id + ':v1');
+      },
+      syncActiveAssistantVariant(m) {
+        const variants = Array.isArray(m && m.variants) ? m.variants : [];
+        const active = variants[m.activeVariantIndex || 0];
+        if (!active) return;
+        const fresh = this.snapshotAssistantVariant(m, active.id);
+        Object.keys(fresh).forEach(k => { active[k] = fresh[k]; });
+      },
+      applyAssistantVariant(m, index) {
+        const variants = Array.isArray(m && m.variants) ? m.variants : [];
+        if (!variants.length) return;
+        const idx = Math.max(0, Math.min(variants.length - 1, Number(index) || 0));
+        const v = variants[idx];
+        m.activeVariantIndex = idx;
+        m.content = v.content || '';
+        m.reasoning = v.reasoning || '';
+        m.toolCalls = clone(v.toolCalls || []);
+        m.previews = clone(v.previews || []);
+        m.images = clone(v.images || []);
+        m.imageRecovery = v.imageRecovery ? clone(v.imageRecovery) : null;
+        m.error = v.error || '';
+        m.usage = v.usage ? clone(v.usage) : null;
+        m.model = v.model || m.model || '';
+        m.createdAt = v.createdAt || m.createdAt;
+        m.status = v.status === 'streaming' ? 'done' : (v.status || 'done');
+      },
+      switchAssistantVariant(m, delta) {
+        if (this.generating || !m || !Array.isArray(m.variants) || m.variants.length < 2) return;
+        const next = Math.max(0, Math.min(m.variants.length - 1, (m.activeVariantIndex || 0) + delta));
+        if (next === (m.activeVariantIndex || 0)) return;
+        this.applyAssistantVariant(m, next);
+        this.persistSession();
+      },
+      assistantUsageText(m) {
+        const usage = m && m.usage;
+        if (!usage) return '';
+        const count = Number(usage.outputTokens || usage.totalTokens) || 0;
+        if (!count) return '';
+        return (usage.source === 'api' ? '' : '≈') + MODEL_META.fmtTokens(count) + ' tokens';
+      },
+      canRegenerateMessage(i) {
+        const m = this.session.messages[i];
+        if (!m || m.role !== 'assistant' || this.appMode === 'remote') return false;
+        const later = this.session.messages.slice(i + 1).some(x => x.role === 'user' || x.role === 'assistant');
+        const count = Array.isArray(m.variants) && m.variants.length ? m.variants.length : 1;
+        return !later && count < 6;
+      },
       async copyMsg(m) {
         const ok = await U.copyText(m.content || '');
         U.toast(ok ? '已复制' : '复制失败');
@@ -804,9 +937,17 @@
         }
         const m = this.session.messages[i];
         if (!m || m.role !== 'assistant') return;
-        this.session.messages.splice(i);
-        this.persistSession();
-        await this.generateAssistant();
+        const later = this.session.messages.slice(i + 1).some(x => x.role === 'user' || x.role === 'assistant');
+        if (later) {
+          U.toast('已有后续消息，只能查看这个回答的现有版本');
+          return;
+        }
+        const count = Array.isArray(m.variants) && m.variants.length ? m.variants.length : 1;
+        if (count >= 6) {
+          U.toast('每条回复最多保留 6 个版本');
+          return;
+        }
+        await this.generateAssistant({ targetIndex: i });
       },
   };
 })();

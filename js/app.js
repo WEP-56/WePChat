@@ -11,6 +11,7 @@
     window.WepChatAppMethodsCore,
     window.WepChatAppMethodsTheme,
     window.WepChatAppMethodsOnboarding,
+    window.WepChatAppMethodsLock,
     window.WepChatAppMethodsSessions,
     window.WepChatAppMethodsGeneration,
     window.WepChatAppMethodsWorkspace,

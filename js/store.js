@@ -111,7 +111,14 @@ const Store = {
       theme: 'auto',                 // auto | light | dark
       themeStyle: 'graphite',        // graphite | warm-paper | nebula | clear-glass
       realGlassEnabled: false,       // true = SVG 液态玻璃；false = 常规毛玻璃
-      onboardingCompleted: false,    // 全新安装首次启动引导
+      onboardingCompleted: false,    // 首次启动/升级引导完成标记
+      appLock: {
+        enabled: false,
+        salt: '',
+        hash: '',
+        iterations: 120000,
+        timeoutMinutes: 1
+      },
       activeProviderId: '',
       activeModel: '',
       agentEnabled: true,            // 是否给模型配置工具
@@ -236,6 +243,8 @@ const Store = {
     const out = Object.assign(d, saved);
     out.realGlassEnabled = saved.realGlassEnabled === true;
     out.onboardingCompleted = saved.onboardingCompleted === true;
+    out.appLock = Object.assign({}, d.appLock, saved.appLock || {});
+    out.appLock.enabled = out.appLock.enabled === true && !!out.appLock.salt && !!out.appLock.hash;
     out.toolPermissions = Object.assign({}, d.toolPermissions, saved.toolPermissions || {});
     out.remoteHosts = Array.isArray(saved.remoteHosts) ? saved.remoteHosts : [];
     out.activeRemoteHostId = saved.activeRemoteHostId || '';
@@ -273,6 +282,7 @@ const Store = {
       remote: null,
       providerId: '',
       model: '',
+      draft: { input: '', attachments: [] },
       messages: [],
       files: {},       // name -> {content, mime, size, mtime, dataUrl?}
       folders: [],     // empty folders and user-created folder paths

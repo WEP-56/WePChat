@@ -196,6 +196,13 @@ const API = (() => {
     const m = /^data:([^;]+);base64,(.*)$/.exec(dataUrl);
     return m ? { mime: m[1], data: m[2] } : null;
   }
+  function normalizeUsage(raw) {
+    raw = raw || {};
+    const input = Number(raw.input_tokens != null ? raw.input_tokens : (raw.prompt_tokens != null ? raw.prompt_tokens : raw.inputTokens)) || 0;
+    const output = Number(raw.output_tokens != null ? raw.output_tokens : (raw.completion_tokens != null ? raw.completion_tokens : raw.outputTokens)) || 0;
+    const total = Number(raw.total_tokens != null ? raw.total_tokens : raw.totalTokens) || (input + output);
+    return input || output || total ? { inputTokens: input, outputTokens: output, totalTokens: total, source: 'api' } : null;
+  }
 
   /* ================= openai-chat ================= */
   function buildChatMessages(messages, systemPrompt) {
@@ -239,7 +246,7 @@ const API = (() => {
     if (tools && tools.length) {
       body.tools = tools.map(t => ({ type: 'function', function: { name: t.name, description: t.description, parameters: t.parameters } }));
     }
-    const st = { content: '', reasoning: '', toolCalls: [] };
+    const st = { content: '', reasoning: '', toolCalls: [], usage: null };
     const applyJson = (msg) => {
       if (!msg) return;
       st.content += msg.content || '';
@@ -251,6 +258,7 @@ const API = (() => {
       headers: authHeaders(provider),
       body, signal, onStatus: ctx.onStatus, requestKey: ctx.requestKey,
       onEvent(ev, data) {
+        if (data && data.usage) st.usage = normalizeUsage(data.usage) || st.usage;
         if (ev === '__json__') { applyJson(data.choices && data.choices[0] && data.choices[0].message); onUpdate(st); return; }
         const ch = data.choices && data.choices[0];
         if (!ch) return;
@@ -303,7 +311,7 @@ const API = (() => {
     if (tools && tools.length) {
       body.tools = tools.map(t => ({ type: 'function', name: t.name, description: t.description, parameters: t.parameters }));
     }
-    const st = { content: '', reasoning: '', toolCalls: [] };
+    const st = { content: '', reasoning: '', toolCalls: [], usage: null };
     const pending = {}; // item_id -> toolCall
     const streamTools = () => st.toolCalls.concat(Object.keys(pending).map(k => pending[k]));
     await sseRequest({
@@ -312,6 +320,8 @@ const API = (() => {
       body, signal, onStatus: ctx.onStatus, requestKey: ctx.requestKey,
       onEvent(ev, data) {
         const type = data.type || ev;
+        const rawUsage = data.usage || (data.response && data.response.usage);
+        if (rawUsage) st.usage = normalizeUsage(rawUsage) || st.usage;
         if (type === 'response.output_text.delta') { st.content += data.delta || ''; onUpdate(st); }
         else if (type === 'response.reasoning_summary_text.delta' || type === 'response.reasoning_text.delta') { st.reasoning += data.delta || ''; onUpdate(st); }
         else if (type === 'response.output_item.added' && data.item && data.item.type === 'function_call') {
@@ -404,7 +414,7 @@ const API = (() => {
       'anthropic-version': '2023-06-01',
       'anthropic-dangerous-direct-browser-access': 'true'
     };
-    const st = { content: '', reasoning: '', toolCalls: [] };
+    const st = { content: '', reasoning: '', toolCalls: [], usage: null };
     const blocks = {}; // index -> {type, tool}
     const streamTools = () => st.toolCalls.concat(Object.keys(blocks).map(k => blocks[k]).filter(b => b && b.tool).map(b => b.tool));
     await sseRequest({
@@ -412,6 +422,16 @@ const API = (() => {
       headers, body, signal, onStatus: ctx.onStatus, requestKey: ctx.requestKey,
       onEvent(ev, data) {
         const type = data.type || ev;
+        const rawUsage = data.usage || (data.message && data.message.usage);
+        if (rawUsage) {
+          const usage = normalizeUsage(rawUsage);
+          if (usage) {
+            st.usage = st.usage || { inputTokens: 0, outputTokens: 0, totalTokens: 0, source: 'api' };
+            if (usage.inputTokens) st.usage.inputTokens = usage.inputTokens;
+            if (usage.outputTokens) st.usage.outputTokens = usage.outputTokens;
+            st.usage.totalTokens = st.usage.inputTokens + st.usage.outputTokens;
+          }
+        }
         if (type === 'content_block_start') {
           const b = data.content_block || {};
           blocks[data.index] = b.type === 'tool_use'
@@ -464,12 +484,13 @@ const API = (() => {
     prompt += 'Assistant:';
     const body = { model, prompt, stream: true, max_tokens: settings.maxTokens || 2048 };
     if (settings.temperature != null) body.temperature = settings.temperature;
-    const st = { content: '', reasoning: '', toolCalls: [] };
+    const st = { content: '', reasoning: '', toolCalls: [], usage: null };
     await sseRequest({
       url: joinUrl(provider.baseUrl, '/completions', { autoV1: true }),
       headers: authHeaders(provider),
       body, signal, onStatus: ctx.onStatus, requestKey: ctx.requestKey,
       onEvent(ev, data) {
+        if (data && data.usage) st.usage = normalizeUsage(data.usage) || st.usage;
         const ch = data.choices && data.choices[0];
         if (ch && ch.text) { st.content += ch.text; onUpdate(st); }
         if (ev === '__json__' && ch && ch.text) { st.content = ch.text; onUpdate(st); }
