@@ -10,6 +10,7 @@
     {},
     window.WepChatAppMethodsCore,
     window.WepChatAppMethodsTheme,
+    window.WepChatAppMethodsOnboarding,
     window.WepChatAppMethodsSessions,
     window.WepChatAppMethodsGeneration,
     window.WepChatAppMethodsWorkspace,
@@ -23,8 +24,7 @@
     if (liquidGlass.default) app.use(liquidGlass.default);
     if (liquidGlass.GlassFilter) app.component('GlassFilter', liquidGlass.GlassFilter);
   }
-  app.mount('#app');
-  requestAnimationFrame(() => {
+  window.WepChatSyncLiquidGlassFilters = () => requestAnimationFrame(() => {
     const regions = {
       'wc-liquid-panel': ['-18%', '-18%', '136%', '136%'],
       'wc-liquid-composer': ['-6%', '-35%', '112%', '170%'],
@@ -40,4 +40,6 @@
       filter.setAttribute('height', region[3]);
     });
   });
+  app.mount('#app');
+  window.WepChatSyncLiquidGlassFilters();
 })();

@@ -110,6 +110,8 @@ const Store = {
     return {
       theme: 'auto',                 // auto | light | dark
       themeStyle: 'graphite',        // graphite | warm-paper | nebula | clear-glass
+      realGlassEnabled: false,       // true = SVG 液态玻璃；false = 常规毛玻璃
+      onboardingCompleted: false,    // 全新安装首次启动引导
       activeProviderId: '',
       activeModel: '',
       agentEnabled: true,            // 是否给模型配置工具
@@ -232,6 +234,8 @@ const Store = {
     const d = this.defaultSettings();
     const saved = this._get(this.KEY_SETTINGS, {});
     const out = Object.assign(d, saved);
+    out.realGlassEnabled = saved.realGlassEnabled === true;
+    out.onboardingCompleted = saved.onboardingCompleted === true;
     out.toolPermissions = Object.assign({}, d.toolPermissions, saved.toolPermissions || {});
     out.remoteHosts = Array.isArray(saved.remoteHosts) ? saved.remoteHosts : [];
     out.activeRemoteHostId = saved.activeRemoteHostId || '';

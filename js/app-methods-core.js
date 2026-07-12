@@ -17,6 +17,16 @@
         }
       },
       async handleBackButton() {
+        if (this.onboardingOpen) {
+          const now = Date.now();
+          if (now - this.lastBackAt < 1800) {
+            this.finishOnboarding();
+            return;
+          }
+          this.lastBackAt = now;
+          U.toast('再次返回退出引导');
+          return;
+        }
         if (this.dlg) {
           this.lastBackAt = 0;
           this.dlgAnswer(null);

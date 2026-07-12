@@ -13,12 +13,14 @@
       onScroll() {
         const el = this.$refs.scroller;
         if (!el) return;
-        this.liquidScrolling = true;
-        if (this.liquidScrollTimer) clearTimeout(this.liquidScrollTimer);
-        this.liquidScrollTimer = setTimeout(() => {
-          this.liquidScrolling = false;
-          this.liquidScrollTimer = null;
-        }, 120);
+        if (this.settings.realGlassEnabled) {
+          this.liquidScrolling = true;
+          if (this.liquidScrollTimer) clearTimeout(this.liquidScrollTimer);
+          this.liquidScrollTimer = setTimeout(() => {
+            this.liquidScrolling = false;
+            this.liquidScrollTimer = null;
+          }, 120);
+        }
         const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
         this.showScrollDown = distance > 160;
         this.autoFollow = distance < 80;

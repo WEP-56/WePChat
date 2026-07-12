@@ -50,6 +50,7 @@
     root.dataset.theme = style;
     root.classList.toggle('dark', dark);
     root.classList.toggle('fs-large', settings.fontSize === 'large');
+    root.classList.toggle('real-glass', settings.realGlassEnabled === true);
     root.style.colorScheme = dark ? 'dark' : 'light';
     requestAnimationFrame(() => syncSystemBars(dark));
   }

@@ -5,8 +5,10 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
 <meta name="theme-color" content="#ffffff">
 <title>WepChat</title>
+<link rel="icon" href="img/icon.png">
 <link rel="stylesheet" href="css/liquid-glass-vue.css">
 <link rel="stylesheet" href="css/app.css">
+<link rel="stylesheet" href="css/onboarding.css">
 <script src="libs/vue.global.prod.js"></script>
 <script src="libs/marked.min.js"></script>
 <script src="libs/purify.min.js"></script>
@@ -15,15 +17,107 @@
 </head>
 <body>
 <div id="app" v-cloak>
-  <div class="liquid-glass-defs" aria-hidden="true">
+  <div class="liquid-glass-defs" v-if="settings.realGlassEnabled" aria-hidden="true">
     <glass-filter id="wc-liquid-token" width="100%" height="100%" mode="polar" :displacement-scale="58" :aberration-intensity="5"></glass-filter>
     <glass-filter id="wc-liquid-panel" width="100%" height="100%" mode="prominent" :displacement-scale="42" :aberration-intensity="5"></glass-filter>
     <glass-filter id="wc-liquid-composer" width="100%" height="100%" mode="prominent" :displacement-scale="52" :aberration-intensity="5"></glass-filter>
     <glass-filter id="wc-liquid-confirm" width="100%" height="100%" mode="prominent" :displacement-scale="42" :aberration-intensity="5"></glass-filter>
   </div>
 
+  <!-- ================= 首次启动引导 ================= -->
+  <transition name="onboarding-root" appear>
+    <section class="onboarding" v-if="onboardingOpen" role="dialog" aria-modal="true" aria-label="WepChat 首次使用引导">
+      <div class="onboarding-aurora" aria-hidden="true"><i></i><i></i><i></i></div>
+      <header class="onboarding-head">
+        <span>WEPCHAT · {{ onboardingPage + 1 }}/4</span>
+        <button @click="finishOnboarding()">跳过</button>
+      </header>
+
+      <main class="onboarding-stage" @touchstart.passive="onboardingTouchStart" @touchend.passive="onboardingTouchEnd">
+        <transition :name="onboardingDirection >= 0 ? 'onboarding-next' : 'onboarding-prev'" mode="out-in">
+          <article class="onboarding-slide onboarding-welcome" v-if="onboardingPage === 0" key="welcome">
+            <div class="onboarding-logo-wrap">
+              <span class="onboarding-logo-halo" aria-hidden="true"></span>
+              <img class="onboarding-logo" src="img/icon.png" alt="WepChat Logo">
+            </div>
+            <h1>WEPCHAT</h1>
+            <p class="onboarding-motto">简单、克制、轻量　永远这样</p>
+            <p class="onboarding-lead">欢迎使用 WEPCHAT，准备好开始你的首个 AI 对话了吗？</p>
+            <div class="onboarding-welcome-actions">
+              <button class="onboarding-primary" @click="nextOnboardingPage()">我该怎么开始？</button>
+              <button class="onboarding-quiet" @click="finishOnboarding()">我会配置！</button>
+            </div>
+          </article>
+
+          <article class="onboarding-slide" v-else-if="onboardingPage === 1" key="provider">
+            <div class="onboarding-copy">
+              <span class="onboarding-kicker">第一步</span>
+              <h2>配置一个提供商</h2>
+              <p>从模型服务商获得 API Key，然后在 WepChat 中填写地址、密钥与模型。</p>
+            </div>
+            <div class="provider-shortcuts" aria-label="模型服务商官网">
+              <button @click="openOnboardingLink('https://platform.deepseek.com/')"><i class="provider-mark deepseek">D</i><span>DeepSeek<small>开放平台</small></span></button>
+              <button @click="openOnboardingLink('https://console.anthropic.com/')"><i class="provider-mark claude">A</i><span>Claude<small>Anthropic Console</small></span></button>
+              <button @click="openOnboardingLink('https://platform.openai.com/')"><i class="provider-mark openai">O</i><span>GPT<small>OpenAI Platform</small></span></button>
+              <button @click="openOnboardingLink('https://open.bigmodel.cn/')"><i class="provider-mark glm">Z</i><span>GLM<small>智谱开放平台</small></span></button>
+            </div>
+            <div class="provider-guide-demo" aria-label="配置提供商操作演示">
+              <div class="guide-phone-bar"><b>WepChat</b><span>操作演示</span></div>
+              <div class="guide-app-home"><i class="guide-menu-icon">☰</i><strong>有问题，尽管问</strong><small>从左上角菜单开始</small></div>
+              <div class="guide-drawer"><b>新聊天</b><span>会话列表</span><span class="guide-target">⚙ 设置</span></div>
+              <div class="guide-settings"><b>设置</b><span>常规</span><span class="guide-target">◉ 模型</span><span>图片生成</span><span>工具</span></div>
+              <div class="guide-models"><b>模型</b><span class="guide-provider-empty">还没有提供商</span><span class="guide-add-provider">＋ 添加提供商</span></div>
+              <i class="guide-tap tap-menu"></i><i class="guide-tap tap-settings"></i><i class="guide-tap tap-model"></i><i class="guide-tap tap-add"></i>
+            </div>
+          </article>
+
+          <article class="onboarding-slide" v-else-if="onboardingPage === 2" key="protocols">
+            <div class="onboarding-copy">
+              <span class="onboarding-kicker">连接之前</span>
+              <h2>你需要知道的</h2>
+              <p>“协议类型”决定请求格式。请按服务商接口文档选择，不要只凭模型名称猜测。</p>
+            </div>
+            <div class="protocol-stack">
+              <section class="protocol-card completions"><i>C</i><div><h3>Completions</h3><code>/v1/chat/completions</code><p>最常见的 OpenAI-compatible 对话协议，兼容服务商最多。</p></div></section>
+              <section class="protocol-card responses"><i>R</i><div><h3>Responses</h3><code>/v1/responses</code><p>OpenAI 较新的统一接口，适合推理、工具调用和多模态能力。</p></div></section>
+              <section class="protocol-card messages"><i>M</i><div><h3>Messages</h3><code>/v1/messages</code><p>Anthropic Claude 原生协议，消息结构和工具调用格式与 OpenAI 不同。</p></div></section>
+            </div>
+            <div class="protocol-tip"><b>拿不准？</b><span>优先查看服务商示例代码中的请求路径；第三方中转通常会标明兼容哪一种协议。</span></div>
+          </article>
+
+          <article class="onboarding-slide" v-else key="first-chat">
+            <div class="onboarding-copy">
+              <span class="onboarding-kicker">准备完成</span>
+              <h2>开始第一次对话</h2>
+              <p>选择模型，写下问题，然后把剩下的交给 WepChat。</p>
+            </div>
+            <div class="first-chat-demo" aria-label="首次对话动画演示">
+              <div class="chat-demo-head"><span>‹</span><b>WepChat</b><i>•••</i></div>
+              <div class="chat-demo-body">
+                <div class="chat-demo-user"><span>surprise me</span></div>
+                <div class="chat-demo-thinking"><i></i><i></i><i></i><span>thinking</span></div>
+                <div class="chat-demo-answer">感谢你选择 WepChat。愿它始终保持简单、克制、轻量，也愿每一次对话，都能替你省下一点时间，带来一点惊喜。</div>
+              </div>
+              <div class="chat-demo-composer"><span>有问题，尽管问</span><i>↑</i></div>
+            </div>
+            <button class="onboarding-primary onboarding-start" @click="finishOnboarding()">开始使用 WepChat</button>
+          </article>
+        </transition>
+      </main>
+
+      <footer class="onboarding-foot">
+        <button class="onboarding-back" v-if="onboardingPage > 0" @click="previousOnboardingPage()" aria-label="上一页">←</button>
+        <div class="onboarding-dots" aria-label="引导页码">
+          <button v-for="n in 4" :key="n" :class="{on: onboardingPage === n - 1}" @click="goToOnboardingPage(n - 1)" :aria-label="'第 ' + n + ' 页'"></button>
+        </div>
+        <button class="onboarding-forward" v-if="onboardingPage > 0 && onboardingPage < 3" @click="nextOnboardingPage()">继续　→</button>
+        <span class="onboarding-foot-space" v-else></span>
+      </footer>
+    </section>
+  </transition>
+
   <!-- ================= 主界面 ================= -->
-  <div class="shell" :class="{'liquid-scrolling': liquidScrolling, 'page-covered': pages.length}">
+  <div class="shell" :class="{'liquid-scrolling': settings.realGlassEnabled && liquidScrolling, 'page-covered': pages.length}">
     <div class="topbar">
       <button class="icon-btn" @click="drawerOpen = true" aria-label="菜单">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 7h16M4 12h10"/></svg>
@@ -759,6 +853,17 @@
             <button :class="{on: settings.fontSize === 'large'}" @click="setFontSize('large')">大</button>
           </div>
         </div>
+        <div class="row static">
+          <span class="row-label">真实玻璃组件<span class="rl-sub">关闭后使用常规毛玻璃，老设备更流畅</span></span>
+          <button class="switch" :class="{on: settings.realGlassEnabled}" role="switch"
+            :aria-checked="settings.realGlassEnabled ? 'true' : 'false'"
+            aria-label="是否开启真实玻璃组件"
+            @click="setRealGlassEnabled(!settings.realGlassEnabled)"></button>
+        </div>
+        <button class="row" @click="replayOnboarding()">
+          <span class="row-label">重新查看新手引导<span class="rl-sub">再次播放首次启动幻灯片</span></span>
+          <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 5l7 7-7 7"/></svg>
+        </button>
       </div>
     </div>
   </div>
@@ -1171,6 +1276,7 @@
 <script src="js/app-options.js"></script>
 <script src="js/app-methods-core.js"></script>
 <script src="js/app-methods-theme.js"></script>
+<script src="js/app-methods-onboarding.js"></script>
 <script src="js/app-methods-sessions.js"></script>
 <script src="js/app-methods-generation.js"></script>
 <script src="js/app-methods-workspace.js"></script>

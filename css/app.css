@@ -164,6 +164,48 @@ html.dark[data-theme="clear-glass"] {
   --glass-shadow: 0 16px 40px rgba(0, 0, 0, 0.48), inset 0 1px 0 rgba(255, 255, 255, 0.16);
 }
 
+/* 常规毛玻璃：更高的不透明度与原生 backdrop blur，避免 SVG 位移滤镜开销 */
+html:not(.real-glass) {
+  --glass-bg: rgba(244, 244, 247, 0.7);
+  --glass-panel-bg: rgba(248, 248, 250, 0.56);
+  --glass-orb-bg: rgba(248, 248, 250, 0.36);
+}
+html.dark:not(.real-glass) {
+  --glass-bg: rgba(31, 31, 36, 0.72);
+  --glass-panel-bg: rgba(27, 27, 32, 0.62);
+  --glass-orb-bg: rgba(35, 35, 40, 0.42);
+}
+html:not(.real-glass)[data-theme="warm-paper"] {
+  --glass-bg: rgba(242, 237, 227, 0.72);
+  --glass-panel-bg: rgba(247, 242, 233, 0.58);
+  --glass-orb-bg: rgba(248, 243, 234, 0.4);
+}
+html.dark:not(.real-glass)[data-theme="warm-paper"] {
+  --glass-bg: rgba(43, 38, 34, 0.73);
+  --glass-panel-bg: rgba(37, 33, 29, 0.62);
+  --glass-orb-bg: rgba(48, 43, 38, 0.44);
+}
+html:not(.real-glass)[data-theme="nebula"] {
+  --glass-bg: rgba(235, 241, 253, 0.7);
+  --glass-panel-bg: rgba(242, 246, 255, 0.56);
+  --glass-orb-bg: rgba(242, 246, 255, 0.38);
+}
+html.dark:not(.real-glass)[data-theme="nebula"] {
+  --glass-bg: rgba(28, 34, 50, 0.72);
+  --glass-panel-bg: rgba(24, 30, 44, 0.62);
+  --glass-orb-bg: rgba(34, 41, 58, 0.44);
+}
+html:not(.real-glass)[data-theme="clear-glass"] {
+  --glass-bg: rgba(245, 245, 249, 0.54);
+  --glass-panel-bg: rgba(248, 248, 251, 0.4);
+  --glass-orb-bg: rgba(250, 250, 252, 0.28);
+}
+html.dark:not(.real-glass)[data-theme="clear-glass"] {
+  --glass-bg: rgba(30, 30, 35, 0.58);
+  --glass-panel-bg: rgba(25, 25, 30, 0.48);
+  --glass-orb-bg: rgba(38, 38, 44, 0.32);
+}
+
 html.fs-large { --fs-chat: 17.5px; }
 html.plus-app { --sat: 0px; }
 
@@ -1357,6 +1399,32 @@ html.dark #wc-toast { background: rgba(240,240,244,0.95); color: #17171a; }
   filter: none;
   -webkit-backdrop-filter: blur(2px) saturate(1.08);
   backdrop-filter: blur(2px) saturate(1.08);
+}
+
+html:not(.real-glass) .composer {
+  background: var(--glass-bg);
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(1.22);
+  backdrop-filter: blur(var(--glass-blur)) saturate(1.22);
+}
+html:not(.real-glass) .composer::before {
+  inset: 0; background: linear-gradient(145deg, var(--glass-highlight), transparent 34%, transparent 70%, color-mix(in srgb, var(--glass-highlight) 34%, transparent));
+  filter: none; -webkit-backdrop-filter: none; backdrop-filter: none; transform: none;
+  opacity: .55; mix-blend-mode: soft-light;
+}
+html:not(.real-glass) .token-orb::before {
+  inset: 0; filter: none; transform: none;
+  -webkit-backdrop-filter: blur(7px) saturate(1.24);
+  backdrop-filter: blur(7px) saturate(1.24);
+}
+html:not(.real-glass) .token-panel::before {
+  inset: 0; filter: none; transform: none;
+  -webkit-backdrop-filter: blur(11px) saturate(1.16);
+  backdrop-filter: blur(11px) saturate(1.16);
+}
+html:not(.real-glass) .dlg-liquid::before {
+  inset: 0; filter: none; transform: none;
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(1.18);
+  backdrop-filter: blur(var(--glass-blur)) saturate(1.18);
 }
 .tp-head { display: flex; align-items: center; justify-content: space-between; font-weight: 700; margin-bottom: 7px; }
 .tp-head button { width: 24px; height: 24px; border-radius: 12px; color: var(--text3); font-size: 18px; line-height: 1; }
