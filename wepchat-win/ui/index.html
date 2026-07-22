@@ -1,0 +1,562 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="graphite">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#ffffff" />
+    <title>WePChat</title>
+    <link rel="stylesheet" href="./css/app.css" />
+  </head>
+  <body>
+    <div id="app" class="app">
+      <!-- 自定义标题栏（拖拽区与按钮分离，避免抢点击） -->
+      <header class="titlebar">
+        <div class="titlebar-left">
+          <button
+            type="button"
+            class="titlebar-btn"
+            id="btn-toggle-list"
+            title="伸缩左侧列表"
+            aria-label="伸缩左侧列表"
+            aria-pressed="false"
+          >
+            <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+              <path
+                fill="currentColor"
+                d="M3 6h18v2H3V6zm0 5h12v2H3v-2zm0 5h18v2H3v-2z"
+              />
+            </svg>
+          </button>
+          <span class="titlebar-brand" data-tauri-drag-region>WePChat</span>
+        </div>
+        <div class="titlebar-drag" data-tauri-drag-region></div>
+        <div class="titlebar-right">
+          <button type="button" class="win-btn" id="win-min" title="最小化" aria-label="最小化">
+            <svg viewBox="0 0 12 12" width="12" height="12" aria-hidden="true">
+              <rect x="1" y="5.5" width="10" height="1" fill="currentColor" />
+            </svg>
+          </button>
+          <button type="button" class="win-btn" id="win-max" title="最大化" aria-label="最大化">
+            <svg class="win-max-icon" viewBox="0 0 12 12" width="12" height="12" aria-hidden="true">
+              <rect x="1.5" y="1.5" width="9" height="9" rx="0.5" fill="none" stroke="currentColor" stroke-width="1" />
+            </svg>
+            <svg class="win-restore-icon" viewBox="0 0 12 12" width="12" height="12" aria-hidden="true" hidden>
+              <rect x="3" y="1.5" width="7.5" height="7.5" rx="0.5" fill="none" stroke="currentColor" stroke-width="1" />
+              <rect x="1.5" y="3" width="7.5" height="7.5" rx="0.5" fill="none" stroke="currentColor" stroke-width="1" />
+            </svg>
+          </button>
+          <button type="button" class="win-btn win-btn-close" id="win-close" title="关闭" aria-label="关闭">
+            <svg viewBox="0 0 12 12" width="12" height="12" aria-hidden="true">
+              <path d="M2.2 2.2l7.6 7.6M9.8 2.2L2.2 9.8" stroke="currentColor" stroke-width="1.2" fill="none" />
+            </svg>
+          </button>
+        </div>
+      </header>
+
+      <div class="app-body" id="app-body">
+      <!-- 最左：模式图标轨 -->
+      <nav class="rail" aria-label="主导航" id="rail">
+        <div class="rail-top">
+          <button type="button" class="rail-btn is-active" data-mode="chat" title="聊天" aria-label="聊天">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path
+                fill="currentColor"
+                d="M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm0 14H5.2L4 17.2V4h16v12z"
+              />
+            </svg>
+          </button>
+          <button type="button" class="rail-btn" data-mode="image" title="生图" aria-label="生图">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path
+                fill="currentColor"
+                d="M21 19V5c0-1.1-.9-2-2-2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2zM8.5 13.5l2.5 3.01L14.5 12l4.5 6H5l3.5-4.5z"
+              />
+            </svg>
+          </button>
+        </div>
+        <div class="rail-bottom">
+          <button type="button" class="rail-btn" data-mode="settings" title="设置" aria-label="设置">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path
+                fill="currentColor"
+                d="M19.14 12.94c.04-.31.06-.63.06-.94s-.02-.63-.06-.94l2.03-1.58a.49.49 0 0 0 .12-.61l-1.92-3.32a.49.49 0 0 0-.59-.22l-2.39.96a7.2 7.2 0 0 0-1.62-.94l-.36-2.54A.48.48 0 0 0 14 2h-4a.48.48 0 0 0-.48.41l-.36 2.54c-.59.24-1.13.55-1.62.94l-2.39-.96a.49.49 0 0 0-.59.22L2.65 8.87a.49.49 0 0 0 .12.61l2.03 1.58c-.04.31-.06.63-.06.94s.02.63.06.94l-2.03 1.58a.49.49 0 0 0-.12.61l1.92 3.32c.12.22.38.3.59.22l2.39-.96c.5.39 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h4c.24 0 .44-.17.48-.41l.36-2.54c.59-.24 1.13-.55 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32a.49.49 0 0 0-.12-.61l-2.03-1.58zM12 15.5A3.5 3.5 0 1 1 12 8.5a3.5 3.5 0 0 1 0 7z"
+              />
+            </svg>
+          </button>
+        </div>
+      </nav>
+
+      <!-- 偏左：列表栏 -->
+      <aside class="list-pane" id="list-pane">
+        <section class="list-panel is-active" data-panel="chat">
+          <div class="list-search">
+            <input type="search" placeholder="搜索会话" disabled aria-label="搜索会话" />
+          </div>
+          <button type="button" class="btn-new-chat" id="btn-new-chat">
+            <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+              <path
+                fill="currentColor"
+                d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04c.39-.39.39-1.02 0-1.41l-2.34-2.34a.996.996 0 0 0-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"
+              />
+            </svg>
+            新建聊天
+          </button>
+          <div class="list-body">
+            <div class="empty-hint">
+              <p class="empty-title">还没有会话</p>
+              <p class="empty-desc">新建一条，或配置模型后开始对话。</p>
+            </div>
+            <ul class="session-list" id="session-list" hidden></ul>
+          </div>
+        </section>
+
+        <section class="list-panel" data-panel="image">
+          <header class="list-header">
+            <h1 class="list-title">生图</h1>
+            <button type="button" class="icon-btn" id="btn-new-image" title="新建生图">
+              <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+                <path fill="currentColor" d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z" />
+              </svg>
+            </button>
+          </header>
+          <div class="list-body">
+            <div class="empty-hint">
+              <p class="empty-title">暂无生图任务</p>
+              <p class="empty-desc">简易图片工作站稍后接入。</p>
+            </div>
+          </div>
+        </section>
+
+        <section class="list-panel" data-panel="settings">
+          <header class="list-header">
+            <h1 class="list-title">设置</h1>
+          </header>
+          <nav class="settings-nav" id="settings-nav">
+            <button type="button" class="settings-nav-item is-active" data-settings="providers">
+              模型与供应商
+            </button>
+            <button type="button" class="settings-nav-item" data-settings="workspace">
+              对话文件目录
+            </button>
+            <button type="button" class="settings-nav-item" data-settings="agent">
+              工具与代理
+            </button>
+            <button type="button" class="settings-nav-item" data-settings="appearance">
+              外观
+            </button>
+            <button type="button" class="settings-nav-item" data-settings="backup">备份</button>
+            <button type="button" class="settings-nav-item" data-settings="about">关于</button>
+          </nav>
+        </section>
+      </aside>
+
+      <div
+        class="resize-handle resize-handle--list"
+        id="resize-list"
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="调整左侧列表宽度"
+        title="拖拽调整宽度"
+      ></div>
+
+      <!-- 中部 -->
+      <main class="main" id="main">
+        <section class="main-view is-active" data-view="chat">
+          <header class="main-top">
+            <div class="main-top-left"></div>
+            <div class="main-top-center">
+              <label class="model-switch" title="当前对话模型">
+                <select id="model-select" class="model-select" aria-label="选择模型" disabled>
+                  <option value="">选择模型</option>
+                </select>
+                <span class="model-provider" id="model-provider-label">尚未配置供应商</span>
+              </label>
+            </div>
+            <div class="main-top-right">
+              <button type="button" class="tool-btn" id="btn-toggle-workspace" title="工作区与预览">
+                <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+                  <path
+                    fill="currentColor"
+                    d="M10 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z"
+                  />
+                </svg>
+              </button>
+              <button type="button" class="tool-btn" id="btn-new-chat-top" title="新会话">
+                <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+                  <path
+                    fill="currentColor"
+                    d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"
+                  />
+                </svg>
+              </button>
+            </div>
+          </header>
+
+          <div class="chat-scroll" id="chat-scroll">
+            <div class="welcome">
+              <div class="welcome-mark" aria-hidden="true">
+                <svg viewBox="0 0 24 24" width="22" height="22">
+                  <path
+                    fill="currentColor"
+                    d="M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2z"
+                  />
+                </svg>
+              </div>
+              <p class="welcome-brand">WePChat</p>
+              <p class="welcome-sub">轻量 · 克制 · 快捷</p>
+            </div>
+          </div>
+
+          <div class="branch-blocked" id="branch-blocked" hidden>
+            当前查看的是旧回答分支。切回后续消息所使用的版本后，才能继续对话。
+          </div>
+
+          <footer class="composer">
+            <div class="composer-box">
+              <button type="button" class="icon-btn composer-plus" title="附件" disabled>
+                <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+                  <path fill="currentColor" d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z" />
+                </svg>
+              </button>
+              <textarea
+                id="composer-input"
+                rows="1"
+                placeholder="有问题，尽管问"
+              ></textarea>
+              <button type="button" class="send-btn" id="btn-send" title="发送" disabled aria-label="发送">
+                <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+                  <path fill="currentColor" d="M4 12l1.41 1.41L11 7.83V20h2V7.83l5.58 5.59L20 12l-8-8-8 8z" />
+                </svg>
+              </button>
+            </div>
+            <p class="composer-hint" id="composer-hint">添加供应商并选择模型后即可开始对话</p>
+          </footer>
+        </section>
+
+        <section class="main-view" data-view="image">
+          <header class="main-top">
+            <div class="main-top-left"></div>
+            <div class="main-top-center">
+              <h2 class="main-heading">AI 图片生成</h2>
+            </div>
+            <div class="main-top-right"></div>
+          </header>
+          <div class="image-empty">
+            <p class="empty-title">图片工作站</p>
+            <p class="empty-desc">简易生图将在此完成。</p>
+          </div>
+        </section>
+
+        <section class="main-view" data-view="settings">
+          <div class="settings-content" id="settings-content">
+            <div class="settings-page is-active" data-settings-page="providers">
+              <div class="settings-title-row">
+                <div>
+                  <h2 class="settings-h">模型与供应商</h2>
+                  <p class="settings-p">支持 OpenAI Chat Completions、OpenAI Responses、Anthropic Messages。</p>
+                </div>
+                <button type="button" class="primary-btn" id="btn-add-provider">添加供应商</button>
+              </div>
+              <div class="provider-empty" id="provider-empty">
+                <p class="empty-title">尚未添加供应商</p>
+                <p class="empty-desc">添加 API 地址、密钥和模型后即可开始对话。</p>
+              </div>
+              <div class="provider-list" id="provider-list" hidden></div>
+            </div>
+
+            <div class="settings-page" data-settings-page="workspace">
+              <h2 class="settings-h">对话文件目录</h2>
+              <p class="settings-p">
+                新会话工作区创建在「当前生效路径」下的 <code>{sessionId}/</code>。
+                可自定义根目录；留空使用默认。已有会话继续使用各自保存时的目录。
+              </p>
+              <label class="field">
+                <span class="field-label">当前生效根目录</span>
+                <input type="text" id="workspace-resolved" readonly class="field-input mono" />
+              </label>
+              <label class="field">
+                <span class="field-label">自定义根目录（可选）</span>
+                <input
+                  type="text"
+                  id="workspace-custom"
+                  class="field-input mono"
+                  placeholder="留空 = 使用默认"
+                />
+              </label>
+              <label class="field">
+                <span class="field-label">当前会话工作区</span>
+                <input type="text" id="workspace-session-path" readonly class="field-input mono" />
+              </label>
+              <div class="field-actions">
+                <button type="button" class="primary-btn" id="btn-save-workspace">保存</button>
+                <span class="field-status" id="workspace-status"></span>
+              </div>
+              <p class="settings-note" id="workspace-default-note"></p>
+            </div>
+
+            <div class="settings-page" data-settings-page="agent">
+              <h2 class="settings-h">工具与代理</h2>
+              <p class="settings-p">
+                开启后，模型可调用工作区文件、预览、web_fetch、run_js 等工具。
+                关闭则纯聊天，请求不带 tools。
+              </p>
+              <label class="field field-row">
+                <span class="field-label">启用工具（Agent）</span>
+                <button type="button" class="switch" id="agent-enabled" aria-pressed="true" title="启用工具"></button>
+              </label>
+              <label class="field">
+                <span class="field-label">最大工具轮次</span>
+                <input type="number" id="agent-max-rounds" class="field-input mono" min="1" max="32" value="8" />
+              </label>
+              <label class="field">
+                <span class="field-label">最大工具调用数</span>
+                <input type="number" id="agent-max-calls" class="field-input mono" min="1" max="128" value="24" />
+              </label>
+              <div class="field-actions">
+                <button type="button" class="primary-btn" id="btn-save-agent">保存</button>
+                <span class="field-status" id="agent-status"></span>
+              </div>
+            </div>
+
+            <div class="settings-page" data-settings-page="appearance">
+              <h2 class="settings-h">外观</h2>
+              <p class="settings-p">与安卓同源的中性墨色层级。主题扩展稍后完善。</p>
+            </div>
+
+            <div class="settings-page" data-settings-page="backup">
+              <h2 class="settings-h">备份</h2>
+              <p class="settings-p">
+                与安卓互通的 <code>.wepchat</code> 导入/导出将在此提供。
+              </p>
+            </div>
+
+            <div class="settings-page" data-settings-page="about">
+              <h2 class="settings-h">关于</h2>
+              <p class="settings-p" id="about-meta">WePChat</p>
+              <p class="settings-p muted">桌面版舒适聊天盒子 · 不是 Codex / Claude Code</p>
+            </div>
+          </div>
+        </section>
+      </main>
+
+      <div
+        class="resize-handle resize-handle--right"
+        id="resize-right"
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="调整右侧边栏宽度"
+        title="拖拽调整宽度"
+        hidden
+      ></div>
+
+      <!-- 右侧：统一标签页（浏览器 / 文件 / 运行） -->
+      <aside class="right-pane" id="right-pane" hidden>
+        <header class="rp-tabbar">
+          <div class="rp-tabs" id="right-tabs" role="tablist" aria-label="侧栏标签"></div>
+          <div class="rp-tab-add-wrap">
+            <button type="button" class="rp-tab-add" id="btn-tab-add" title="新建标签页" aria-haspopup="menu" aria-expanded="false">
+              +
+            </button>
+            <div class="rp-add-menu" id="tab-add-menu" role="menu" hidden>
+              <button type="button" class="rp-add-item" role="menuitem" data-kind="browser">
+                <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z"/></svg>
+                浏览器
+              </button>
+              <button type="button" class="rp-add-item" role="menuitem" data-kind="files">
+                <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M20 6h-8l-2-2H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2z"/></svg>
+                文件
+              </button>
+              <button type="button" class="rp-add-item" role="menuitem" data-kind="runner">
+                <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M9.4 16.6 4.8 12l4.6-4.6L8 6l-6 6 6 6 1.4-1.4zm5.2 0 4.6-4.6-4.6-4.6L16 6l6 6-6 6-1.4-1.4z"/></svg>
+                运行
+              </button>
+            </div>
+          </div>
+          <div class="rp-tabbar-actions">
+            <button type="button" class="rp-icon" id="btn-close-right" title="关闭侧栏" aria-label="关闭侧栏">
+              <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+                <path fill="currentColor" d="M3 5v14h18V5H3zm16 12H9V7h10v10z"/>
+              </svg>
+            </button>
+          </div>
+        </header>
+
+        <!-- 无标签：入口列表 -->
+        <div class="rp-home" id="rp-home">
+          <div class="rp-home-spacer"></div>
+          <nav class="rp-tools" aria-label="添加标签">
+            <button type="button" class="rp-tool" data-kind="browser">
+              <span class="rp-tool-left">
+                <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z"/></svg>
+                浏览器
+              </span>
+              <kbd class="rp-kbd">Ctrl+T</kbd>
+            </button>
+            <button type="button" class="rp-tool" data-kind="files">
+              <span class="rp-tool-left">
+                <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M20 6h-8l-2-2H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2z"/></svg>
+                文件
+              </span>
+              <kbd class="rp-kbd">Ctrl+P</kbd>
+            </button>
+            <button type="button" class="rp-tool" data-kind="runner">
+              <span class="rp-tool-left">
+                <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M9.4 16.6 4.8 12l4.6-4.6L8 6l-6 6 6 6 1.4-1.4zm5.2 0 4.6-4.6-4.6-4.6L16 6l6 6-6 6-1.4-1.4z"/></svg>
+                运行
+              </span>
+              <kbd class="rp-kbd">Ctrl+`</kbd>
+            </button>
+          </nav>
+          <p class="rp-home-note">点上方 + 或入口，将浏览器 / 文件 / 运行加入标签页</p>
+        </div>
+
+        <!-- 有标签时的内容区（由 JS 按当前标签 kind 渲染） -->
+        <div class="rp-content" id="rp-content" hidden></div>
+      </aside>
+      </div>
+    </div>
+
+    <dialog class="provider-dialog" id="provider-dialog" aria-labelledby="provider-dialog-title">
+      <form class="provider-form" id="provider-form">
+        <header class="dialog-head">
+          <div>
+            <h2 id="provider-dialog-title">添加供应商</h2>
+            <p>配置接口、模型列表与元数据；请求经 Rust 出站，不受 CORS 影响。</p>
+          </div>
+          <button type="button" class="dialog-close" id="btn-close-provider" title="关闭" aria-label="关闭">×</button>
+        </header>
+
+        <div class="sec-label">基本信息</div>
+        <div class="provider-form-grid">
+          <label class="field">
+            <span class="field-label">名称</span>
+            <input type="text" class="field-input" id="provider-name" placeholder="例如 OpenAI / DeepSeek" required />
+          </label>
+          <label class="field">
+            <span class="field-label">接口类型</span>
+            <select class="field-input" id="provider-api">
+              <option value="openai-chat">Chat Completions（OpenAI 兼容）</option>
+              <option value="openai-responses">Responses（OpenAI）</option>
+              <option value="anthropic">Messages（Anthropic）</option>
+              <option value="openai-completions">Completions（传统补全）</option>
+            </select>
+          </label>
+        </div>
+        <label class="field">
+          <span class="field-label">API 地址</span>
+          <input type="url" class="field-input mono" id="provider-base-url" placeholder="https://api.openai.com" required />
+        </label>
+        <label class="field">
+          <span class="field-label">API Key</span>
+          <div class="secret-field">
+            <input type="password" class="field-input mono" id="provider-api-key" autocomplete="off" placeholder="sk-..." />
+            <button type="button" class="secondary-btn" id="btn-toggle-provider-key">显示</button>
+          </div>
+        </label>
+        <p class="field-hint">地址只填域名时自动补 /v1；以 # 结尾表示按原样使用完整地址。</p>
+
+        <div class="provider-models-section">
+          <div class="sec-label-row">
+            <div class="sec-label">模型列表</div>
+            <div class="sec-label-actions">
+              <span class="sec-meta" id="provider-model-count">0 个</span>
+              <button type="button" class="secondary-btn sec-add-btn" id="btn-add-model">＋ 添加</button>
+            </div>
+          </div>
+          <div class="provider-model-card">
+            <div class="provider-model-empty" id="provider-model-empty">暂无模型，可从接口获取或手动添加</div>
+            <div class="provider-model-list" id="provider-model-list" hidden></div>
+          </div>
+          <p class="field-hint">
+            点击模型编辑元数据；插头测试可达性；垃圾桶删除。获取列表后可滚动查看全部。
+          </p>
+        </div>
+
+        <div class="provider-form-tools">
+          <button type="button" class="secondary-btn" id="btn-fetch-models">从接口获取模型</button>
+          <button type="button" class="secondary-btn" id="btn-test-provider">测试连接</button>
+        </div>
+        <div class="provider-status-block">
+          <span class="field-status" id="provider-form-status"></span>
+          <span class="field-status is-net" id="provider-net-status" hidden></span>
+        </div>
+
+        <footer class="dialog-actions">
+          <button type="button" class="danger-text-btn" id="btn-delete-provider" hidden>删除供应商</button>
+          <span class="dialog-actions-spacer"></span>
+          <button type="button" class="secondary-btn" id="btn-cancel-provider">取消</button>
+          <button type="submit" class="primary-btn">保存供应商</button>
+        </footer>
+      </form>
+    </dialog>
+
+    <!-- 模型元数据：独立 dialog，showModal 叠在供应商 dialog 之上 -->
+    <dialog class="model-editor-dialog" id="model-editor-dialog" aria-labelledby="model-editor-title">
+      <div class="model-editor-head">
+        <div>
+          <div class="model-editor-title" id="model-editor-title">模型元数据</div>
+          <div class="model-editor-sub">用于请求限制、能力判断和模型筛选</div>
+        </div>
+        <button type="button" class="model-editor-close" id="btn-close-model-editor" aria-label="关闭">×</button>
+      </div>
+      <div class="model-editor-body">
+        <label class="model-editor-field">
+          <span>模型名称</span>
+          <input type="text" class="field-input mono" id="model-editor-id" placeholder="完整模型 ID" />
+        </label>
+        <div class="model-editor-grid">
+          <label class="model-editor-field">
+            <span>上下文容量</span>
+            <input type="text" class="field-input mono" id="model-editor-context" inputmode="numeric" placeholder="例如 128000" />
+          </label>
+          <label class="model-editor-field">
+            <span>最大输出 tokens</span>
+            <input type="text" class="field-input mono" id="model-editor-max-out" inputmode="numeric" placeholder="例如 8192" />
+          </label>
+        </div>
+        <div class="model-editor-caps" id="model-editor-caps">
+          <div class="model-editor-cap" data-cap="vision"><span>视觉输入<small>理解图片或多模态输入</small></span><button type="button" class="switch" aria-pressed="false"></button></div>
+          <div class="model-editor-cap" data-cap="reasoning"><span>思考 / 推理<small>reasoning、thinking 等推理能力</small></span><button type="button" class="switch" aria-pressed="false"></button></div>
+          <div class="model-editor-cap" data-cap="tools"><span>工具调用<small>函数调用和 WePChat 工具链</small></span><button type="button" class="switch" aria-pressed="false"></button></div>
+          <div class="model-editor-cap" data-cap="structuredOutput"><span>结构化输出<small>JSON Schema 等受约束输出</small></span><button type="button" class="switch" aria-pressed="false"></button></div>
+          <div class="model-editor-cap" data-cap="imageGeneration"><span>图像生成<small>可通过图片接口从文字生成图片</small></span><button type="button" class="switch" aria-pressed="false"></button></div>
+          <div class="model-editor-cap" data-cap="imageEdit"><span>图像编辑<small>可接收参考图片进行修改</small></span><button type="button" class="switch" aria-pressed="false"></button></div>
+        </div>
+      </div>
+      <div class="model-editor-actions">
+        <button type="button" class="model-editor-delete" id="btn-delete-model">删除模型</button>
+        <span class="model-editor-spacer"></span>
+        <button type="button" class="secondary-btn" id="btn-cancel-model-editor">取消</button>
+        <button type="button" class="primary-btn" id="btn-save-model-editor">保存</button>
+      </div>
+    </dialog>
+
+    <!-- 通用确认/输入：同样用 dialog 叠层，避免被供应商弹窗挡住 -->
+    <dialog class="app-dlg" id="app-dlg" aria-labelledby="app-dlg-title">
+      <div class="app-dlg-title" id="app-dlg-title"></div>
+      <div class="app-dlg-msg" id="app-dlg-msg"></div>
+      <input class="app-dlg-input" id="app-dlg-input" hidden />
+      <textarea class="app-dlg-input app-dlg-textarea" id="app-dlg-textarea" hidden></textarea>
+      <div class="app-dlg-btns" id="app-dlg-btns"></div>
+    </dialog>
+
+    <script src="./libs/marked.min.js"></script>
+    <script src="./libs/purify.min.js"></script>
+    <script src="./libs/highlight.min.js"></script>
+    <script src="./js/runtime.js"></script>
+    <script src="./js/ui-dialog.js"></script>
+    <script src="./js/markdown.js"></script>
+    <script src="./js/model-metadata.js"></script>
+    <script src="./js/network-stability.js"></script>
+    <script src="./js/api.js"></script>
+    <script src="./js/tool-stream.js"></script>
+    <script src="./js/tools/registry.js"></script>
+    <script src="./js/tools/system-hint.js"></script>
+    <script src="./js/tools/fs.js"></script>
+    <script src="./js/tools/web-fetch.js"></script>
+    <script src="./js/tools/run-js.js"></script>
+    <script src="./js/tools/preview.js"></script>
+    <script src="./js/tools/index.js"></script>
+    <script type="module" src="./js/app.js"></script>
+  </body>
+</html>
