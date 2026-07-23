@@ -6,63 +6,22 @@
  * Resizable left & right sidebars
  */
 
-const invoke = (cmd, args) => {
-  const core = window.__TAURI__?.core;
-  if (!core?.invoke) return Promise.reject(new Error('Tauri bridge unavailable'));
-  return core.invoke(cmd, args);
-};
-
-const state = {
-  mode: 'chat',
-  settingsPage: 'providers',
-  rightOpen: false,
-  rightTabs: [],
-  activeRightTabId: null,
-  rightView: 'home', // home | files | browser | runner
-  listCollapsed: false,
-  maximized: false,
-  settings: null,
-  meta: null,
-  providers: [],
-  sessions: [],
-  session: null,
-  lastChatSessionId: '',
-  lastImageSessionId: '',
-  generating: false,
-  abortCtl: null,
-  stopRequested: false,
-  defaultWorkspaceRoot: '',
-  resolvedWorkspaceRoot: '',
-  fileFilter: '',
-  fileTabs: [],
-  activeFileTabId: null,
-  browserTabs: [{ id: 'b1', title: '新标签页', url: '' }],
-  activeBrowserTabId: 'b1',
-  openFolders: new Set(['']),
-  lastRunJs: null,
-  filesTree: null,
-  filesSelectedPath: '',
-};
-
-function $(sel, root = document) {
-  return root.querySelector(sel);
-}
-
-function $all(sel, root = document) {
-  return [...root.querySelectorAll(sel)];
-}
-
-function uid(prefix) {
-  return `${prefix}_${Math.random().toString(36).slice(2, 9)}`;
-}
-
-function getAppWindow() {
-  try {
-    return window.__TAURI__?.window?.getCurrentWindow?.() || null;
-  } catch {
-    return null;
-  }
-}
+import {
+  $,
+  $all,
+  TOOL_PERM_KEYS,
+  TOOL_PERM_LABELS,
+  cloneJson,
+  defaultSettings,
+  invoke,
+  normalizeToolMode,
+  normalizeToolPermissions,
+  nowIso,
+  state,
+  uid,
+} from './app-core.js';
+import { bindAppearanceEvents, renderThemeUI } from './appearance.js';
+import { bindWindowControls } from './window-controls.js';
 
 /* ---------- App shell ---------- */
 
@@ -171,86 +130,12 @@ function setMaximizedUi(maximized) {
   if (btn) btn.title = maximized ? '还原' : '最大化';
 }
 
-const TOOL_PERM_KEYS = ['run_js', 'files', 'delete_files', 'web_fetch', 'image_go'];
-const TOOL_PERM_LABELS = {
-  run_js: 'JavaScript 沙盒',
-  web_fetch: '网页访问',
-  image_go: '图片生成',
-  delete_files: '删除工作区文件/文件夹',
-  files: '工作区文件',
-};
-
-function defaultToolPermissions() {
-  return {
-    run_js: 'ask',
-    files: 'ask',
-    delete_files: 'ask',
-    web_fetch: 'ask',
-    image_go: 'ask',
-  };
-}
-
-function normalizeToolMode(mode) {
-  return mode === 'always' || mode === 'never' ? mode : 'ask';
-}
-
-function normalizeToolPermissions(raw) {
-  const base = defaultToolPermissions();
-  const src = raw && typeof raw === 'object' ? raw : {};
-  const out = {};
-  for (const key of TOOL_PERM_KEYS) {
-    let mode = normalizeToolMode(src[key]);
-    if (key === 'delete_files' && mode === 'always') mode = 'ask';
-    out[key] = mode;
-  }
-  return out;
-}
-
-function defaultSettings() {
-  const img = window.ImageMode?.defaultImageSettings?.() || {
-    imageProviderId: '',
-    imageModel: '',
-    imageEditModel: '',
-    imageDefaultSize: 'auto',
-    imageQuality: 'auto',
-    imageBackground: 'auto',
-    imageDefaultCount: 1,
-    imageOutputFormat: 'png',
-    imageStylePresetId: '',
-    imageStylePresets: [],
-    imageApiMode: 'images',
-    imageEndpointPath: '',
-    imageEditEndpointPath: '',
-  };
-  return {
-    workspaceRoot: null,
-    theme: 'light',
-    providers: [],
-    systemPrompt: '',
-    temperature: null,
-    maxTokens: null,
-    agentEnabled: true,
-    maxToolRounds: 8,
-    maxToolCalls: 24,
-    toolPermissions: defaultToolPermissions(),
-    ...img,
-  };
-}
-
-function nowIso() {
-  return new Date().toISOString();
-}
-
 /* ---------- 供应商草稿（对话框内编辑） ---------- */
 let providerDraft = null;
 let providerIsNew = false;
 let modelTests = {};
 let modelTestMessages = {};
 let modelEditor = null;
-
-function cloneJson(value) {
-  return value == null ? value : JSON.parse(JSON.stringify(value));
-}
 
 function normalizeProvider(raw = {}) {
   const api = ['openai-chat', 'openai-responses', 'anthropic', 'openai-completions'].includes(raw.api)
@@ -320,6 +205,74 @@ function modelSummary(provider, id) {
   return `${ctx} 上下文 · ${caps}`;
 }
 
+function ensureSessionContext(session, provider, model) {
+  if (!session || !provider || !model) return null;
+  if (!session.contextWindow || !session.contextModel) {
+    const meta = modelMetaOf(provider, model);
+    session.contextProviderId = provider.id || '';
+    session.contextModel = model;
+    session.contextWindow = Number(meta.contextWindow || 128000);
+    session.contextVision = meta.capabilities?.vision !== false;
+  }
+  return {
+    contextWindow: Number(session.contextWindow || 128000),
+    contextModel: session.contextModel || model,
+    contextVision: session.contextVision !== false,
+  };
+}
+
+function estimateContextUsage(session, inputText = '') {
+  if (!session?.model || !window.MODEL_META) return { used: 0, limit: 0, ratio: 0 };
+  const provider = state.providers.find((item) => item.id === (session.contextProviderId || session.providerId));
+  const context = ensureSessionContext(session, provider, session.model);
+  const estimate = MODEL_META.estimateTokens || ((text) => Math.ceil(String(text || '').length / 4));
+  let used = estimate(state.settings?.systemPrompt || '');
+  for (const message of session.messages || []) {
+    used += estimate(message.content || '');
+    if (message.reasoning) used += estimate(message.reasoning);
+    const attachments = message.attachments || message.referenceFiles || [];
+    if (Array.isArray(attachments)) used += attachments.length * 256;
+  }
+  used += estimate(inputText || '');
+  const limit = Math.max(1, Number(context?.contextWindow || 128000));
+  return { used, limit, ratio: Math.min(1, used / limit), context };
+}
+
+function renderTokenMeter() {
+  const meter = $('#token-meter');
+  if (!meter) return;
+  const visible = state.mode === 'chat' && state.session?.mode === 'chat';
+  meter.hidden = !visible;
+  if (!visible) return;
+  if (!state.session?.model) {
+    meter.style.setProperty('--token-progress', '0');
+    meter.classList.remove('is-warning', 'is-danger');
+    meter.title = '请选择对话模型';
+    meter.setAttribute('aria-label', '请选择对话模型');
+    const emptyDetail = $('#token-meter-detail');
+    if (emptyDetail) emptyDetail.textContent = '请选择对话模型';
+    return;
+  }
+  const usage = estimateContextUsage(state.session, $('#composer-input')?.value || '');
+  const percent = Math.round(usage.ratio * 100);
+  meter.style.setProperty('--token-progress', String(percent));
+  meter.classList.toggle('is-warning', percent >= 85);
+  meter.classList.toggle('is-danger', percent >= 95);
+  const label = `${MODEL_META.fmtTokens(usage.used)} / ${MODEL_META.fmtTokens(usage.limit)} tokens · ${percent}%`;
+  meter.title = label;
+  meter.setAttribute('aria-label', label);
+  const detail = $('#token-meter-detail');
+  if (detail) detail.textContent = `${label}（${usage.context?.contextModel || state.session.model}）`;
+  const level = percent >= 95 ? 'danger' : (percent >= 85 ? 'warning' : 'normal');
+  const previous = state.contextWarnings.get(state.session.id) || 'normal';
+  if (level !== previous && (level === 'warning' || level === 'danger')) {
+    UIDialog.toast(level === 'danger'
+      ? '上下文即将达到上限，请开启新会话继续。'
+      : '上下文已使用 85%，建议开启新会话以避免达到上限。', 4200);
+  }
+  state.contextWarnings.set(state.session.id, level);
+}
+
 function readProviderBasicsIntoDraft() {
   if (!providerDraft) return;
   providerDraft.name = ($('#provider-name')?.value || '').trim() || '未命名供应商';
@@ -374,6 +327,10 @@ function createSession() {
     mode: 'chat',
     providerId: '',
     model: '',
+    contextModel: '',
+    contextProviderId: '',
+    contextWindow: 0,
+    contextVision: true,
     messages: [],
     workspacePath: '',
     pinned: false,
@@ -415,6 +372,7 @@ function normalizeMessage(raw) {
   } else if (m.role === 'user') {
     m.parentAssistantId = m.parentAssistantId || '';
     m.parentVariantId = m.parentVariantId || '';
+    m.attachments = Array.isArray(m.attachments) ? m.attachments : [];
     m.referenceFiles = Array.isArray(m.referenceFiles) ? m.referenceFiles : [];
   }
   return m;
@@ -432,6 +390,10 @@ function normalizeSession(raw) {
     messages: Array.isArray(session.messages) ? session.messages.map(normalizeMessage) : [],
     workspacePath: String(session.workspacePath || ''),
     pinned: !!session.pinned,
+    contextModel: String(session.contextModel || ''),
+    contextProviderId: String(session.contextProviderId || ''),
+    contextWindow: Number(session.contextWindow || 0),
+    contextVision: session.contextVision !== false,
     imageCanvas: session.imageCanvas && typeof session.imageCanvas === 'object' ? session.imageCanvas : null,
   };
   let previousAssistant = null;
@@ -522,74 +484,10 @@ function canRegenerateMessage(index) {
   return !later && count < 6;
 }
 
-async function confirmStopIfGenerating(actionText) {
-  if (!state.generating) return true;
-  const ok = await UIDialog.confirm(
-    `当前会话正在生成回复。${actionText || '继续操作'}会停止当前任务。`,
-    '任务正在运行',
-    { okText: '停止并继续' }
-  );
-  if (!ok) return false;
-  state.stopRequested = true;
-  state.abortCtl?.abort();
-  return true;
-}
-
 function activeSessionProvider() {
   if (state.session?.mode !== 'chat' || !state.session.model) return null;
   const provider = currentProvider();
   return provider?.models?.includes(state.session.model) ? provider : null;
-}
-
-async function bindWindowControls() {
-  const win = getAppWindow();
-  $('#btn-toggle-list')?.addEventListener('click', (e) => {
-    e.stopPropagation();
-    setListCollapsed(!state.listCollapsed);
-  });
-
-  $('#win-min')?.addEventListener('click', async (e) => {
-    e.stopPropagation();
-    try {
-      await win?.minimize();
-    } catch (err) {
-      console.warn(err);
-    }
-  });
-
-  $('#win-max')?.addEventListener('click', async (e) => {
-    e.stopPropagation();
-    try {
-      await win?.toggleMaximize();
-      const isMax = await win?.isMaximized();
-      setMaximizedUi(Boolean(isMax));
-    } catch (err) {
-      console.warn(err);
-    }
-  });
-
-  $('#win-close')?.addEventListener('click', async (e) => {
-    e.stopPropagation();
-    try {
-      await win?.close();
-    } catch (err) {
-      console.warn(err);
-    }
-  });
-
-  // Double-click titlebar drag area to maximize
-  $all('[data-tauri-drag-region]').forEach((el) => {
-    el.addEventListener('dblclick', async (e) => {
-      if (e.target.closest('button')) return;
-      try {
-        await win?.toggleMaximize();
-        const isMax = await win?.isMaximized();
-        setMaximizedUi(Boolean(isMax));
-      } catch (err) {
-        console.warn(err);
-      }
-    });
-  });
 }
 
 async function persistSettings() {
@@ -1132,6 +1030,10 @@ function sessionSummary(session) {
     messages: session.messages || [],
     workspacePath: session.workspacePath || '',
     pinned: !!session.pinned,
+    contextModel: session.contextModel || '',
+    contextProviderId: session.contextProviderId || '',
+    contextWindow: session.contextWindow || 0,
+    contextVision: session.contextVision !== false,
   };
 }
 
@@ -1148,6 +1050,18 @@ function upsertSessionIndex(session) {
 
 function closeSessionMenus() {
   $all('.session-menu').forEach((el) => { el.hidden = true; });
+}
+
+function syncActiveTaskState() {
+  const task = state.session?.id ? state.backgroundTasks.get(state.session.id) : null;
+  state.generating = task?.status === 'running';
+  state.abortCtl = state.generating ? task.abortCtl : null;
+  state.stopRequested = state.generating ? !!task.stopRequested : false;
+}
+
+function liveSessionById(id) {
+  if (state.session?.id === id) return state.session;
+  return state.backgroundTasks.get(id)?.session || null;
 }
 
 function renderSessions() {
@@ -1174,6 +1088,13 @@ function renderSessions() {
       ? `${sessionTitle(session)}\n${session.workspacePath}`
       : sessionTitle(session);
     button.addEventListener('click', () => openSession(session.id));
+
+    const task = state.backgroundTasks.get(session.id);
+    const status = document.createElement('span');
+    status.className = 'session-status';
+    if (task?.status === 'running') status.classList.add('is-running');
+    else if (task?.unread) status.classList.add('is-unread');
+    status.title = task?.status === 'running' ? '后台生成中' : (task?.unread ? '有新的回复' : '');
 
     const more = document.createElement('button');
     more.type = 'button';
@@ -1211,46 +1132,49 @@ function renderSessions() {
       menu.appendChild(btn);
     });
 
-    row.append(button, more);
+    row.append(status, button, more);
     item.append(row, menu);
     list.appendChild(item);
   });
   renderWorkspaceSessionPath();
 }
 
-async function persistSession() {
-  if (!state.session) return;
-  state.session.updatedAt = nowIso();
-  if (hasUntitledSessionTitle(state.session.title)) {
-    const firstUser = state.session.messages?.find((message) => message.role === 'user');
+async function persistSession(sessionArg = null) {
+  const target = sessionArg || state.session;
+  if (!target?.id || state.deletedSessionIds.has(target.id)) return;
+  target.updatedAt = nowIso();
+  if (hasUntitledSessionTitle(target.title)) {
+    const firstUser = target.messages?.find((message) => message.role === 'user');
     const firstLine = firstUser?.content?.split(/\r?\n/)[0]?.replace(/\s+/g, ' ').trim();
-    if (firstLine) state.session.title = firstLine.slice(0, 48);
+    if (firstLine) target.title = firstLine.slice(0, 48);
   }
-  upsertSessionIndex(state.session);
+  upsertSessionIndex(target);
   renderSessions();
   if (window.ImageMode) window.ImageMode.renderImageSessionList();
-  const diskSession = cloneJson(state.session);
+  const diskSession = cloneJson(target);
   (diskSession.messages || []).forEach((message) => {
     if (!Array.isArray(message.images)) return;
     message.images = message.images.map((image) => ({
-      path: image.path || '',
-      mime: image.mime || 'image/png',
-      prompt: image.prompt || '',
-      revisedPrompt: image.revisedPrompt || '',
-      imageMeta: image.imageMeta,
+      path: image.path || '', mime: image.mime || 'image/png', prompt: image.prompt || '',
+      revisedPrompt: image.revisedPrompt || '', imageMeta: image.imageMeta,
     }));
   });
-  try {
-    const saved = await invoke('save_session', { session: diskSession });
-    if (saved && typeof saved === 'object') {
-      state.session.workspacePath = saved.workspacePath || state.session.workspacePath || '';
-      upsertSessionIndex(state.session);
+  const previous = state.sessionSaveChains.get(target.id) || Promise.resolve();
+  const current = previous.catch(() => {}).then(async () => {
+    try {
+      const saved = await invoke('save_session', { session: diskSession });
+      if (saved && typeof saved === 'object') {
+        target.workspacePath = saved.workspacePath || target.workspacePath || '';
+        upsertSessionIndex(target);
+      }
+    } catch (err) {
+      console.warn('Unable to save session:', err);
+      if (state.session?.id === target.id) UIDialog.toast('会话保存失败：' + (err?.message || err), 3200);
     }
-  } catch (err) {
-    console.warn('Unable to save session:', err);
-    UIDialog.toast('会话保存失败：' + (err?.message || err), 3200);
-  }
-  renderWorkspaceSessionPath();
+  });
+  state.sessionSaveChains.set(target.id, current);
+  await current;
+  if (state.session?.id === target.id) renderWorkspaceSessionPath();
 }
 
 async function hydrateSessionImages(session) {
@@ -1275,23 +1199,32 @@ async function hydrateSessionImages(session) {
 async function openSession(id) {
   if (!id) return;
   if (state.session?.id === id) return;
-  if (!(await confirmStopIfGenerating('切换会话'))) return;
+  const navigationSeq = ++state.sessionNavigationSeq;
   if (state.session?.id) {
     if (state.session.mode === 'image') state.lastImageSessionId = state.session.id;
     else state.lastChatSessionId = state.session.id;
   }
-  try {
+  const task = state.backgroundTasks.get(id);
+  let nextSession = null;
+  if (task?.session) {
+    nextSession = task.session;
+  } else try {
     const loaded = await invoke('load_session', { id });
-    state.session = normalizeSession(loaded);
+    nextSession = normalizeSession(loaded);
   } catch (err) {
     const item = state.sessions.find((session) => session.id === id);
     if (!item) {
       UIDialog.toast('会话不存在');
       return;
     }
-    state.session = normalizeSession(item);
+    nextSession = normalizeSession(item);
   }
+  if (navigationSeq !== state.sessionNavigationSeq || !nextSession) return;
+  state.session = nextSession;
+  if (task) task.unread = false;
+  syncActiveTaskState();
   await hydrateSessionImages(state.session);
+  if (navigationSeq !== state.sessionNavigationSeq) return;
   previewServerInfo = null;
   window.PreviewStream?.clearAll?.();
   renderSessions();
@@ -1306,13 +1239,15 @@ async function openSession(id) {
 }
 
 async function createNewChat() {
-  if (!(await confirmStopIfGenerating('新建会话'))) return;
-  if (state.session?.id) await persistSession();
+  const navigationSeq = ++state.sessionNavigationSeq;
+  if (state.session?.id) persistSession(state.session).catch((err) => console.warn('save previous session', err));
   previewServerInfo = null;
   window.PreviewStream?.clearAll?.();
   state.session = createSession();
+  syncActiveTaskState();
   state.lastChatSessionId = state.session.id;
   await persistSession();
+  if (navigationSeq !== state.sessionNavigationSeq) return;
   renderSessions();
   renderModelSelect();
   renderComposerState();
@@ -1322,14 +1257,15 @@ async function createNewChat() {
 }
 
 async function renameSession(id) {
-  const item = state.sessions.find((s) => s.id === id) || (state.session?.id === id ? state.session : null);
+  const item = liveSessionById(id) || state.sessions.find((s) => s.id === id);
   if (!item) return;
   const name = await UIDialog.prompt('重命名会话', sessionTitle(item), '会话名称');
   if (name == null) return;
   const title = String(name).replace(/\s+/g, ' ').trim().slice(0, 48) || '新会话';
-  if (state.session?.id === id) {
-    state.session.title = title;
-    await persistSession();
+  const live = liveSessionById(id);
+  if (live) {
+    live.title = title;
+    await persistSession(live);
   } else {
     try {
       const loaded = normalizeSession(await invoke('load_session', { id }));
@@ -1353,8 +1289,10 @@ async function togglePinSession(id) {
     upsertSessionIndex(sess);
   };
   try {
-    if (state.session?.id === id) {
-      await apply(state.session);
+    const live = liveSessionById(id);
+    if (live) {
+      live.pinned = !live.pinned;
+      await persistSession(live);
     } else {
       const loaded = normalizeSession(await invoke('load_session', { id }));
       await apply(loaded);
@@ -1366,14 +1304,15 @@ async function togglePinSession(id) {
 }
 
 async function copySession(id) {
-  if (!(await confirmStopIfGenerating('复制会话'))) return;
   try {
-    if (state.session?.id === id) await persistSession();
+    const live = liveSessionById(id);
+    if (live) await persistSession(live);
     const copied = normalizeSession(await invoke('copy_session', { id }));
     copied.createdAt = nowIso();
     copied.updatedAt = nowIso();
     const saved = await invoke('save_session', { session: copied });
     state.session = normalizeSession(saved || copied);
+    syncActiveTaskState();
     upsertSessionIndex(state.session);
     renderSessions();
     renderModelSelect();
@@ -1395,12 +1334,20 @@ async function deleteSessionById(id) {
     { danger: true, okText: '删除' }
   );
   if (!ok) return;
-  if (state.session?.id === id) {
-    if (!(await confirmStopIfGenerating('删除当前会话'))) return;
+  state.deletedSessionIds.add(id);
+  const task = state.backgroundTasks.get(id);
+  if (task?.status === 'running') {
+    task.stopRequested = true;
+    task.abortCtl?.abort();
+    state.backgroundTasks.delete(id);
   }
   try {
+    await (state.sessionSaveChains.get(id) || Promise.resolve()).catch(() => {});
     await invoke('delete_session', { id });
+    state.sessionSaveChains.delete(id);
+    state.contextWarnings.delete(id);
   } catch (err) {
+    state.deletedSessionIds.delete(id);
     UIDialog.toast(err?.message || '删除失败', 3200);
     return;
   }
@@ -1417,6 +1364,7 @@ async function deleteSessionById(id) {
       state.session = createSession();
       await persistSession();
     }
+    syncActiveTaskState();
   }
   renderSessions();
   renderModelSelect();
@@ -1452,13 +1400,14 @@ function renderModelSelect() {
     });
     if (group.childElementCount) select.appendChild(group);
   });
-  select.disabled = state.providers.length === 0;
+  select.disabled = state.providers.length === 0 || state.generating;
   const provider = currentProvider();
   if (providerLabel) {
     if (!provider) providerLabel.textContent = '尚未配置供应商';
     else if (selectedModel) providerLabel.textContent = `${provider.name} · ${modelSummary(provider, selectedModel)}`;
     else providerLabel.textContent = provider.name;
   }
+  renderTokenMeter();
 }
 
 function renderComposerState() {
@@ -1485,6 +1434,7 @@ function renderComposerState() {
   }
   const banner = $('#branch-blocked');
   if (banner) banner.hidden = !blocked;
+  renderTokenMeter();
 }
 
 function makeMsgAction(label, title, onClick, disabled) {
@@ -1906,18 +1856,21 @@ async function authorizeToolCall(t) {
   return ok ? '' : '错误：用户拒绝了工具调用：' + label;
 }
 
-function buildToolContext(assistantMsg) {
+function buildToolContext(assistantMsg, session = state.session) {
   // After authorizeToolCall gates group-level ask/never, pass web_fetch as
   // always (unless never) so GET is not double-confirmed — same as Android.
   const webFetchPerm = toolPermission('web_fetch');
   return {
-    sessionId: state.session?.id,
-    session: state.session,
+    sessionId: session?.id,
+    session,
     webFetchMode: webFetchPerm === 'never' ? 'never' : 'always',
     previousResults: [],
     confirm: (msg) => UIDialog.confirm(String(msg), '工具授权'),
-    openPreview: (payload) => openPreview(payload),
+    openPreview: (payload) => {
+      if (state.session?.id === session?.id) openPreview(payload);
+    },
     onWorkspaceChanged: () => {
+      if (state.session?.id !== session?.id) return;
       if (state.rightOpen) refreshFilesTree();
       refreshBrowserIfOpen();
     },
@@ -1931,10 +1884,11 @@ function buildToolContext(assistantMsg) {
         revisedPrompt: image.revisedPrompt || '',
         imageMeta: image.imageMeta,
       })));
-      renderChat();
+       if (state.session?.id === session?.id) renderChat();
     },
     onRunJs: (info) => {
       state.lastRunJs = info;
+      if (state.session?.id !== session?.id) return;
       if (state.rightOpen) {
         const tab = state.rightTabs.find((t) => t.id === state.activeRightTabId);
         if (tab?.kind === 'runner') renderRightContent();
@@ -1956,15 +1910,41 @@ function settingsForRequest(tools) {
 }
 
 async function generateAssistant(opts = {}) {
-  const provider = activeSessionProvider();
-  const model = state.session?.model || '';
-  if (!provider || !model || !state.session) return;
+  const session = opts.session || state.session;
+  const provider = state.providers.find((item) => item.id === session?.providerId) || null;
+  const model = session?.model || '';
+  if (!provider || !model || !session || state.deletedSessionIds.has(session.id)) return;
+  const existingTask = state.backgroundTasks.get(session.id);
+  if (existingTask?.status === 'running') return;
+  ensureSessionContext(session, provider, model);
+  const task = {
+    sessionId: session.id,
+    session,
+    providerId: provider.id,
+    model,
+    abortCtl: new AbortController(),
+    stopRequested: false,
+    status: 'running',
+    unread: false,
+    startedAt: nowIso(),
+  };
+  state.backgroundTasks.set(session.id, task);
+  const refresh = () => {
+    renderSessions();
+    if (state.session?.id === session.id) {
+      renderChat();
+      renderComposerState();
+    }
+  };
 
   const targetIndex = Number.isInteger(opts.targetIndex) ? opts.targetIndex : -1;
   let assistantMsg;
   if (targetIndex >= 0) {
-    assistantMsg = state.session.messages[targetIndex];
-    if (!assistantMsg || assistantMsg.role !== 'assistant') return;
+    assistantMsg = session.messages[targetIndex];
+    if (!assistantMsg || assistantMsg.role !== 'assistant') {
+      state.backgroundTasks.delete(session.id);
+      return;
+    }
     const variants = ensureAssistantVariants(assistantMsg);
     const nextVariant = snapshotAssistantVariant({
       content: '', reasoning: '', toolCalls: [], error: '', usage: null, model, createdAt: nowIso(), status: 'streaming',
@@ -1987,11 +1967,11 @@ async function generateAssistant(opts = {}) {
       createdAt: nowIso(),
     });
     assistantMsg.variantBaseId = assistantMsg.id + ':v1';
-    state.session.messages.push(assistantMsg);
+    session.messages.push(assistantMsg);
   }
 
-  const assistantIndex = state.session.messages.indexOf(assistantMsg);
-  const workingMessages = state.session.messages
+  const assistantIndex = session.messages.indexOf(assistantMsg);
+  const workingMessages = session.messages
     .slice(0, assistantIndex)
     .filter((m) => m.role === 'user' || m.role === 'assistant')
     .map((m) => {
@@ -2010,16 +1990,17 @@ async function generateAssistant(opts = {}) {
   const maxToolCalls = U.clamp(parseInt(state.settings?.maxToolCalls || 24, 10), 1, 128);
   let totalToolCalls = 0;
   const previousToolResults = [];
-  const toolCtx = buildToolContext(assistantMsg);
+  const toolCtx = buildToolContext(assistantMsg, session);
 
-  state.session.providerId = provider.id;
-  state.session.model = model;
-  state.generating = true;
-  state.stopRequested = false;
-  state.abortCtl = new AbortController();
-  renderChat();
-  renderComposerState();
-  await persistSession();
+  session.providerId = provider.id;
+  session.model = model;
+  if (state.session?.id === session.id) {
+    state.generating = true;
+    state.stopRequested = false;
+    state.abortCtl = task.abortCtl;
+  }
+  refresh();
+  if (state.backgroundTasks.get(session.id) === task) await persistSession(session);
 
   const TS = window.ToolStream || {};
 
@@ -2031,7 +2012,7 @@ async function generateAssistant(opts = {}) {
         messages: workingMessages,
         tools,
         settings: reqSettings,
-        signal: state.abortCtl.signal,
+        signal: task.abortCtl.signal,
         requestKey: NetStability.idempotencyKey('chat-' + assistantMsg.id + '-' + step),
         onUpdate(stream) {
           assistantMsg.content = stream?.content || '';
@@ -2040,11 +2021,16 @@ async function generateAssistant(opts = {}) {
           if (stream?.streamTools?.length && TS.syncStreamToolCalls) {
             TS.syncStreamToolCalls(assistantMsg, stream.streamTools, step);
             // write_file 参数流式 → 预览 staging（不落盘）
-            window.PreviewStream?.syncFromTools?.(stream.streamTools);
+            if (state.session?.id === session.id) {
+              window.PreviewStream?.syncFromTools?.(stream.streamTools);
+            }
           }
           assistantMsg.status = 'streaming';
           if (assistantMsg.variants?.length) syncActiveAssistantVariant(assistantMsg);
-          renderChat();
+          if (state.session?.id === session.id) {
+            renderChat();
+            renderTokenMeter();
+          }
         },
       });
 
@@ -2052,7 +2038,7 @@ async function generateAssistant(opts = {}) {
       assistantMsg.reasoning = result?.reasoning || assistantMsg.reasoning;
       assistantMsg.usage = result?.usage || assistantMsg.usage || null;
 
-      if (state.stopRequested) {
+      if (task.stopRequested) {
         TS.cancelStreamToolCalls?.(assistantMsg, step);
         break;
       }
@@ -2095,7 +2081,9 @@ async function generateAssistant(opts = {}) {
         });
 
       // 参数完整：立刻刷一帧完整预览（绕过 throttle）
-      window.PreviewStream?.syncFromTools?.(rawCalls, { immediate: true, forceComplete: true });
+      if (state.session?.id === session.id) {
+        window.PreviewStream?.syncFromTools?.(rawCalls, { immediate: true, forceComplete: true });
+      }
 
       workingMessages.push({
         role: 'assistant',
@@ -2107,8 +2095,8 @@ async function generateAssistant(opts = {}) {
         })),
       });
       if (assistantMsg.variants?.length) syncActiveAssistantVariant(assistantMsg);
-      renderChat();
-      await persistSession();
+      if (state.session?.id === session.id) renderChat();
+      if (state.backgroundTasks.get(session.id) === task) await persistSession(session);
 
       for (let ti = 0; ti < displayCalls.length; ti++) {
         const t = displayCalls[ti];
@@ -2120,18 +2108,18 @@ async function generateAssistant(opts = {}) {
         // 完成后默认收起
         t._open = false;
         t._userOpen = false;
-        if (t.name === 'write_file') {
+        if (t.name === 'write_file' && state.session?.id === session.id) {
           settleWriteFilePreview(t, t.status === 'done');
         }
         previousToolResults.push({ name: t.name, result: out });
         workingMessages.push({ role: 'tool', toolCallId: t.id, content: out });
         if (assistantMsg.variants?.length) syncActiveAssistantVariant(assistantMsg);
-        renderChat();
-        await persistSession();
+        if (state.session?.id === session.id) renderChat();
+        if (state.backgroundTasks.get(session.id) === task) await persistSession(session);
       }
     }
 
-    if (!assistantMsg.content && !(assistantMsg.toolCalls || []).length && state.stopRequested) {
+    if (!assistantMsg.content && !(assistantMsg.toolCalls || []).length && task.stopRequested) {
       assistantMsg.content = '已停止。';
     }
     assistantMsg.status = 'done';
@@ -2141,7 +2129,7 @@ async function generateAssistant(opts = {}) {
     }
   } catch (err) {
     assistantMsg.status = 'error';
-    if (state.stopRequested || err?.code === 'NET-ABORTED') {
+    if (task.stopRequested || err?.code === 'NET-ABORTED') {
       if (!assistantMsg.content && !(assistantMsg.toolCalls || []).length) assistantMsg.content = '已停止。';
       assistantMsg.status = 'done';
       assistantMsg.error = '';
@@ -2150,22 +2138,30 @@ async function generateAssistant(opts = {}) {
     }
     if (assistantMsg.variants?.length) syncActiveAssistantVariant(assistantMsg);
   } finally {
-    state.generating = false;
-    state.abortCtl = null;
-    state.stopRequested = false;
-    // 结束本轮后去掉「流式」徽标；正式落盘的路径已由 settleWriteFilePreview 清理
-    state.rightTabs.forEach((tab) => {
-      if (tab.kind === 'browser' && tab.streaming) tab.streaming = false;
-    });
-    renderRightTabs();
-    renderChat();
-    renderComposerState();
-    await persistSession();
+    const registered = state.backgroundTasks.get(session.id) === task;
+    task.status = task.stopRequested ? 'stopped' : (assistantMsg.status === 'error' ? 'error' : 'done');
+    task.unread = registered && state.session?.id !== session.id && task.status !== 'stopped';
+    if (state.session?.id === session.id) {
+      state.generating = false;
+      state.abortCtl = null;
+      state.stopRequested = false;
+      // 结束本轮后去掉「流式」徽标；正式落盘的路径已由 settleWriteFilePreview 清理
+      state.rightTabs.forEach((tab) => {
+        if (tab.kind === 'browser' && tab.streaming) tab.streaming = false;
+      });
+      renderRightTabs();
+      renderChat();
+      renderComposerState();
+    }
+    renderSessions();
+    if (registered) await persistSession(session);
   }
 }
 
 async function sendMessage() {
   if (state.generating) {
+    const task = state.session?.id ? state.backgroundTasks.get(state.session.id) : null;
+    if (task) task.stopRequested = true;
     state.stopRequested = true;
     state.abortCtl?.abort();
     return;
@@ -2176,11 +2172,12 @@ async function sendMessage() {
   }
   const input = $('#composer-input');
   const content = input?.value.trim() || '';
+  const session = state.session;
   const provider = activeSessionProvider();
-  const model = state.session?.model || '';
-  if (!content || !provider || !model || !state.session) return;
+  const model = session?.model || '';
+  if (!content || !provider || !model || !session) return;
 
-  const messages = state.session.messages || [];
+  const messages = session.messages || [];
   let parentAssistant = null;
   for (let i = messages.length - 1; i >= 0; i--) {
     if (messages[i].role === 'assistant') {
@@ -2196,18 +2193,21 @@ async function sendMessage() {
     parentAssistantId: parentAssistant?.id || '',
     parentVariantId: parentAssistant ? activeAssistantVariantId(parentAssistant) : '',
   });
-  state.session.providerId = provider.id;
-  state.session.model = model;
-  if (hasUntitledSessionTitle(state.session.title)) {
-    state.session.title = content.split(/\r?\n/)[0].replace(/\s+/g, ' ').trim().slice(0, 48);
+  session.providerId = provider.id;
+  session.model = model;
+  ensureSessionContext(session, provider, model);
+  if (hasUntitledSessionTitle(session.title)) {
+    session.title = content.split(/\r?\n/)[0].replace(/\s+/g, ' ').trim().slice(0, 48);
   }
-  state.session.messages.push(user);
+  session.messages.push(user);
   input.value = '';
   renderSessions();
-  renderChat();
-  renderComposerState();
-  await persistSession();
-  await generateAssistant();
+  if (state.session?.id === session.id) {
+    renderChat();
+    renderComposerState();
+  }
+  await persistSession(session);
+  await generateAssistant({ session });
 }
 
 /* ---------- Global events and backend bootstrap ---------- */
@@ -2220,6 +2220,8 @@ function bindEvents() {
   $all('.settings-nav-item').forEach((btn) => {
     btn.addEventListener('click', () => setSettingsPage(btn.dataset.settings));
   });
+
+  bindAppearanceEvents({ persistSettings });
 
   $('#btn-new-chat')?.addEventListener('click', () => createNewChat());
   $('#btn-new-chat-top')?.addEventListener('click', () => createNewChat());
@@ -2295,8 +2297,36 @@ function bindEvents() {
     const [providerId, model] = event.target.value.split('\n');
     if (!providerId || !model) return;
     if (state.session) {
+      const changed = state.session.model && (state.session.providerId !== providerId || state.session.model !== model);
+      if (changed && state.session.messages?.length && !state.session.contextModel) {
+        ensureSessionContext(
+          state.session,
+          state.providers.find((item) => item.id === state.session.providerId),
+          state.session.model
+        );
+      }
+      const hasImages = (state.session.messages || []).some((message) => {
+        const attachments = message.attachments || message.referenceFiles || [];
+        return (Array.isArray(attachments) && attachments.length > 0)
+          || (Array.isArray(message.images) && message.images.length > 0);
+      });
+      if (changed && state.session.messages?.length) {
+        UIDialog.toast('当前会话中途切换模型可能导致上下文风格和工具能力不一致', 4200);
+      }
+      const targetMeta = modelMetaOf(state.providers.find((item) => item.id === providerId), model);
+      if (changed && hasImages && targetMeta.capabilities?.vision === false) {
+        UIDialog.toast('切换的目标模型无视觉能力，上下文内的图片将会被忽略。', 4500);
+      }
       state.session.providerId = providerId;
       state.session.model = model;
+      if (!state.session.messages.length) {
+        state.session.contextModel = '';
+        state.session.contextProviderId = '';
+        state.session.contextWindow = 0;
+      }
+      if (!state.session.contextModel) {
+        ensureSessionContext(state.session, state.providers.find((item) => item.id === providerId), model);
+      }
     }
     await persistSession();
     renderModelSelect();
@@ -2367,6 +2397,7 @@ function renderBackendState() {
   const calls = $('#agent-max-calls');
   if (calls) calls.value = String(settings.maxToolCalls ?? 24);
   renderToolPermissions();
+  renderThemeUI();
   renderProviders();
   renderSessions();
   renderModelSelect();
@@ -3374,19 +3405,23 @@ async function boot() {
         window.ImageMode.renderImageSessionList();
       },
       loadSession: async (id) => {
+        const navigationSeq = ++state.sessionNavigationSeq;
         if (state.session?.id) {
           if (state.session.mode === 'image') state.lastImageSessionId = state.session.id;
           else state.lastChatSessionId = state.session.id;
         }
         try {
           const loaded = await invoke('load_session', { id });
+          if (navigationSeq !== state.sessionNavigationSeq) return;
           state.session = normalizeSession(loaded);
         } catch {
+          if (navigationSeq !== state.sessionNavigationSeq) return;
           const item = state.sessions.find((s) => s.id === id);
           if (item) state.session = normalizeSession(item);
         }
         if (state.session?.mode === 'image') state.lastImageSessionId = state.session.id;
         else if (state.session?.id) state.lastChatSessionId = state.session.id;
+        syncActiveTaskState();
         upsertSessionIndex(state.session);
       },
       toast: (msg, kind) => UIDialog.toast(msg, kind === 'err' ? 4000 : 2200),
@@ -3397,7 +3432,7 @@ async function boot() {
     });
     window.ImageMode.bindUi();
   }
-  await bindWindowControls();
+  await bindWindowControls({ setListCollapsed, setMaximizedUi });
   setMode('chat');
   setSettingsPage('providers');
   setListCollapsed(false);

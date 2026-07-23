@@ -38,9 +38,12 @@ pub struct AppSettings {
     /// Custom root for session workspaces. `None` / empty → use platform default.
     #[serde(default)]
     pub workspace_root: Option<String>,
-    /// UI theme: "light" | "dark" | "system"
+    /// UI theme: "light" | "dark" | "system" (or "auto" for prefers-color-scheme)
     #[serde(default = "default_theme")]
     pub theme: String,
+    /// Theme style preset: "graphite" | "warm-paper" | "nebula"
+    #[serde(default = "default_theme_style")]
+    pub theme_style: String,
     /// Provider definitions. API keys are currently stored with the app settings.
     #[serde(default)]
     pub providers: Vec<serde_json::Value>,
@@ -103,6 +106,10 @@ fn default_theme() -> String {
     "light".into()
 }
 
+fn default_theme_style() -> String {
+    "graphite".into()
+}
+
 fn default_true() -> bool {
     true
 }
@@ -144,6 +151,7 @@ impl Default for AppSettings {
         Self {
             workspace_root: None,
             theme: default_theme(),
+            theme_style: default_theme_style(),
             providers: Vec::new(),
             active_provider_id: String::new(),
             active_model: String::new(),

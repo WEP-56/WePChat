@@ -177,6 +177,10 @@
               </label>
             </div>
             <div class="main-top-right">
+              <button type="button" class="token-meter" id="token-meter" title="上下文用量" aria-label="上下文用量" hidden>
+                <span class="token-meter-ring" aria-hidden="true"></span>
+                <span class="token-meter-popover" id="token-meter-detail" role="status">上下文用量</span>
+              </button>
               <button type="button" class="tool-btn" id="btn-toggle-workspace" title="工作区与预览">
                 <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
                   <path
@@ -487,7 +491,40 @@
 
             <div class="settings-page" data-settings-page="appearance">
               <h2 class="settings-h">外观</h2>
-              <p class="settings-p">与安卓同源的中性墨色层级。主题扩展稍后完善。</p>
+              <p class="settings-p">与安卓同源的中性墨色层级。支持深浅切换、自定义主题。</p>
+              <div class="settings-card appearance-card">
+                <div class="sec-label">主题样式</div>
+                <div class="theme-grid">
+                  <button class="theme-choice theme-choice-graphite" data-theme="graphite">
+                    <span class="theme-swatch"><i></i><b></b></span>
+                    <span class="theme-choice-copy"><strong>墨白</strong><small>克制、清晰</small></span>
+                    <span class="theme-check" aria-hidden="true">✓</span>
+                  </button>
+                  <button class="theme-choice theme-choice-warm-paper" data-theme="warm-paper">
+                    <span class="theme-swatch"><i></i><b></b></span>
+                    <span class="theme-choice-copy"><strong>暖纸</strong><small>温暖阅读</small></span>
+                    <span class="theme-check" aria-hidden="true">✓</span>
+                  </button>
+                  <button class="theme-choice theme-choice-nebula" data-theme="nebula">
+                    <span class="theme-swatch"><i></i><b></b></span>
+                    <span class="theme-choice-copy"><strong>星云</strong><small>冷色渐变</small></span>
+                    <span class="theme-check" aria-hidden="true">✓</span>
+                  </button>
+                </div>
+                <div class="theme-live-preview" aria-label="主题预览">
+                  <div class="tlp-assistant">你好，需要我帮你做什么？</div>
+                  <div class="tlp-user">让界面更简单一些</div>
+                  <div class="tlp-controls"><span></span><b>输入消息</b><i>↑</i></div>
+                </div>
+                <div class="settings-row">
+                  <span class="settings-row-title">显示模式</span>
+                  <div class="seg" id="theme-mode-seg" style="width:190px">
+                    <button type="button" class="seg-btn" data-mode="auto">跟随系统</button>
+                    <button type="button" class="seg-btn" data-mode="light">浅色</button>
+                    <button type="button" class="seg-btn" data-mode="dark">深色</button>
+                  </div>
+                </div>
+              </div>
             </div>
 
             <div class="settings-page" data-settings-page="backup">
@@ -738,6 +775,7 @@
     <script src="./js/image-api.js"></script>
     <script src="./js/image-canvas.js"></script>
     <script src="./js/image-mode.js"></script>
+    <script src="./js/theme-system.js"></script>
     <script src="./js/tools/registry.js"></script>
     <script src="./js/tools/system-hint.js"></script>
     <script src="./js/tools/fs.js"></script>
