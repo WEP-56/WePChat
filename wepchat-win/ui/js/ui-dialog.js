@@ -42,6 +42,10 @@
       dlg.id = 'app-dlg';
       dlg.className = 'app-dlg';
       dlg.innerHTML = [
+        '<button type="button" class="app-dlg-close" id="app-dlg-close" aria-label="关闭" title="关闭">',
+        '<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">',
+        '<path fill="currentColor" d="M18.3 5.71a1 1 0 0 0-1.41 0L12 10.59 7.11 5.7A1 1 0 0 0 5.7 7.11L10.59 12 5.7 16.89a1 1 0 1 0 1.41 1.41L12 13.41l4.89 4.89a1 1 0 0 0 1.41-1.41L13.41 12l4.89-4.89a1 1 0 0 0 0-1.4z"/>',
+        '</svg></button>',
         '<div class="app-dlg-title" id="app-dlg-title"></div>',
         '<div class="app-dlg-msg" id="app-dlg-msg"></div>',
         '<input class="app-dlg-input" id="app-dlg-input" hidden />',
@@ -52,13 +56,12 @@
     }
     if (!escBound) {
       escBound = true;
+      // Esc / 关闭钮 = 拒绝；禁止点 backdrop 关闭（误触风险高，尤其工具授权）
       dlg.addEventListener('cancel', (e) => {
         e.preventDefault();
         answer(null);
       });
-      dlg.addEventListener('click', (e) => {
-        if (e.target === dlg) answer(null);
-      });
+      dlg.querySelector('#app-dlg-close')?.addEventListener('click', () => answer(null));
     }
     return dlg;
   }

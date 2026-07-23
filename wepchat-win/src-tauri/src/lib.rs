@@ -1,14 +1,17 @@
 mod http_client;
+mod preview_server;
 mod sessions;
 mod settings;
 mod workspace_fs;
 
 use http_client::{http_request, http_stream, http_stream_abort, AbortRegistry};
+use preview_server::{preview_ensure, preview_stage, preview_stop, preview_unstage};
 use serde_json::Value;
 use settings::{AppSettings, SettingsStore};
 use tauri::Manager;
 use workspace_fs::{
-    ws_delete, ws_edit, ws_exists, ws_list, ws_mkdir, ws_move, ws_read, ws_stat_tree, ws_write,
+    ws_delete, ws_edit, ws_exists, ws_list, ws_mkdir, ws_move, ws_read, ws_read_bytes, ws_stat_tree,
+    ws_write,
 };
 
 #[tauri::command]
@@ -112,6 +115,7 @@ pub fn run() {
             http_stream_abort,
             ws_list,
             ws_read,
+            ws_read_bytes,
             ws_write,
             ws_edit,
             ws_delete,
@@ -119,6 +123,10 @@ pub fn run() {
             ws_move,
             ws_exists,
             ws_stat_tree,
+            preview_ensure,
+            preview_stage,
+            preview_unstage,
+            preview_stop,
         ])
         .run(tauri::generate_context!())
         .expect("error while running WePChat");

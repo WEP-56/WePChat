@@ -3,6 +3,34 @@ use std::fs;
 use std::path::PathBuf;
 use tauri::{AppHandle, Manager};
 
+/// Per-tool-group permission mode: "ask" | "always" | "never".
+/// Keys match Android `toolPermissions` (snake_case tool group ids).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolPermissions {
+    #[serde(default = "default_perm_ask")]
+    pub run_js: String,
+    #[serde(default = "default_perm_ask")]
+    pub files: String,
+    #[serde(default = "default_perm_ask")]
+    pub delete_files: String,
+    #[serde(default = "default_perm_ask")]
+    pub web_fetch: String,
+    #[serde(default = "default_perm_ask")]
+    pub image_go: String,
+}
+
+impl Default for ToolPermissions {
+    fn default() -> Self {
+        Self {
+            run_js: default_perm_ask(),
+            files: default_perm_ask(),
+            delete_files: default_perm_ask(),
+            web_fetch: default_perm_ask(),
+            image_go: default_perm_ask(),
+        }
+    }
+}
+
 /// User-facing app settings. Stored as JSON under the app data directory.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -38,6 +66,37 @@ pub struct AppSettings {
     /// Max individual tool executions per assistant turn.
     #[serde(default = "default_max_tool_calls")]
     pub max_tool_calls: u32,
+    /// Per-tool-group permissions (ask | always | never). Aligns with Android.
+    #[serde(default)]
+    pub tool_permissions: ToolPermissions,
+
+    /* ---------- Image generation (align Android store.js) ---------- */
+    #[serde(default)]
+    pub image_provider_id: String,
+    #[serde(default)]
+    pub image_model: String,
+    #[serde(default)]
+    pub image_edit_model: String,
+    #[serde(default = "default_image_size")]
+    pub image_default_size: String,
+    #[serde(default = "default_image_auto")]
+    pub image_quality: String,
+    #[serde(default = "default_image_auto")]
+    pub image_background: String,
+    #[serde(default = "default_image_count")]
+    pub image_default_count: u32,
+    #[serde(default = "default_image_format")]
+    pub image_output_format: String,
+    #[serde(default)]
+    pub image_style_preset_id: String,
+    #[serde(default)]
+    pub image_style_presets: Vec<serde_json::Value>,
+    #[serde(default = "default_image_api_mode")]
+    pub image_api_mode: String,
+    #[serde(default)]
+    pub image_endpoint_path: String,
+    #[serde(default)]
+    pub image_edit_endpoint_path: String,
 }
 
 fn default_theme() -> String {
@@ -56,6 +115,30 @@ fn default_max_tool_calls() -> u32 {
     24
 }
 
+fn default_perm_ask() -> String {
+    "ask".into()
+}
+
+fn default_image_size() -> String {
+    "auto".into()
+}
+
+fn default_image_auto() -> String {
+    "auto".into()
+}
+
+fn default_image_count() -> u32 {
+    1
+}
+
+fn default_image_format() -> String {
+    "png".into()
+}
+
+fn default_image_api_mode() -> String {
+    "images".into()
+}
+
 impl Default for AppSettings {
     fn default() -> Self {
         Self {
@@ -70,6 +153,20 @@ impl Default for AppSettings {
             agent_enabled: true,
             max_tool_rounds: default_max_tool_rounds(),
             max_tool_calls: default_max_tool_calls(),
+            tool_permissions: ToolPermissions::default(),
+            image_provider_id: String::new(),
+            image_model: String::new(),
+            image_edit_model: String::new(),
+            image_default_size: default_image_size(),
+            image_quality: default_image_auto(),
+            image_background: default_image_auto(),
+            image_default_count: default_image_count(),
+            image_output_format: default_image_format(),
+            image_style_preset_id: String::new(),
+            image_style_presets: Vec::new(),
+            image_api_mode: default_image_api_mode(),
+            image_endpoint_path: String::new(),
+            image_edit_endpoint_path: String::new(),
         }
     }
 }

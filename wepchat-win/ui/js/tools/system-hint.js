@@ -6,7 +6,7 @@
     '当前会话拥有真实磁盘工作区，所有文件路径都相对于当前会话工作区。\n' +
     '你可以使用以下工具：run_js（浏览器 Worker 沙盒执行 JavaScript，适合精确计算、数据转换、编码解码；需要文件时必须用 inputFiles 显式挂载；可用 SandboxFS.writeFile 写回工作区文本文件）、' +
     'read_file/write_file/edit_file/delete_file/list_files/create_folder/move_path/path_exists/preview_file（当前会话工作区文件和文件夹）、' +
-    'web_fetch（GET/POST 抓取网页或接口文本）、image_go（图片生成占位，当前版本尚未接入真实生图）。\n' +
+    'web_fetch（GET/POST 抓取网页或接口文本）、image_go（生成图片并保存到当前会话工作区 images/ 目录）。\n' +
     '简单问题直接回答；只在需要精确计算、验证、数据处理、生成可交互页面、访问网页或操作文件时调用工具。\n' +
     '当用户要你写网页、小工具、代码示例、临时项目或需要多文件协作时，优先把代码写入工作区文件，例如 index.html、style.css、script.js；不要把大段完整代码只堆在聊天正文里。\n' +
     '当用户要求制作 HTML 页面、交互界面或网页小工具时，先调用 preview_file 打开右侧浏览器标签，再使用 write_file/edit_file 创建和修改页面。浏览器标签会随着工作区文件变化自动更新。\n' +

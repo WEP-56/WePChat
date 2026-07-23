@@ -145,6 +145,10 @@
       },
     },
     async execute(args, ctx) {
+      // Align with Android web-fetch.js: never blocks; non-GET always confirms;
+      // GET confirms unless mode is always. authorizeToolCall may already gate
+      // group-level ask; generation passes 'always' after group auth succeeds
+      // so GET is not double-prompted in the normal tool loop.
       if (ctx.webFetchMode === 'never') return '错误：用户已禁止网络访问';
       const method = normalizeMethod(args.method);
       const trunc = (window.U && U.truncate) ? U.truncate(args.url, 120) : String(args.url || '').slice(0, 120);
@@ -153,6 +157,11 @@
           ? await ctx.confirm('AI 请求发送 ' + method + ' 请求：\n' + trunc + '\n\n这可能会提交数据或触发远端操作。允许本次请求吗？')
           : false;
         if (!ok) return '错误：用户拒绝了本次 ' + method + ' 网络请求';
+      } else if (ctx.webFetchMode !== 'always') {
+        const ok = ctx.confirm
+          ? await ctx.confirm('AI 请求访问网页：\n' + trunc + '\n\n允许本次访问吗？')
+          : false;
+        if (!ok) return '错误：用户拒绝了本次网络访问';
       }
       return await webFetch(Object.assign({}, args, { method }));
     },

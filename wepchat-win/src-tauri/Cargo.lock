@@ -4575,6 +4575,7 @@ dependencies = [
 name = "wepchat"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "futures-util",
  "regex",
  "reqwest 0.12.28",

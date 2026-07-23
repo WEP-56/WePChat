@@ -11,6 +11,8 @@ use tauri::{AppHandle, Emitter};
 use crate::sessions;
 
 const MAX_FILE_BYTES: u64 = 512 * 1024;
+/// Binary assets (generated images) may exceed the text-tool limit.
+const MAX_BINARY_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_OUTPUT_CHARS: usize = 16 * 1024;
 const MAX_LIST_ENTRIES: usize = 500;
 const MAX_LIST_DEPTH: usize = 16;
@@ -68,6 +70,9 @@ pub struct WsWriteArgs {
     pub content: String,
     #[serde(default)]
     pub mime: Option<String>,
+    /// "utf8" (default) or "base64" for binary payloads (images).
+    #[serde(default)]
+    pub encoding: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -297,9 +302,29 @@ fn text_mime(path: &str) -> &'static str {
         "text/csv"
     } else if lower.ends_with(".svg") {
         "image/svg+xml"
+    } else if lower.ends_with(".png") {
+        "image/png"
+    } else if lower.ends_with(".jpg") || lower.ends_with(".jpeg") {
+        "image/jpeg"
+    } else if lower.ends_with(".webp") {
+        "image/webp"
+    } else if lower.ends_with(".gif") {
+        "image/gif"
+    } else if lower.ends_with(".bmp") {
+        "image/bmp"
     } else {
         "text/plain"
     }
+}
+
+fn is_image_path(path: &str) -> bool {
+    let lower = path.to_ascii_lowercase();
+    lower.ends_with(".png")
+        || lower.ends_with(".jpg")
+        || lower.ends_with(".jpeg")
+        || lower.ends_with(".webp")
+        || lower.ends_with(".gif")
+        || lower.ends_with(".bmp")
 }
 
 fn fmt_size(n: u64) -> String {
@@ -347,13 +372,16 @@ fn read_text_file(path: &Path) -> Result<String, String> {
 }
 
 fn atomic_write(path: &Path, content: &str) -> Result<(), String> {
-    if content.len() as u64 > MAX_FILE_BYTES {
-        return Err(format!("内容超过 {} 上限", fmt_size(MAX_FILE_BYTES)));
+    atomic_write_bytes(path, content.as_bytes(), MAX_FILE_BYTES)
+}
+
+fn atomic_write_bytes(path: &Path, bytes: &[u8], max_bytes: u64) -> Result<(), String> {
+    if bytes.len() as u64 > max_bytes {
+        return Err(format!("内容超过 {} 上限", fmt_size(max_bytes)));
     }
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
-    // Unique temp name next to target
     let tmp = path.parent().unwrap_or(Path::new(".")).join(format!(
         ".{}.wepchat.tmp",
         path.file_name()
@@ -362,8 +390,7 @@ fn atomic_write(path: &Path, content: &str) -> Result<(), String> {
     ));
     {
         let mut f = fs::File::create(&tmp).map_err(|e| e.to_string())?;
-        f.write_all(content.as_bytes())
-            .map_err(|e| e.to_string())?;
+        f.write_all(bytes).map_err(|e| e.to_string())?;
         f.sync_all().ok();
     }
     if path.exists() {
@@ -374,6 +401,24 @@ fn atomic_write(path: &Path, content: &str) -> Result<(), String> {
         e.to_string()
     })?;
     Ok(())
+}
+
+fn decode_base64_content(raw: &str) -> Result<Vec<u8>, String> {
+    let s = raw.trim();
+    // Accept data URLs: data:image/png;base64,....
+    let payload = if let Some(idx) = s.find("base64,") {
+        &s[idx + "base64,".len()..]
+    } else {
+        s
+    };
+    let cleaned: String = payload.chars().filter(|c| !c.is_whitespace()).collect();
+    use base64::Engine;
+    base64::engine::general_purpose::STANDARD
+        .decode(cleaned.as_bytes())
+        .or_else(|_| {
+            base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(cleaned.as_bytes())
+        })
+        .map_err(|e| format!("base64 解码失败: {e}"))
 }
 
 fn emit_changed(app: &AppHandle, session_id: &str, changes: &[Value]) {
@@ -676,12 +721,49 @@ pub fn ws_write(app: AppHandle, args: WsWriteArgs) -> Result<WsTextResult, Strin
     if path.exists() && path.is_dir() {
         return err_text(format!("目标是目录: {rel}"));
     }
-    let before = if path.is_file() {
+    let existed = path.is_file();
+    let encoding = args
+        .encoding
+        .as_deref()
+        .unwrap_or("utf8")
+        .trim()
+        .to_ascii_lowercase();
+    let is_b64 = encoding == "base64" || encoding == "b64";
+
+    if is_b64 {
+        let bytes = match decode_base64_content(&args.content) {
+            Ok(b) => b,
+            Err(e) => return err_text(e),
+        };
+        if let Err(e) = atomic_write_bytes(&path, &bytes, MAX_BINARY_BYTES) {
+            return err_text(e);
+        }
+        let mime = args
+            .mime
+            .clone()
+            .filter(|m| !m.trim().is_empty())
+            .unwrap_or_else(|| text_mime(&rel).to_string());
+        let msg = format!(
+            "{} {rel}（{}，二进制 {}）",
+            if existed { "已更新" } else { "已创建" },
+            fmt_size(bytes.len() as u64),
+            mime
+        );
+        let changes = vec![json!({
+            "path": rel,
+            "operation": if existed { "updated" } else { "created" },
+            "binary": true,
+            "mime": mime
+        })];
+        emit_changed(&app, &args.session_id, &changes);
+        return Ok(ok_with_changes(truncate_output(&msg), changes));
+    }
+
+    let before = if path.is_file() && !is_image_path(&rel) {
         read_text_file(&path).unwrap_or_default()
     } else {
         String::new()
     };
-    let existed = path.is_file();
     let content = args.content;
     if let Err(e) = atomic_write(&path, &content) {
         return err_text(e);
@@ -699,8 +781,34 @@ pub fn ws_write(app: AppHandle, args: WsWriteArgs) -> Result<WsTextResult, Strin
     );
     let changes = vec![json!({ "path": rel, "operation": if existed { "updated" } else { "created" } })];
     emit_changed(&app, &args.session_id, &changes);
-    let _ = args.mime; // reserved
+    let _ = args.mime; // reserved for text writes
     Ok(ok_with_changes(truncate_output(&msg), changes))
+}
+
+/// Read a workspace file as base64 (for image reference / canvas preview).
+#[tauri::command]
+pub fn ws_read_bytes(app: AppHandle, args: WsPathArgs) -> Result<Value, String> {
+    let workspace = workspace_dir(&app, &args.session_id)?;
+    let rel = normalize_rel(&args.path, false)?;
+    let path = resolve_in_workspace(&workspace, &rel)?;
+    if !path.is_file() {
+        return Err(format!("文件不存在: {rel}"));
+    }
+    let meta = fs::metadata(&path).map_err(|e| e.to_string())?;
+    if meta.len() > MAX_BINARY_BYTES {
+        return Err(format!("文件超过 {} 上限", fmt_size(MAX_BINARY_BYTES)));
+    }
+    let bytes = fs::read(&path).map_err(|e| e.to_string())?;
+    use base64::Engine;
+    let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+    let mime = text_mime(&rel);
+    Ok(json!({
+        "ok": true,
+        "path": rel,
+        "mime": mime,
+        "size": bytes.len(),
+        "contentBase64": b64
+    }))
 }
 
 fn regex_replace(before: &str, find: &str, replace: &str, all: bool, flags: &str) -> Result<String, String> {

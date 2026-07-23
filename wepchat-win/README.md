@@ -33,12 +33,13 @@ wepchat-win/
   image/              UX 演示图
 ```
 
-## 当前阶段（M1 进行中）
+## 当前阶段（M1+ 生图雏形）
 
 - 四区布局：图标轨 / 列表 / 主区 / 右侧多侧栏
-- 模式：聊天 · 生图 · 设置
-- 设置：工作区路径、多供应商（OpenAI Chat / Responses / Anthropic）
+- 模式：聊天 · **生图** · 设置
+- 设置：工作区路径、多供应商（OpenAI Chat / Responses / Anthropic）、**生图参数**
 - **供应商 HTTP 走 Rust**（`http_request` / `http_stream`），避免 WebView CORS
 - 流式对话 + 会话落盘（`{workspaceRoot}/{sessionId}/session.json`）
-- **工具循环（M1）**：12 个公开工具名；真磁盘工作区；Files / Browser（srcdoc）联动
-- 生图 / 静态预览 HTTP / Codex：未做（见 `docs/`）
+- **工具循环（M1）**：12 个公开工具名；真磁盘工作区；Files / Browser / 静态预览联动
+- **生图雏形**：`/images/generations`；图落盘 `images/`；中区时间线 + 右点阵画布；`image_go` 聊天工具
+- Codex：不做（见 `docs/`）

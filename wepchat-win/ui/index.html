@@ -120,10 +120,11 @@
             </button>
           </header>
           <div class="list-body">
-            <div class="empty-hint">
-              <p class="empty-title">暂无生图任务</p>
-              <p class="empty-desc">简易图片工作站稍后接入。</p>
+            <div class="empty-hint" id="image-list-empty">
+              <p class="empty-title">暂无生图会话</p>
+              <p class="empty-desc">点右上角新建，描述你想要的画面。</p>
             </div>
+            <ul class="session-list" id="image-session-list" hidden></ul>
           </div>
         </section>
 
@@ -140,6 +141,9 @@
             </button>
             <button type="button" class="settings-nav-item" data-settings="agent">
               工具与代理
+            </button>
+            <button type="button" class="settings-nav-item" data-settings="image">
+              生图
             </button>
             <button type="button" class="settings-nav-item" data-settings="appearance">
               外观
@@ -237,13 +241,46 @@
           <header class="main-top">
             <div class="main-top-left"></div>
             <div class="main-top-center">
-              <h2 class="main-heading">AI 图片生成</h2>
+              <label class="model-switch" title="选择生图模型">
+                <select id="image-model-select" class="model-select" aria-label="选择生图模型" disabled>
+                  <option value="">选择生图模型</option>
+                </select>
+                <span class="model-provider" id="image-model-label">尚未配置生图模型</span>
+              </label>
             </div>
-            <div class="main-top-right"></div>
+            <div class="main-top-right">
+              <button type="button" class="tool-btn" id="btn-toggle-image-canvas" title="画布">
+                <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+                  <path fill="currentColor" d="M21 3H3c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h18c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm0 16H3V5h18v14zM5 15h4v4H5zm5-6h4v10h-4zm5-4h4v14h-4z"/>
+                </svg>
+              </button>
+            </div>
           </header>
-          <div class="image-empty">
-            <p class="empty-title">图片工作站</p>
-            <p class="empty-desc">简易生图将在此完成。</p>
+
+          <div class="image-workbench">
+            <div class="image-timeline" id="image-timeline"></div>
+            <footer class="image-composer">
+              <div class="img-ref-chip" id="image-ref-chip" hidden>
+                <span>参考</span>
+                <span class="img-ref-path"></span>
+                <button type="button" class="img-ref-clear" id="btn-image-ref-clear" title="清除参考">×</button>
+              </div>
+              <div class="image-composer-box">
+                <select id="image-size-select" class="image-size-select" title="尺寸" aria-label="图片尺寸"></select>
+                <textarea id="image-composer-input" rows="1" placeholder="描述你想生成的图片…"></textarea>
+                <button type="button" class="send-btn" id="btn-image-send" title="生成" aria-label="生成">
+                  <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+                    <path fill="currentColor" d="M4 12l1.41 1.41L11 7.83V20h2V7.83l5.58 5.59L20 12l-8-8-8 8z" />
+                  </svg>
+                </button>
+                <button type="button" class="send-btn is-stop" id="btn-image-stop" title="停止" aria-label="停止" hidden>
+                  <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
+                    <path fill="currentColor" d="M6 6h12v12H6z" />
+                  </svg>
+                </button>
+              </div>
+              <p class="composer-hint">生图模式仅调用图片模型 · 图会保存到当前会话工作区</p>
+            </footer>
           </div>
         </section>
 
@@ -297,24 +334,154 @@
             <div class="settings-page" data-settings-page="agent">
               <h2 class="settings-h">工具与代理</h2>
               <p class="settings-p">
-                开启后，模型可调用工作区文件、预览、web_fetch、run_js 等工具。
+                开启后，模型可调用工作区文件、预览、网页访问、脚本沙盒等工具。
                 关闭则纯聊天，请求不带 tools。
               </p>
-              <label class="field field-row">
-                <span class="field-label">启用工具（Agent）</span>
-                <button type="button" class="switch" id="agent-enabled" aria-pressed="true" title="启用工具"></button>
-              </label>
-              <label class="field">
-                <span class="field-label">最大工具轮次</span>
-                <input type="number" id="agent-max-rounds" class="field-input mono" min="1" max="32" value="8" />
-              </label>
-              <label class="field">
-                <span class="field-label">最大工具调用数</span>
-                <input type="number" id="agent-max-calls" class="field-input mono" min="1" max="128" value="24" />
-              </label>
+
+              <div class="settings-card">
+                <div class="settings-row">
+                  <div class="settings-row-text">
+                    <span class="settings-row-title">启用工具</span>
+                    <span class="settings-row-sub">Agent 工具调用总开关</span>
+                  </div>
+                  <button type="button" class="switch" id="agent-enabled" aria-pressed="true" title="启用工具"></button>
+                </div>
+              </div>
+
+              <h3 class="settings-subh">工具权限</h3>
+              <p class="settings-p muted">
+                按组设置：询问 / 允许 / 禁止。删除类不允许「始终允许」。
+              </p>
+              <div class="settings-card tool-perm-list" id="tool-perm-list">
+                <div class="settings-row tool-perm-row" data-perm-key="run_js">
+                  <div class="settings-row-text">
+                    <span class="settings-row-title">JavaScript 沙盒</span>
+                    <span class="settings-row-sub">run_js</span>
+                  </div>
+                  <div class="seg" role="group" aria-label="JavaScript 沙盒权限">
+                    <button type="button" class="seg-btn" data-mode="ask">询问</button>
+                    <button type="button" class="seg-btn" data-mode="always">允许</button>
+                    <button type="button" class="seg-btn" data-mode="never">禁止</button>
+                  </div>
+                </div>
+                <div class="settings-row tool-perm-row" data-perm-key="files">
+                  <div class="settings-row-text">
+                    <span class="settings-row-title">工作区文件</span>
+                    <span class="settings-row-sub">读写、列表、预览、移动等</span>
+                  </div>
+                  <div class="seg" role="group" aria-label="工作区文件权限">
+                    <button type="button" class="seg-btn" data-mode="ask">询问</button>
+                    <button type="button" class="seg-btn" data-mode="always">允许</button>
+                    <button type="button" class="seg-btn" data-mode="never">禁止</button>
+                  </div>
+                </div>
+                <div class="settings-row tool-perm-row" data-perm-key="delete_files">
+                  <div class="settings-row-text">
+                    <span class="settings-row-title">删除文件</span>
+                    <span class="settings-row-sub">delete_file · 不可始终允许</span>
+                  </div>
+                  <div class="seg" role="group" aria-label="删除权限">
+                    <button type="button" class="seg-btn" data-mode="ask">询问</button>
+                    <button type="button" class="seg-btn" data-mode="never">禁止</button>
+                  </div>
+                </div>
+                <div class="settings-row tool-perm-row" data-perm-key="web_fetch">
+                  <div class="settings-row-text">
+                    <span class="settings-row-title">网页访问</span>
+                    <span class="settings-row-sub">web_fetch</span>
+                  </div>
+                  <div class="seg" role="group" aria-label="网页访问权限">
+                    <button type="button" class="seg-btn" data-mode="ask">询问</button>
+                    <button type="button" class="seg-btn" data-mode="always">允许</button>
+                    <button type="button" class="seg-btn" data-mode="never">禁止</button>
+                  </div>
+                </div>
+                <div class="settings-row tool-perm-row" data-perm-key="image_go">
+                  <div class="settings-row-text">
+                    <span class="settings-row-title">图片生成</span>
+                    <span class="settings-row-sub">image_go</span>
+                  </div>
+                  <div class="seg" role="group" aria-label="图片生成权限">
+                    <button type="button" class="seg-btn" data-mode="ask">询问</button>
+                    <button type="button" class="seg-btn" data-mode="always">允许</button>
+                    <button type="button" class="seg-btn" data-mode="never">禁止</button>
+                  </div>
+                </div>
+              </div>
+
+              <h3 class="settings-subh">执行限制</h3>
+              <div class="settings-card settings-card--stack">
+                <label class="field">
+                  <span class="field-label">最大工具轮次</span>
+                  <input type="number" id="agent-max-rounds" class="field-input mono" min="1" max="32" value="8" />
+                </label>
+                <label class="field" style="margin-bottom:0">
+                  <span class="field-label">最大工具调用数</span>
+                  <input type="number" id="agent-max-calls" class="field-input mono" min="1" max="128" value="24" />
+                </label>
+              </div>
               <div class="field-actions">
                 <button type="button" class="primary-btn" id="btn-save-agent">保存</button>
                 <span class="field-status" id="agent-status"></span>
+              </div>
+            </div>
+
+            <div class="settings-page" data-settings-page="image">
+              <h2 class="settings-h">生图</h2>
+              <p class="settings-p">默认生图供应商与参数。供应商可单独配置图片 API 地址与密钥。</p>
+              <div class="settings-card settings-card--stack">
+                <label class="field">
+                  <span class="field-label">生图供应商</span>
+                  <select id="img-set-provider" class="field-input"></select>
+                </label>
+                <label class="field">
+                  <span class="field-label">生图模型</span>
+                  <select id="img-set-model" class="field-input mono"></select>
+                </label>
+                <label class="field">
+                  <span class="field-label">编辑模型</span>
+                  <select id="img-set-edit-model" class="field-input mono"></select>
+                </label>
+                <label class="field">
+                  <span class="field-label">默认尺寸</span>
+                  <select id="img-set-size" class="field-input"></select>
+                </label>
+                <label class="field">
+                  <span class="field-label">质量</span>
+                  <select id="img-set-quality" class="field-input"></select>
+                </label>
+                <label class="field">
+                  <span class="field-label">输出格式</span>
+                  <select id="img-set-format" class="field-input"></select>
+                </label>
+                <label class="field">
+                  <span class="field-label">默认张数</span>
+                  <input type="number" id="img-set-count" class="field-input mono" min="1" max="8" value="1" />
+                </label>
+                <label class="field">
+                  <span class="field-label">风格预设</span>
+                  <select id="img-set-style" class="field-input"></select>
+                </label>
+                <label class="field">
+                  <span class="field-label">接口模式</span>
+                  <select id="img-set-api-mode" class="field-input">
+                    <option value="images">Images API</option>
+                    <option value="auto">自动</option>
+                    <option value="chat">Chat 回落</option>
+                  </select>
+                </label>
+                <label class="field">
+                  <span class="field-label">生成端点覆盖</span>
+                  <input type="text" id="img-set-endpoint" class="field-input mono" placeholder="/v1/images/generations 或留空" />
+                </label>
+                <label class="field" style="margin-bottom:0">
+                  <span class="field-label">编辑端点覆盖</span>
+                  <input type="text" id="img-set-edit-endpoint" class="field-input mono" placeholder="/v1/images/edits 或留空" />
+                </label>
+              </div>
+              <div class="field-actions">
+                <button type="button" class="primary-btn" id="btn-save-image-settings">保存</button>
+                <span class="field-status" id="image-settings-status"></span>
               </div>
             </div>
 
@@ -455,6 +622,22 @@
         </label>
         <p class="field-hint">地址只填域名时自动补 /v1；以 # 结尾表示按原样使用完整地址。</p>
 
+        <details class="provider-image-adv">
+          <summary class="sec-label">生图接口（可选）</summary>
+          <label class="field">
+            <span class="field-label">图片 API 地址</span>
+            <input type="url" class="field-input mono" id="provider-image-base-url" placeholder="留空则使用上方地址" />
+          </label>
+          <label class="field">
+            <span class="field-label">图片 API Key</span>
+            <input type="password" class="field-input mono" id="provider-image-api-key" autocomplete="off" placeholder="留空则使用上方 Key" />
+          </label>
+          <label class="field" style="margin-bottom:0">
+            <span class="field-label">生成端点</span>
+            <input type="text" class="field-input mono" id="provider-image-endpoint" placeholder="/v1/images/generations" />
+          </label>
+        </details>
+
         <div class="provider-models-section">
           <div class="sec-label-row">
             <div class="sec-label">模型列表</div>
@@ -550,12 +733,18 @@
     <script src="./js/network-stability.js"></script>
     <script src="./js/api.js"></script>
     <script src="./js/tool-stream.js"></script>
+    <script src="./js/preview-stream.js"></script>
+    <script src="./js/browser-preview.js"></script>
+    <script src="./js/image-api.js"></script>
+    <script src="./js/image-canvas.js"></script>
+    <script src="./js/image-mode.js"></script>
     <script src="./js/tools/registry.js"></script>
     <script src="./js/tools/system-hint.js"></script>
     <script src="./js/tools/fs.js"></script>
     <script src="./js/tools/web-fetch.js"></script>
     <script src="./js/tools/run-js.js"></script>
     <script src="./js/tools/preview.js"></script>
+    <script src="./js/tools/image-go.js"></script>
     <script src="./js/tools/index.js"></script>
     <script type="module" src="./js/app.js"></script>
   </body>

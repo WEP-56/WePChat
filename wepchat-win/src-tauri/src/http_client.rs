@@ -15,6 +15,7 @@ const DEFAULT_TIMEOUT_MS: u64 = 30_000;
 const STREAM_CONNECT_TIMEOUT_MS: u64 = 45_000;
 /// Soft upper bound for a full stream; idle/first-byte timeouts live on the JS side.
 const STREAM_TOTAL_TIMEOUT_MS: u64 = 600_000;
+const MAX_REQUEST_BODY_BYTES: usize = 64 * 1024 * 1024;
 
 pub type AbortRegistry = Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>;
 
@@ -29,7 +30,40 @@ pub struct HttpRequestArgs {
     pub url: String,
     pub headers: Option<HashMap<String, String>>,
     pub body: Option<String>,
+    /// Base64-encoded binary request body. Used for multipart image edits.
+    #[serde(default)]
+    pub body_base64: Option<String>,
     pub timeout_ms: Option<u64>,
+    /// "text" (default) | "base64" — use base64 for binary image downloads.
+    #[serde(default)]
+    pub response_encoding: Option<String>,
+}
+
+fn request_body(args: &HttpRequestArgs) -> Result<Option<Vec<u8>>, String> {
+    if args.body.is_some() && args.body_base64.is_some() {
+        return Err("body and bodyBase64 cannot be used together".into());
+    }
+    if let Some(encoded) = args.body_base64.as_deref() {
+        let max_encoded_len = MAX_REQUEST_BODY_BYTES.saturating_mul(4) / 3 + 4;
+        if encoded.len() > max_encoded_len {
+            return Err("request body exceeds the 64 MB limit".into());
+        }
+        use base64::Engine;
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(encoded)
+            .map_err(|e| format!("invalid base64 request body: {e}"))?;
+        if bytes.len() > MAX_REQUEST_BODY_BYTES {
+            return Err("request body exceeds the 64 MB limit".into());
+        }
+        return Ok(Some(bytes));
+    }
+    if let Some(body) = args.body.as_deref() {
+        if body.len() > MAX_REQUEST_BODY_BYTES {
+            return Err("request body exceeds the 64 MB limit".into());
+        }
+        return Ok(Some(body.as_bytes().to_vec()));
+    }
+    Ok(None)
 }
 
 #[derive(Debug, Serialize)]
@@ -38,6 +72,11 @@ pub struct HttpResponse {
     pub status: u16,
     pub headers: HashMap<String, String>,
     pub body: String,
+    /// Present when responseEncoding was "base64".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub body_base64: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content_type: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -73,8 +112,7 @@ fn build_headers(map: &Option<HashMap<String, String>>) -> Result<HeaderMap, Str
         for (k, v) in map {
             let name = HeaderName::from_bytes(k.as_bytes())
                 .map_err(|e| format!("无效请求头名 {k}: {e}"))?;
-            let value = HeaderValue::from_str(v)
-                .map_err(|e| format!("无效请求头值 {k}: {e}"))?;
+            let value = HeaderValue::from_str(v).map_err(|e| format!("无效请求头值 {k}: {e}"))?;
             headers.insert(name, value);
         }
     }
@@ -131,8 +169,8 @@ pub async fn http_request(args: HttpRequestArgs) -> Result<HttpResponse, String>
         .headers(headers)
         .timeout(timeout);
 
-    if let Some(body) = args.body.as_ref() {
-        builder = builder.body(body.clone());
+    if let Some(body) = request_body(&args)? {
+        builder = builder.body(body);
     }
 
     let response = builder
@@ -141,7 +179,38 @@ pub async fn http_request(args: HttpRequestArgs) -> Result<HttpResponse, String>
         .map_err(|e| map_reqwest_error(e, &args.url))?;
 
     let status = response.status().as_u16();
+    let content_type = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string());
     let resp_headers = header_map_to_json(response.headers());
+    let encoding = args
+        .response_encoding
+        .as_deref()
+        .unwrap_or("text")
+        .trim()
+        .to_ascii_lowercase();
+
+    if encoding == "base64" || encoding == "b64" {
+        let bytes = response
+            .bytes()
+            .await
+            .map_err(|e| format!("读取响应失败: {e}"))?;
+        if bytes.len() > 64 * 1024 * 1024 {
+            return Err("响应超过 64 MB 上限".into());
+        }
+        use base64::Engine;
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+        return Ok(HttpResponse {
+            status,
+            headers: resp_headers,
+            body: String::new(),
+            body_base64: Some(b64),
+            content_type,
+        });
+    }
+
     let body = response
         .text()
         .await
@@ -151,6 +220,8 @@ pub async fn http_request(args: HttpRequestArgs) -> Result<HttpResponse, String>
         status,
         headers: resp_headers,
         body,
+        body_base64: None,
+        content_type,
     })
 }
 

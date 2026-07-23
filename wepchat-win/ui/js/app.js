@@ -24,10 +24,10 @@ const state = {
   settings: null,
   meta: null,
   providers: [],
-  activeProviderId: '',
-  activeModel: '',
   sessions: [],
   session: null,
+  lastChatSessionId: '',
+  lastImageSessionId: '',
   generating: false,
   abortCtl: null,
   stopRequested: false,
@@ -68,6 +68,19 @@ function getAppWindow() {
 
 function setMode(mode) {
   state.mode = mode;
+  if (mode === 'chat' && state.session?.mode === 'image') {
+    const target = state.sessions.find((item) => item.id === state.lastChatSessionId && item.mode !== 'image')
+      || state.sessions.find((item) => item.mode !== 'image');
+    if (target && target.id !== state.session.id) {
+      openSession(target.id).catch((err) => console.warn('restore chat session', err));
+      return;
+    }
+    if (!target) {
+      state.session = createSession();
+      state.lastChatSessionId = state.session.id;
+      persistSession().catch((err) => console.warn('create chat session', err));
+    }
+  }
   $all('.rail-btn').forEach((btn) => {
     btn.classList.toggle('is-active', btn.dataset.mode === mode);
   });
@@ -77,7 +90,35 @@ function setMode(mode) {
   $all('.main-view').forEach((el) => {
     el.classList.toggle('is-active', el.dataset.view === mode);
   });
-  if (mode !== 'chat') setRightOpen(false);
+  renderSessions();
+  if (window.ImageMode) window.ImageMode.renderImageSessionList();
+  if (mode === 'image') {
+    // Image mode: keep right pane open as canvas workspace
+    showImageCanvasPane();
+    if (window.ImageMode) {
+      window.ImageMode.enterImageMode().catch((err) => console.warn('enterImageMode', err));
+    }
+  } else if (mode !== 'chat') {
+    setRightOpen(false);
+  } else {
+    // Chat mode: close sidebar and reset tabs so it refreshes properly on session switch
+    setRightOpen(false);
+    state.rightTabs = [];
+    renderRightPane();
+  }
+}
+
+function showImageCanvasPane() {
+  setRightOpen(true);
+  // Prefer a single canvas tab for image mode
+  let tab = state.rightTabs.find((t) => t.kind === 'canvas');
+  if (!tab) {
+    tab = { id: uid('r'), kind: 'canvas', title: '画布' };
+    state.rightTabs = [tab];
+  }
+  state.activeRightTabId = tab.id;
+  renderRightTabs();
+  renderRightContent();
 }
 
 function setSettingsPage(page) {
@@ -88,6 +129,9 @@ function setSettingsPage(page) {
   $all('.settings-page').forEach((el) => {
     el.classList.toggle('is-active', el.dataset.settingsPage === page);
   });
+  if (page === 'image' && window.ImageMode) {
+    window.ImageMode.fillImageSettingsPage();
+  }
 }
 
 function setRightOpen(open) {
@@ -127,19 +171,69 @@ function setMaximizedUi(maximized) {
   if (btn) btn.title = maximized ? '还原' : '最大化';
 }
 
+const TOOL_PERM_KEYS = ['run_js', 'files', 'delete_files', 'web_fetch', 'image_go'];
+const TOOL_PERM_LABELS = {
+  run_js: 'JavaScript 沙盒',
+  web_fetch: '网页访问',
+  image_go: '图片生成',
+  delete_files: '删除工作区文件/文件夹',
+  files: '工作区文件',
+};
+
+function defaultToolPermissions() {
+  return {
+    run_js: 'ask',
+    files: 'ask',
+    delete_files: 'ask',
+    web_fetch: 'ask',
+    image_go: 'ask',
+  };
+}
+
+function normalizeToolMode(mode) {
+  return mode === 'always' || mode === 'never' ? mode : 'ask';
+}
+
+function normalizeToolPermissions(raw) {
+  const base = defaultToolPermissions();
+  const src = raw && typeof raw === 'object' ? raw : {};
+  const out = {};
+  for (const key of TOOL_PERM_KEYS) {
+    let mode = normalizeToolMode(src[key]);
+    if (key === 'delete_files' && mode === 'always') mode = 'ask';
+    out[key] = mode;
+  }
+  return out;
+}
+
 function defaultSettings() {
+  const img = window.ImageMode?.defaultImageSettings?.() || {
+    imageProviderId: '',
+    imageModel: '',
+    imageEditModel: '',
+    imageDefaultSize: 'auto',
+    imageQuality: 'auto',
+    imageBackground: 'auto',
+    imageDefaultCount: 1,
+    imageOutputFormat: 'png',
+    imageStylePresetId: '',
+    imageStylePresets: [],
+    imageApiMode: 'images',
+    imageEndpointPath: '',
+    imageEditEndpointPath: '',
+  };
   return {
     workspaceRoot: null,
     theme: 'light',
     providers: [],
-    activeProviderId: '',
-    activeModel: '',
     systemPrompt: '',
     temperature: null,
     maxTokens: null,
     agentEnabled: true,
     maxToolRounds: 8,
     maxToolCalls: 24,
+    toolPermissions: defaultToolPermissions(),
+    ...img,
   };
 }
 
@@ -179,6 +273,10 @@ function normalizeProvider(raw = {}) {
     modelMeta: raw.modelMeta && typeof raw.modelMeta === 'object' ? cloneJson(raw.modelMeta) : {},
     imageModelMeta: raw.imageModelMeta && typeof raw.imageModelMeta === 'object' ? cloneJson(raw.imageModelMeta) : {},
     extraHeaders: Array.isArray(raw.extraHeaders) ? cloneJson(raw.extraHeaders) : [],
+    imageBaseUrl: String(raw.imageBaseUrl || '').trim(),
+    imageApiKey: String(raw.imageApiKey || '').trim(),
+    imageEndpointPath: String(raw.imageEndpointPath || '').trim(),
+    imageEditEndpointPath: String(raw.imageEditEndpointPath || '').trim(),
   };
   if (window.MODEL_META && typeof MODEL_META.normalizeProvider === 'function') {
     return MODEL_META.normalizeProvider(base);
@@ -228,6 +326,9 @@ function readProviderBasicsIntoDraft() {
   providerDraft.api = $('#provider-api')?.value || 'openai-chat';
   providerDraft.baseUrl = ($('#provider-base-url')?.value || '').trim();
   providerDraft.apiKey = ($('#provider-api-key')?.value || '').trim();
+  providerDraft.imageBaseUrl = ($('#provider-image-base-url')?.value || '').trim();
+  providerDraft.imageApiKey = ($('#provider-image-api-key')?.value || '').trim();
+  providerDraft.imageEndpointPath = ($('#provider-image-endpoint')?.value || '').trim();
 }
 
 function setProviderStatus(text, kind) {
@@ -260,19 +361,19 @@ function setProviderNetStatus(info) {
 }
 
 function currentProvider() {
-  return state.providers.find((provider) => provider.id === state.activeProviderId) || null;
+  const sessionProviderId = state.session?.providerId || '';
+  return state.providers.find((provider) => provider.id === sessionProviderId) || null;
 }
 
 function createSession() {
-  const provider = currentProvider();
   return {
     id: uid('session'),
     title: '',
     createdAt: nowIso(),
     updatedAt: nowIso(),
     mode: 'chat',
-    providerId: provider?.id || '',
-    model: state.activeModel || provider?.models[0] || '',
+    providerId: '',
+    model: '',
     messages: [],
     workspacePath: '',
     pinned: false,
@@ -291,6 +392,12 @@ function normalizeMessage(raw) {
     m.error = String(m.error || '');
     m.model = m.model || '';
     m.toolCalls = Array.isArray(m.toolCalls) ? m.toolCalls : [];
+    m.images = Array.isArray(m.images) ? m.images : [];
+    m.images.forEach((image) => {
+      if (!image || typeof image !== 'object') return;
+      image.path = String(image.path || '');
+      image.mime = String(image.mime || 'image/png');
+    });
     m.variantBaseId = m.variantBaseId || (m.id + ':v1');
     m.variants = Array.isArray(m.variants) ? m.variants.slice(0, 6) : [];
     m.variants.forEach((v, idx) => {
@@ -308,6 +415,7 @@ function normalizeMessage(raw) {
   } else if (m.role === 'user') {
     m.parentAssistantId = m.parentAssistantId || '';
     m.parentVariantId = m.parentVariantId || '';
+    m.referenceFiles = Array.isArray(m.referenceFiles) ? m.referenceFiles : [];
   }
   return m;
 }
@@ -315,13 +423,16 @@ function normalizeMessage(raw) {
 function normalizeSession(raw) {
   const base = createSession();
   const session = raw && typeof raw === 'object' ? raw : {};
+  const mode = session.mode === 'image' ? 'image' : 'chat';
   const out = {
     ...base,
     ...session,
     id: String(session.id || base.id).replace(/[^A-Za-z0-9_-]/g, '_'),
+    mode,
     messages: Array.isArray(session.messages) ? session.messages.map(normalizeMessage) : [],
     workspacePath: String(session.workspacePath || ''),
     pinned: !!session.pinned,
+    imageCanvas: session.imageCanvas && typeof session.imageCanvas === 'object' ? session.imageCanvas : null,
   };
   let previousAssistant = null;
   out.messages.forEach((m) => {
@@ -425,8 +536,9 @@ async function confirmStopIfGenerating(actionText) {
 }
 
 function activeSessionProvider() {
-  const sessionProvider = state.session && state.session.providerId;
-  return state.providers.find((provider) => provider.id === sessionProvider) || currentProvider();
+  if (state.session?.mode !== 'chat' || !state.session.model) return null;
+  const provider = currentProvider();
+  return provider?.models?.includes(state.session.model) ? provider : null;
 }
 
 async function bindWindowControls() {
@@ -486,18 +598,22 @@ async function persistSettings() {
     ...defaultSettings(),
     ...prev,
     providers: state.providers,
-    activeProviderId: state.activeProviderId,
-    activeModel: state.activeModel,
     systemPrompt: prev.systemPrompt ?? '',
     temperature: prev.temperature ?? null,
     maxTokens: prev.maxTokens ?? null,
     agentEnabled: prev.agentEnabled !== false,
     maxToolRounds: prev.maxToolRounds ?? 8,
     maxToolCalls: prev.maxToolCalls ?? 24,
+    toolPermissions: normalizeToolPermissions(prev.toolPermissions),
   };
   try {
     const saved = await invoke('save_settings', { settings: state.settings });
-    state.settings = { ...defaultSettings(), ...(saved || {}), providers: state.providers };
+    state.settings = {
+      ...defaultSettings(),
+      ...(saved || {}),
+      providers: state.providers,
+      toolPermissions: normalizeToolPermissions(saved?.toolPermissions || state.settings.toolPermissions),
+    };
   } catch (err) {
     console.warn('Unable to save settings:', err);
   }
@@ -514,7 +630,6 @@ function renderProviders() {
   state.providers.forEach((provider) => {
     const item = document.createElement('article');
     item.className = 'provider-item';
-    item.classList.toggle('is-active', provider.id === state.activeProviderId);
 
     const info = document.createElement('div');
     info.className = 'provider-info';
@@ -531,12 +646,6 @@ function renderProviders() {
 
     const actions = document.createElement('div');
     actions.className = 'provider-actions';
-    const use = document.createElement('button');
-    use.type = 'button';
-    use.className = 'secondary-btn';
-    use.textContent = provider.id === state.activeProviderId ? '使用中' : '设为当前';
-    use.disabled = provider.id === state.activeProviderId;
-    use.addEventListener('click', () => selectProvider(provider.id));
     const edit = document.createElement('button');
     edit.type = 'button';
     edit.className = 'secondary-btn';
@@ -547,7 +656,7 @@ function renderProviders() {
     remove.className = 'danger-text-btn';
     remove.textContent = '删除';
     remove.addEventListener('click', () => deleteProvider(provider.id));
-    actions.append(use, edit, remove);
+    actions.append(edit, remove);
     item.append(info, actions);
     host.appendChild(item);
   });
@@ -654,6 +763,12 @@ function openProviderDialog(provider = null) {
   $('#provider-api-key').value = providerDraft.apiKey;
   $('#provider-api-key').type = 'password';
   $('#btn-toggle-provider-key').textContent = '显示';
+  const imgBase = $('#provider-image-base-url');
+  const imgKey = $('#provider-image-api-key');
+  const imgEp = $('#provider-image-endpoint');
+  if (imgBase) imgBase.value = providerDraft.imageBaseUrl || '';
+  if (imgKey) imgKey.value = providerDraft.imageApiKey || '';
+  if (imgEp) imgEp.value = providerDraft.imageEndpointPath || '';
   const delBtn = $('#btn-delete-provider');
   if (delBtn) delBtn.hidden = providerIsNew;
   setProviderStatus('');
@@ -695,16 +810,6 @@ async function saveProvider(event) {
   if (index >= 0) state.providers[index] = providerDraft;
   else state.providers.push(providerDraft);
 
-  if (!state.activeProviderId || !state.providers.some((item) => item.id === state.activeProviderId)) {
-    state.activeProviderId = providerDraft.id;
-    state.activeModel = providerDraft.models[0] || providerDraft.imageModels?.[0] || '';
-  } else if (state.activeProviderId === providerDraft.id) {
-    const ids = providerModelIds(providerDraft);
-    if (!ids.includes(state.activeModel)) {
-      state.activeModel = providerDraft.models[0] || ids[0] || '';
-    }
-  }
-
   await persistSettings();
   UIDialog.toast('已保存供应商');
   closeProviderDialog();
@@ -729,29 +834,12 @@ async function deleteProvider(id, skipConfirm) {
     if (!ok) return;
   }
   state.providers = state.providers.filter((item) => item.id !== id);
-  if (state.activeProviderId === id) {
-    const next = state.providers[0] || null;
-    state.activeProviderId = next?.id || '';
-    state.activeModel = next?.models[0] || next?.imageModels?.[0] || '';
+  if (state.session?.providerId === id) {
+    state.session.providerId = '';
+    state.session.model = '';
   }
   await persistSettings();
   UIDialog.toast('已删除');
-  renderProviders();
-  renderModelSelect();
-  renderComposerState();
-}
-
-async function selectProvider(id) {
-  const provider = state.providers.find((item) => item.id === id);
-  if (!provider) return;
-  state.activeProviderId = provider.id;
-  const ids = providerModelIds(provider);
-  state.activeModel = ids.includes(state.activeModel) ? state.activeModel : (provider.models[0] || ids[0] || '');
-  if (state.session && !state.session.messages.length) {
-    state.session.providerId = state.activeProviderId;
-    state.session.model = state.activeModel;
-  }
-  await persistSettings();
   renderProviders();
   renderModelSelect();
   renderComposerState();
@@ -1021,6 +1109,11 @@ async function deleteModelFromEditor() {
   await deleteProviderModelById(originalId);
 }
 
+function hasUntitledSessionTitle(title) {
+  const value = String(title || '').trim();
+  return !value || value === '\u65b0\u4f1a\u8bdd';
+}
+
 function sessionTitle(session) {
   return session.title
     || session.messages?.find((message) => message.role === 'user')?.content?.split(/\r?\n/)[0]?.slice(0, 48)
@@ -1033,6 +1126,7 @@ function sessionSummary(session) {
     title: session.title || '',
     createdAt: session.createdAt,
     updatedAt: session.updatedAt,
+    mode: session.mode === 'image' ? 'image' : 'chat',
     providerId: session.providerId || '',
     model: session.model || '',
     messages: session.messages || [],
@@ -1061,11 +1155,12 @@ function renderSessions() {
   const empty = $('.list-panel[data-panel="chat"] .empty-hint');
   if (!list) return;
   list.innerHTML = '';
-  list.hidden = state.sessions.length === 0;
-  if (empty) empty.hidden = state.sessions.length > 0;
-  state.sessions.forEach((session) => {
+  const chatSessions = (state.sessions || []).filter((s) => s.mode !== 'image');
+  list.hidden = chatSessions.length === 0;
+  if (empty) empty.hidden = chatSessions.length > 0;
+  chatSessions.forEach((session) => {
     const item = document.createElement('li');
-    item.className = 'session-item' + (session.id === state.session?.id ? ' is-active' : '');
+    item.className = 'session-item' + (session.id === state.session?.id && state.session?.mode !== 'image' ? ' is-active' : '');
     if (session.pinned) item.classList.add('is-pinned');
 
     const row = document.createElement('div');
@@ -1126,11 +1221,27 @@ function renderSessions() {
 async function persistSession() {
   if (!state.session) return;
   state.session.updatedAt = nowIso();
-  if (!state.session.title) state.session.title = sessionTitle(state.session);
+  if (hasUntitledSessionTitle(state.session.title)) {
+    const firstUser = state.session.messages?.find((message) => message.role === 'user');
+    const firstLine = firstUser?.content?.split(/\r?\n/)[0]?.replace(/\s+/g, ' ').trim();
+    if (firstLine) state.session.title = firstLine.slice(0, 48);
+  }
   upsertSessionIndex(state.session);
   renderSessions();
+  if (window.ImageMode) window.ImageMode.renderImageSessionList();
+  const diskSession = cloneJson(state.session);
+  (diskSession.messages || []).forEach((message) => {
+    if (!Array.isArray(message.images)) return;
+    message.images = message.images.map((image) => ({
+      path: image.path || '',
+      mime: image.mime || 'image/png',
+      prompt: image.prompt || '',
+      revisedPrompt: image.revisedPrompt || '',
+      imageMeta: image.imageMeta,
+    }));
+  });
   try {
-    const saved = await invoke('save_session', { session: state.session });
+    const saved = await invoke('save_session', { session: diskSession });
     if (saved && typeof saved === 'object') {
       state.session.workspacePath = saved.workspacePath || state.session.workspacePath || '';
       upsertSessionIndex(state.session);
@@ -1142,10 +1253,33 @@ async function persistSession() {
   renderWorkspaceSessionPath();
 }
 
+async function hydrateSessionImages(session) {
+  if (!session?.id) return;
+  for (const message of session.messages || []) {
+    if (message.role !== 'assistant' || !Array.isArray(message.images)) continue;
+    for (const image of message.images) {
+      if (!image?.path || image.dataUrl) continue;
+      try {
+        const res = await invoke('ws_read_bytes', { args: { sessionId: session.id, path: image.path } });
+        if (res?.contentBase64) {
+          image.dataUrl = `data:${res.mime || image.mime || 'image/png'};base64,${res.contentBase64}`;
+          image.mime = res.mime || image.mime || 'image/png';
+        }
+      } catch {
+        /* Keep the path so the file pane can still open it. */
+      }
+    }
+  }
+}
+
 async function openSession(id) {
   if (!id) return;
   if (state.session?.id === id) return;
   if (!(await confirmStopIfGenerating('切换会话'))) return;
+  if (state.session?.id) {
+    if (state.session.mode === 'image') state.lastImageSessionId = state.session.id;
+    else state.lastChatSessionId = state.session.id;
+  }
   try {
     const loaded = await invoke('load_session', { id });
     state.session = normalizeSession(loaded);
@@ -1157,25 +1291,27 @@ async function openSession(id) {
     }
     state.session = normalizeSession(item);
   }
-  if (state.providers.some((provider) => provider.id === state.session.providerId)) {
-    state.activeProviderId = state.session.providerId;
-    const provider = currentProvider();
-    const models = provider?.models || [];
-    state.activeModel = models.includes(state.session.model)
-      ? state.session.model
-      : (models[0] || '');
-  }
+  await hydrateSessionImages(state.session);
+  previewServerInfo = null;
+  window.PreviewStream?.clearAll?.();
   renderSessions();
   renderModelSelect();
   renderComposerState();
   renderChat();
-  setMode('chat');
+  if (state.session?.mode === 'image') {
+    setMode('image');
+  } else {
+    setMode('chat');
+  }
 }
 
 async function createNewChat() {
   if (!(await confirmStopIfGenerating('新建会话'))) return;
   if (state.session?.id) await persistSession();
+  previewServerInfo = null;
+  window.PreviewStream?.clearAll?.();
   state.session = createSession();
+  state.lastChatSessionId = state.session.id;
   await persistSession();
   renderSessions();
   renderModelSelect();
@@ -1299,7 +1435,9 @@ function renderModelSelect() {
   const select = $('#model-select');
   const providerLabel = $('#model-provider-label');
   if (!select) return;
-  select.innerHTML = '';
+  const selectedProviderId = state.session?.mode === 'chat' ? (state.session.providerId || '') : '';
+  const selectedModel = state.session?.mode === 'chat' ? (state.session.model || '') : '';
+  select.innerHTML = '<option value="">选择对话模型</option>';
   state.providers.forEach((provider) => {
     const group = document.createElement('optgroup');
     group.label = provider.name;
@@ -1309,22 +1447,16 @@ function renderModelSelect() {
       const caps = window.MODEL_META ? MODEL_META.capLabels(modelMetaOf(provider, model)).join(' · ') : '';
       option.textContent = caps ? `${model} · ${caps}` : model;
       option.title = modelSummary(provider, model);
-      option.selected = provider.id === state.activeProviderId && model === state.activeModel;
+      option.selected = provider.id === selectedProviderId && model === selectedModel;
       group.appendChild(option);
     });
     if (group.childElementCount) select.appendChild(group);
   });
   select.disabled = state.providers.length === 0;
-  if (!state.providers.length || !select.childElementCount) {
-    const option = document.createElement('option');
-    option.value = '';
-    option.textContent = '添加供应商后选择模型';
-    select.appendChild(option);
-  }
   const provider = currentProvider();
   if (providerLabel) {
     if (!provider) providerLabel.textContent = '尚未配置供应商';
-    else if (state.activeModel) providerLabel.textContent = `${provider.name} · ${modelSummary(provider, state.activeModel)}`;
+    else if (selectedModel) providerLabel.textContent = `${provider.name} · ${modelSummary(provider, selectedModel)}`;
     else providerLabel.textContent = provider.name;
   }
 }
@@ -1334,7 +1466,7 @@ function renderComposerState() {
   const send = $('#btn-send');
   const hint = $('#composer-hint');
   const blocked = isBranchBlocked();
-  const ready = Boolean(currentProvider() && state.activeModel) && !blocked;
+  const ready = Boolean(activeSessionProvider()) && !blocked;
   const hasContent = Boolean(input?.value.trim());
   if (input) input.disabled = !ready || state.generating;
   if (send) {
@@ -1367,6 +1499,14 @@ function makeMsgAction(label, title, onClick, disabled) {
     onClick();
   });
   return btn;
+}
+
+function formatToolCardArgs(t) {
+  const PS = window.PreviewStream;
+  if (PS?.formatToolArgsForDisplay) {
+    return PS.formatToolArgsForDisplay(t.name, t.arguments, 8000);
+  }
+  return U.truncate(String(t.arguments || ''), 2000);
 }
 
 function renderChat() {
@@ -1409,22 +1549,30 @@ function renderChat() {
       toolsHost.className = 'chat-tools';
       message.toolCalls.forEach((t) => {
         if (!t || !t.name) return;
+        const active = t.status === 'composing' || t.status === 'running';
         const card = document.createElement('details');
-        card.className = 'tool-card tool-card--' + (t.status || 'done');
-        if (t._open || t.status === 'composing' || t.status === 'running') card.open = true;
+        card.className = 'tool-card tool-card--' + (t.status || 'done') + (active ? ' is-live' : '');
+        // 进行中强制展开；完成后默认收起；用户手动点过则尊重 _open
+        if (active) card.open = true;
+        else if (t._userOpen) card.open = !!t._open;
+        else card.open = false;
+        card.addEventListener('toggle', () => {
+          t._open = card.open;
+          t._userOpen = true;
+        });
         const head = document.createElement('summary');
         head.className = 'tool-head';
-        head.innerHTML = `<span class="tool-name"></span><span class="tool-status"></span>`;
+        head.innerHTML = `<span class="tool-pulse" aria-hidden="true"></span><span class="tool-name"></span><span class="tool-status"></span>`;
         head.querySelector('.tool-name').textContent = t.name;
         head.querySelector('.tool-status').textContent = toolStatusLabel(t.status);
         const bodyEl = document.createElement('div');
         bodyEl.className = 'tool-body';
         const argsSec = document.createElement('div');
         argsSec.className = 'tool-sec';
-        argsSec.textContent = '参数';
+        argsSec.textContent = active && t.name === 'write_file' ? '内容' : '参数';
         const argsPre = document.createElement('pre');
-        argsPre.className = 'tool-pre';
-        argsPre.textContent = U.truncate(String(t.arguments || ''), 1200);
+        argsPre.className = 'tool-pre' + (active ? ' tool-pre--live' : '');
+        argsPre.textContent = formatToolCardArgs(t);
         bodyEl.append(argsSec, argsPre);
         if (t.result != null && t.result !== '') {
           const resSec = document.createElement('div');
@@ -1432,7 +1580,7 @@ function renderChat() {
           resSec.textContent = '结果';
           const resPre = document.createElement('pre');
           resPre.className = 'tool-pre';
-          resPre.textContent = U.truncate(String(t.result), 2000);
+          resPre.textContent = U.truncate(String(t.result), 4000);
           bodyEl.append(resSec, resPre);
         }
         card.append(head, bodyEl);
@@ -1461,6 +1609,32 @@ function renderChat() {
       body.textContent = message.content || '';
     }
     if (body.textContent || body.innerHTML) item.append(body);
+
+    if (message.role === 'assistant' && Array.isArray(message.images) && message.images.length) {
+      const grid = document.createElement('div');
+      grid.className = 'chat-image-grid';
+      message.images.forEach((image) => {
+        if (!image?.path && !image?.dataUrl) return;
+        const card = document.createElement('button');
+        card.type = 'button';
+        card.className = 'chat-image-card';
+        card.title = image.path || '打开图片';
+        card.addEventListener('click', () => {
+          if (image.path) openFileInViewer(image.path);
+        });
+        if (image.dataUrl) {
+          const img = document.createElement('img');
+          img.src = image.dataUrl;
+          img.alt = image.path || '生成图片';
+          img.loading = 'lazy';
+          card.appendChild(img);
+        } else {
+          card.textContent = image.path || '图片';
+        }
+        grid.appendChild(card);
+      });
+      if (grid.childElementCount) item.append(grid);
+    }
 
     if (message.role === 'assistant' && message.error && message.status !== 'streaming') {
       const errRow = document.createElement('div');
@@ -1529,6 +1703,10 @@ function renderChat() {
   });
 
   host.appendChild(inner);
+  // 进行中的工具卡片：参数/内容区贴底滚动，像代码在一行行出来
+  $all('.tool-pre--live', host).forEach((pre) => {
+    pre.scrollTop = pre.scrollHeight;
+  });
   if (stickBottom) host.scrollTop = host.scrollHeight;
 }
 
@@ -1602,39 +1780,158 @@ function toolStatusLabel(status) {
   })[status] || status || '';
 }
 
-function shouldConfirmTool(name) {
-  return name === 'delete_file';
+function toolPermissionKey(name) {
+  if (name === 'run_js') return 'run_js';
+  if (name === 'web_fetch') return 'web_fetch';
+  if (name === 'image_go' || name === 'image_generation') return 'image_go';
+  if (name === 'delete_file') return 'delete_files';
+  // Windows has no run_service; remaining FS tools share "files".
+  return 'files';
+}
+
+function toolPermissionLabel(nameOrKey) {
+  const key = TOOL_PERM_KEYS.includes(nameOrKey) ? nameOrKey : toolPermissionKey(nameOrKey);
+  return TOOL_PERM_LABELS[key] || String(nameOrKey || '工具');
+}
+
+function toolPermission(nameOrKey) {
+  const key = TOOL_PERM_KEYS.includes(nameOrKey) ? nameOrKey : toolPermissionKey(nameOrKey);
+  const perms = normalizeToolPermissions(state.settings?.toolPermissions);
+  let mode = perms[key] || 'ask';
+  if (key === 'delete_files' && mode === 'always') mode = 'ask';
+  return mode;
+}
+
+let persistPermTimer = null;
+
+function setToolPermission(key, mode) {
+  if (!TOOL_PERM_KEYS.includes(key)) return;
+  let next = normalizeToolMode(mode);
+  if (key === 'delete_files' && next === 'always') next = 'ask';
+  const toolPermissions = {
+    ...normalizeToolPermissions(state.settings?.toolPermissions),
+    [key]: next,
+  };
+  state.settings = {
+    ...(state.settings || defaultSettings()),
+    toolPermissions,
+  };
+  renderToolPermissions();
+  // 立刻持久化（防抖），不必点「保存」
+  schedulePersistToolSettings();
+}
+
+function schedulePersistToolSettings() {
+  clearTimeout(persistPermTimer);
+  persistPermTimer = setTimeout(() => {
+    persistToolSettingsNow().catch((err) => console.warn('persist tool settings', err));
+  }, 280);
+}
+
+async function persistToolSettingsNow() {
+  const prev = state.settings || defaultSettings();
+  const agentBtn = $('#agent-enabled');
+  const rounds = $('#agent-max-rounds');
+  const calls = $('#agent-max-calls');
+  const next = {
+    ...defaultSettings(),
+    ...prev,
+    providers: state.providers,
+    agentEnabled: agentBtn
+      ? agentBtn.getAttribute('aria-pressed') === 'true'
+      : prev.agentEnabled !== false,
+    maxToolRounds: rounds
+      ? U.clamp(parseInt(rounds.value || 8, 10), 1, 32)
+      : (prev.maxToolRounds ?? 8),
+    maxToolCalls: calls
+      ? U.clamp(parseInt(calls.value || 24, 10), 1, 128)
+      : (prev.maxToolCalls ?? 24),
+    toolPermissions: normalizeToolPermissions(
+      readToolPermissionsFromUi?.() || prev.toolPermissions
+    ),
+  };
+  try {
+    const saved = await invoke('save_settings', { settings: next });
+    state.settings = {
+      ...defaultSettings(),
+      ...(saved || {}),
+      providers: state.providers,
+      toolPermissions: normalizeToolPermissions(saved?.toolPermissions || next.toolPermissions),
+    };
+  } catch (err) {
+    console.warn('Unable to persist tool settings:', err);
+  }
+}
+
+function formatToolArgsPreview(args, limit) {
+  try {
+    const obj = typeof args === 'string' ? JSON.parse(args || '{}') : (args || {});
+    return U.truncate(JSON.stringify(obj, null, 2), limit || 900);
+  } catch {
+    return U.truncate(String(args || ''), limit || 900);
+  }
 }
 
 async function authorizeToolCall(t) {
-  if (!shouldConfirmTool(t.name)) return '';
-  let preview = '';
-  try {
-    const args = typeof t.arguments === 'string' ? JSON.parse(t.arguments || '{}') : (t.arguments || {});
-    const paths = Array.isArray(args.paths) ? args.paths : (args.path ? [args.path] : []);
-    preview = paths.length ? paths.join('\n') : U.truncate(String(t.arguments || ''), 400);
-  } catch {
-    preview = U.truncate(String(t.arguments || ''), 400);
+  const key = toolPermissionKey(t.name);
+  let mode = toolPermission(t.name);
+  if (key === 'delete_files' && mode === 'always') mode = 'ask';
+  const label = toolPermissionLabel(t.name);
+  if (mode === 'never') return '错误：用户已禁止工具：' + label;
+  if (mode === 'always') return '';
+
+  if (key === 'delete_files') {
+    let preview = '';
+    try {
+      const args = typeof t.arguments === 'string' ? JSON.parse(t.arguments || '{}') : (t.arguments || {});
+      const paths = Array.isArray(args.paths) ? args.paths : (args.path ? [args.path] : []);
+      preview = paths.length ? paths.join('\n') : formatToolArgsPreview(t.arguments, 400);
+    } catch {
+      preview = formatToolArgsPreview(t.arguments, 400);
+    }
+    const ok = await UIDialog.confirm(
+      'AI 请求删除以下路径：\n' + preview + '\n\n删除后无法从应用内恢复。',
+      '确认删除',
+      { danger: true, okText: '删除' }
+    );
+    return ok ? '' : '错误：用户拒绝了工具调用：' + label;
   }
+
   const ok = await UIDialog.confirm(
-    'AI 请求删除以下路径：\n' + preview + '\n\n删除后无法从应用内恢复。',
-    '确认删除',
-    { danger: true, okText: '删除' }
+    'AI 请求使用工具：' + label + '\n\n' +
+    '工具名：' + t.name + '\n' +
+    '参数：\n' + formatToolArgsPreview(t.arguments, 900),
+    '工具授权'
   );
-  return ok ? '' : '错误：用户拒绝了工具调用：delete_file';
+  return ok ? '' : '错误：用户拒绝了工具调用：' + label;
 }
 
-function buildToolContext() {
+function buildToolContext(assistantMsg) {
+  // After authorizeToolCall gates group-level ask/never, pass web_fetch as
+  // always (unless never) so GET is not double-confirmed — same as Android.
+  const webFetchPerm = toolPermission('web_fetch');
   return {
     sessionId: state.session?.id,
     session: state.session,
-    webFetchMode: 'always',
+    webFetchMode: webFetchPerm === 'never' ? 'never' : 'always',
     previousResults: [],
     confirm: (msg) => UIDialog.confirm(String(msg), '工具授权'),
     openPreview: (payload) => openPreview(payload),
     onWorkspaceChanged: () => {
       if (state.rightOpen) refreshFilesTree();
       refreshBrowserIfOpen();
+    },
+    onImagesSaved: (saved) => {
+      if (!assistantMsg || !Array.isArray(saved)) return;
+      assistantMsg.images = (assistantMsg.images || []).concat(saved.map((image) => ({
+        path: image.path || '',
+        mime: image.mime || 'image/png',
+        dataUrl: image.dataUrl || '',
+        prompt: image.prompt || '',
+        revisedPrompt: image.revisedPrompt || '',
+        imageMeta: image.imageMeta,
+      })));
+      renderChat();
     },
     onRunJs: (info) => {
       state.lastRunJs = info;
@@ -1659,8 +1956,8 @@ function settingsForRequest(tools) {
 }
 
 async function generateAssistant(opts = {}) {
-  const provider = currentProvider();
-  const model = state.activeModel || state.session?.model || provider?.models?.[0] || '';
+  const provider = activeSessionProvider();
+  const model = state.session?.model || '';
   if (!provider || !model || !state.session) return;
 
   const targetIndex = Number.isInteger(opts.targetIndex) ? opts.targetIndex : -1;
@@ -1713,7 +2010,7 @@ async function generateAssistant(opts = {}) {
   const maxToolCalls = U.clamp(parseInt(state.settings?.maxToolCalls || 24, 10), 1, 128);
   let totalToolCalls = 0;
   const previousToolResults = [];
-  const toolCtx = buildToolContext();
+  const toolCtx = buildToolContext(assistantMsg);
 
   state.session.providerId = provider.id;
   state.session.model = model;
@@ -1742,6 +2039,8 @@ async function generateAssistant(opts = {}) {
           assistantMsg.usage = stream?.usage || null;
           if (stream?.streamTools?.length && TS.syncStreamToolCalls) {
             TS.syncStreamToolCalls(assistantMsg, stream.streamTools, step);
+            // write_file 参数流式 → 预览 staging（不落盘）
+            window.PreviewStream?.syncFromTools?.(stream.streamTools);
           }
           assistantMsg.status = 'streaming';
           if (assistantMsg.variants?.length) syncActiveAssistantVariant(assistantMsg);
@@ -1795,6 +2094,9 @@ async function generateAssistant(opts = {}) {
           return d;
         });
 
+      // 参数完整：立刻刷一帧完整预览（绕过 throttle）
+      window.PreviewStream?.syncFromTools?.(rawCalls, { immediate: true, forceComplete: true });
+
       workingMessages.push({
         role: 'assistant',
         content: result.content || '',
@@ -1815,6 +2117,12 @@ async function generateAssistant(opts = {}) {
         const out = denied || await Tools.execute(t.name, t.arguments, toolCtx);
         t.result = out;
         t.status = String(out).startsWith('错误：') ? 'error' : 'done';
+        // 完成后默认收起
+        t._open = false;
+        t._userOpen = false;
+        if (t.name === 'write_file') {
+          settleWriteFilePreview(t, t.status === 'done');
+        }
         previousToolResults.push({ name: t.name, result: out });
         workingMessages.push({ role: 'tool', toolCallId: t.id, content: out });
         if (assistantMsg.variants?.length) syncActiveAssistantVariant(assistantMsg);
@@ -1845,6 +2153,11 @@ async function generateAssistant(opts = {}) {
     state.generating = false;
     state.abortCtl = null;
     state.stopRequested = false;
+    // 结束本轮后去掉「流式」徽标；正式落盘的路径已由 settleWriteFilePreview 清理
+    state.rightTabs.forEach((tab) => {
+      if (tab.kind === 'browser' && tab.streaming) tab.streaming = false;
+    });
+    renderRightTabs();
     renderChat();
     renderComposerState();
     await persistSession();
@@ -1863,8 +2176,8 @@ async function sendMessage() {
   }
   const input = $('#composer-input');
   const content = input?.value.trim() || '';
-  const provider = currentProvider();
-  const model = state.activeModel;
+  const provider = activeSessionProvider();
+  const model = state.session?.model || '';
   if (!content || !provider || !model || !state.session) return;
 
   const messages = state.session.messages || [];
@@ -1885,7 +2198,9 @@ async function sendMessage() {
   });
   state.session.providerId = provider.id;
   state.session.model = model;
-  state.session.title = state.session.title || content.split(/\r?\n/)[0].slice(0, 48);
+  if (hasUntitledSessionTitle(state.session.title)) {
+    state.session.title = content.split(/\r?\n/)[0].replace(/\s+/g, ' ').trim().slice(0, 48);
+  }
   state.session.messages.push(user);
   input.value = '';
   renderSessions();
@@ -1908,14 +2223,35 @@ function bindEvents() {
 
   $('#btn-new-chat')?.addEventListener('click', () => createNewChat());
   $('#btn-new-chat-top')?.addEventListener('click', () => createNewChat());
-  $('#btn-new-image')?.addEventListener('click', () => setMode('image'));
+  // image new session handled by ImageMode.bindUi
   $('#btn-save-agent')?.addEventListener('click', () => saveAgentSettings());
+  $('#btn-save-image-settings')?.addEventListener('click', () => saveImageSettings());
+  $('#btn-toggle-image-canvas')?.addEventListener('click', () => {
+    if (state.rightOpen && state.rightTabs.some((t) => t.kind === 'canvas' && t.id === state.activeRightTabId)) {
+      setRightOpen(false);
+    } else {
+      showImageCanvasPane();
+    }
+  });
   $('#agent-enabled')?.addEventListener('click', () => {
     const btn = $('#agent-enabled');
     if (!btn) return;
     const on = btn.getAttribute('aria-pressed') !== 'true';
     btn.setAttribute('aria-pressed', on ? 'true' : 'false');
     btn.classList.toggle('on', on);
+    if (state.settings) state.settings.agentEnabled = on;
+    schedulePersistToolSettings();
+  });
+  // 轮次/调用数变更也自动保存
+  $('#agent-max-rounds')?.addEventListener('change', () => schedulePersistToolSettings());
+  $('#agent-max-calls')?.addEventListener('change', () => schedulePersistToolSettings());
+  $('#tool-perm-list')?.addEventListener('click', (ev) => {
+    const btn = ev.target.closest('.seg-btn');
+    if (!btn) return;
+    const row = btn.closest('.tool-perm-row');
+    const key = row?.dataset.permKey;
+    if (!key) return;
+    setToolPermission(key, btn.dataset.mode);
   });
   document.addEventListener('click', () => closeSessionMenus());
 
@@ -1958,15 +2294,11 @@ function bindEvents() {
   $('#model-select')?.addEventListener('change', async (event) => {
     const [providerId, model] = event.target.value.split('\n');
     if (!providerId || !model) return;
-    state.activeProviderId = providerId;
-    state.activeModel = model;
     if (state.session) {
       state.session.providerId = providerId;
       state.session.model = model;
     }
-    await persistSettings();
-    if (state.session?.messages.length) await persistSession();
-    renderProviders();
+    await persistSession();
     renderModelSelect();
     renderComposerState();
   });
@@ -2034,11 +2366,37 @@ function renderBackendState() {
   if (rounds) rounds.value = String(settings.maxToolRounds ?? 8);
   const calls = $('#agent-max-calls');
   if (calls) calls.value = String(settings.maxToolCalls ?? 24);
+  renderToolPermissions();
   renderProviders();
   renderSessions();
   renderModelSelect();
   renderComposerState();
   renderChat();
+}
+
+function renderToolPermissions() {
+  const perms = normalizeToolPermissions(state.settings?.toolPermissions);
+  $all('.tool-perm-row').forEach((row) => {
+    const key = row.dataset.permKey;
+    if (!key) return;
+    const mode = perms[key] || 'ask';
+    row.querySelectorAll('.seg-btn').forEach((btn) => {
+      btn.classList.toggle('is-on', btn.dataset.mode === mode);
+    });
+  });
+}
+
+function readToolPermissionsFromUi() {
+  const perms = normalizeToolPermissions(state.settings?.toolPermissions);
+  $all('.tool-perm-row').forEach((row) => {
+    const key = row.dataset.permKey;
+    if (!TOOL_PERM_KEYS.includes(key)) return;
+    const on = row.querySelector('.seg-btn.is-on');
+    let mode = normalizeToolMode(on?.dataset.mode || perms[key]);
+    if (key === 'delete_files' && mode === 'always') mode = 'ask';
+    perms[key] = mode;
+  });
+  return perms;
 }
 
 async function saveAgentSettings() {
@@ -2049,15 +2407,20 @@ async function saveAgentSettings() {
   const next = {
     ...(state.settings || defaultSettings()),
     providers: state.providers,
-    activeProviderId: state.activeProviderId,
-    activeModel: state.activeModel,
     agentEnabled: agentBtn ? agentBtn.getAttribute('aria-pressed') === 'true' : true,
     maxToolRounds: U.clamp(parseInt(rounds?.value || 8, 10), 1, 32),
     maxToolCalls: U.clamp(parseInt(calls?.value || 24, 10), 1, 128),
+    toolPermissions: readToolPermissionsFromUi(),
   };
   if (status) status.textContent = '保存中…';
   try {
-    state.settings = { ...defaultSettings(), ...(await invoke('save_settings', { settings: next })), providers: state.providers };
+    const saved = await invoke('save_settings', { settings: next });
+    state.settings = {
+      ...defaultSettings(),
+      ...(saved || {}),
+      providers: state.providers,
+      toolPermissions: normalizeToolPermissions(saved?.toolPermissions || next.toolPermissions),
+    };
     if (status) status.textContent = '已保存';
     UIDialog.toast('工具设置已保存');
     renderBackendState();
@@ -2077,17 +2440,16 @@ async function loadBackend() {
       invoke('list_sessions'),
     ]);
     state.meta = meta || null;
-    state.settings = { ...defaultSettings(), ...(settings || {}) };
+    state.settings = {
+      ...defaultSettings(),
+      ...(settings || {}),
+      toolPermissions: normalizeToolPermissions(settings?.toolPermissions),
+    };
     state.defaultWorkspaceRoot = defaultRoot || '';
     state.resolvedWorkspaceRoot = resolvedRoot || '';
     state.providers = Array.isArray(state.settings.providers)
       ? state.settings.providers.map((item) => normalizeProvider(item))
       : [];
-    state.activeProviderId = state.settings.activeProviderId || state.providers[0]?.id || '';
-    const provider = currentProvider();
-    state.activeModel = provider?.models.includes(state.settings.activeModel)
-      ? state.settings.activeModel
-      : provider?.models[0] || '';
     state.sessions = Array.isArray(sessions) ? sessions.map((item) => normalizeSession(item)) : [];
     if (state.sessions[0]) {
       try {
@@ -2099,19 +2461,13 @@ async function loadBackend() {
       state.session = createSession();
       await persistSession();
     }
-    if (state.session.providerId && state.providers.some((item) => item.id === state.session.providerId)) {
-      state.activeProviderId = state.session.providerId;
-      const sessionProvider = currentProvider();
-      state.activeModel = sessionProvider?.models.includes(state.session.model)
-        ? state.session.model
-        : sessionProvider?.models[0] || '';
-    }
+    if (state.session?.mode === 'image') state.lastImageSessionId = state.session.id;
+    else if (state.session?.id) state.lastChatSessionId = state.session.id;
+    await hydrateSessionImages(state.session);
   } catch (err) {
     console.warn('Backend bootstrap unavailable:', err);
     state.settings ||= defaultSettings();
     state.providers = Array.isArray(state.settings.providers) ? state.settings.providers.map(normalizeProvider) : [];
-    state.activeProviderId = state.settings.activeProviderId || state.providers[0]?.id || '';
-    state.activeModel = state.settings.activeModel || currentProvider()?.models[0] || '';
     state.session ||= createSession();
   }
   renderBackendState();
@@ -2122,13 +2478,23 @@ async function saveWorkspaceSettings() {
   const status = $('#workspace-status');
   if (!input) return;
 
+  const prev = state.settings || defaultSettings();
   const next = {
-    ...(state.settings || {}),
+    ...defaultSettings(),
+    ...prev,
+    providers: state.providers,
     workspaceRoot: input.value.trim() || null,
+    toolPermissions: normalizeToolPermissions(prev.toolPermissions),
   };
   if (status) status.textContent = '保存中…';
   try {
-    state.settings = await invoke('save_settings', { settings: next });
+    const saved = await invoke('save_settings', { settings: next });
+    state.settings = {
+      ...defaultSettings(),
+      ...(saved || {}),
+      providers: state.providers,
+      toolPermissions: normalizeToolPermissions(saved?.toolPermissions || next.toolPermissions),
+    };
     state.resolvedWorkspaceRoot = await invoke('resolve_workspace_root');
     renderBackendState();
     if (status) status.textContent = '已保存';
@@ -2165,7 +2531,11 @@ function renderRightTabs() {
     el.setAttribute('role', 'tab');
     el.setAttribute('aria-selected', tab.id === state.activeRightTabId ? 'true' : 'false');
     el.innerHTML = `<span class="rp-tab-label"></span><span class="rp-tab-close" title="关闭">×</span>`;
-    el.querySelector('.rp-tab-label').textContent = tab.title;
+    const label = tab.streaming
+      ? (tab.title || '浏览器') + ' · 生成中'
+      : (tab.title || '');
+    el.querySelector('.rp-tab-label').textContent = label;
+    if (tab.streaming) el.classList.add('is-streaming');
     el.addEventListener('click', (e) => {
       if (e.target.closest('.rp-tab-close')) {
         e.stopPropagation();
@@ -2210,7 +2580,8 @@ function renderRightContent() {
           <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M12 4l-1.41 1.41L16.17 11H4v2h12.17l-5.58 5.59L12 20l8-8-8-8z"/></svg>
         </button>
       </div>
-      <div class="rp-browser-stage" id="browser-stage">
+      <div class="rp-browser-stage${tab.streaming ? ' is-streaming' : ''}" id="browser-stage">
+        <div class="rp-stream-indicator" aria-hidden="true"></div>
         <div class="rp-empty" id="browser-empty">
           <div class="rp-empty-icon" aria-hidden="true">
             <svg viewBox="0 0 24 24" width="32" height="32">
@@ -2275,6 +2646,8 @@ function renderRightContent() {
         </div>`}
       </div>
     `;
+  } else if (tab.kind === 'canvas') {
+    content = `<div class="img-canvas-host" id="image-canvas-host"></div>`;
   }
 
   if (content) {
@@ -2282,6 +2655,316 @@ function renderRightContent() {
     host.hidden = false;
     if (tab.kind === 'browser') bindBrowserTab(tab);
     if (tab.kind === 'files') bindFilesTab(tab);
+    if (tab.kind === 'canvas' && window.ImageMode) {
+      window.ImageMode.renderCanvas();
+    }
+  }
+}
+
+/* ---------- Browser preview via local HTTP (multi-file CSS/JS) ---------- */
+
+let previewRefreshTimer = null;
+let previewServerInfo = null; // { baseUrl, port, token, sessionId }
+let previewPaintGen = 0; // drop stale async paints
+let filesTabBound = false;
+
+async function ensurePreviewServer() {
+  const sid = state.session?.id;
+  if (!sid) return null;
+  if (previewServerInfo?.sessionId === sid && previewServerInfo.baseUrl) {
+    return previewServerInfo;
+  }
+  try {
+    const info = await invoke('preview_ensure', { args: { sessionId: sid } });
+    previewServerInfo = {
+      baseUrl: info.baseUrl || info.base_url,
+      port: info.port,
+      token: info.token,
+      sessionId: info.sessionId || info.session_id || sid,
+    };
+    return previewServerInfo;
+  } catch (err) {
+    console.warn('preview_ensure failed', err);
+    return null;
+  }
+}
+
+function browserPreviewUrl(path, bust) {
+  const base = previewServerInfo?.baseUrl;
+  if (!base || !path) return '';
+  const rel = String(path).replace(/^\/+/, '');
+  const q = bust != null ? bust : Date.now();
+  return base + rel + (base.includes('?') ? '&' : '?') + 't=' + q;
+}
+
+async function stageToPreviewServer(path, content) {
+  const sid = state.session?.id;
+  if (!sid || !path) return;
+  try {
+    await ensurePreviewServer();
+    await invoke('preview_stage', {
+      args: { sessionId: sid, path, content: content == null ? '' : String(content) },
+    });
+  } catch (err) {
+    console.warn('preview_stage', err);
+  }
+}
+
+async function unstageFromPreviewServer(path) {
+  const sid = state.session?.id;
+  if (!sid || !path) return;
+  try {
+    await invoke('preview_unstage', {
+      args: { sessionId: sid, path, content: '' },
+    });
+  } catch {
+    /* ignore */
+  }
+}
+
+function setBrowserStreamingUi(streaming) {
+  const stage = $('#browser-stage');
+  if (!stage) return;
+  stage.classList.toggle('is-streaming', !!streaming);
+}
+
+function showBrowserEmpty(tab, opts = {}) {
+  if (!tab || state.activeRightTabId !== tab.id) return;
+  const empty = $('#browser-empty');
+  const frame = $('.rp-frame');
+  tab.waiting = true;
+  setBrowserStreamingUi(!!opts.streaming);
+  if (empty) {
+    empty.hidden = false;
+    const title = empty.querySelector('.rp-empty-title');
+    const desc = empty.querySelector('.rp-empty-desc');
+    if (title) title.textContent = opts.streaming ? '生成中…' : '等待生成…';
+    if (desc) {
+      desc.textContent = (tab.path || '') + (opts.streaming ? ' · 流式预览' : ' 尚未创建或不存在');
+    }
+  }
+  if (frame) {
+    frame.hidden = true;
+    window.BrowserPreview?.clear?.(frame);
+  }
+}
+
+/**
+ * Paint browser preview with minimal flicker.
+ * Prefer in-place document.write + <base href> (relative CSS/JS via preview server).
+ * Only navigate frame.src when we have a path but no HTML body yet.
+ */
+async function paintBrowserHttp(tab, opts = {}) {
+  if (!tab || state.activeRightTabId !== tab.id) return;
+  const path = tab.path;
+  if (!path) {
+    showBrowserEmpty(tab, opts);
+    return;
+  }
+
+  const gen = ++previewPaintGen;
+  const empty = $('#browser-empty');
+  const frame = $('.rp-frame');
+  const BP = window.BrowserPreview;
+  const staged = window.PreviewStream?.getStaging?.(path);
+  let content = opts.content != null
+    ? String(opts.content)
+    : (staged?.content != null ? String(staged.content) : (tab.html || ''));
+
+  // When re-painting after CSS/JS asset stream, reuse last HTML body
+  if (!content && tab.html) content = String(tab.html);
+
+  tab.streaming = !!opts.streaming;
+  setBrowserStreamingUi(!!opts.streaming);
+
+  // Have HTML body → smooth in-place write (no frame.src navigation)
+  if (content && frame) {
+    const info = await ensurePreviewServer();
+    if (gen !== previewPaintGen || state.activeRightTabId !== tab.id) return;
+    const baseHref = BP && info?.baseUrl
+      ? BP.baseHrefFor(info.baseUrl, path)
+      : '';
+
+    tab.waiting = false;
+    tab.html = content;
+    if (empty) empty.hidden = true;
+    frame.hidden = false;
+
+    const result = BP
+      ? BP.writeHtml(frame, content, {
+          path,
+          baseHref,
+          force: !!opts.force,
+          preserveScroll: opts.preserveScroll !== false,
+        })
+      : null;
+
+    if (result === 'failed' || result == null) {
+      // Last resort: srcdoc without base (single-file)
+      try {
+        frame.removeAttribute('src');
+        frame.srcdoc = content;
+      } catch {
+        /* ignore */
+      }
+    }
+    return;
+  }
+
+  // No body yet: show waiting, optionally navigate once for existing disk file
+  if (!content) {
+    // Try loading via HTTP only when not streaming (disk may already have file)
+    if (!opts.streaming) {
+      const info = await ensurePreviewServer();
+      if (gen !== previewPaintGen || state.activeRightTabId !== tab.id) return;
+      if (info?.baseUrl && frame) {
+        const bust = opts.bust != null ? opts.bust : Date.now();
+        const url = browserPreviewUrl(path, bust);
+        tab.waiting = false;
+        if (empty) empty.hidden = true;
+        frame.hidden = false;
+        frame.removeAttribute('srcdoc');
+        BP?.invalidate?.(frame);
+        frame.src = url;
+        return;
+      }
+    }
+    if (gen === previewPaintGen) showBrowserEmpty(tab, opts);
+  }
+}
+
+function scheduleBrowserRefresh(reason) {
+  clearTimeout(previewRefreshTimer);
+  previewRefreshTimer = setTimeout(() => {
+    const tab = state.rightTabs.find((t) => t.id === state.activeRightTabId);
+    if (tab?.kind === 'browser' && tab.path) {
+      // Asset updates: re-write current HTML so relative CSS/JS re-fetch (no-store).
+      // Do NOT assign frame.src — that is the white-flash path.
+      const staged = window.PreviewStream?.getStaging?.(tab.path);
+      const content = staged?.content || tab.html || '';
+      paintBrowserHttp(tab, {
+        streaming: !!tab.streaming,
+        force: true,
+        content: content || undefined,
+        preserveScroll: true,
+      });
+    }
+  }, reason === 'stream' ? 200 : 100);
+}
+
+/**
+ * write_file 流式：任意 html/css/js 进 staging + 预览服务；
+ * HTML 入口自动开 Browser；资源变更刷新当前页。
+ */
+function applyStreamPreview(path, content, meta = {}) {
+  const PS = window.PreviewStream;
+  const norm = PS ? PS.normalizePath(path) : String(path || '').replace(/\\/g, '/').replace(/^\/+/, '');
+  if (!norm || (PS && !PS.isPreviewAssetPath(norm))) return;
+
+  // Push to Rust overlay (async, fire-and-forget)
+  stageToPreviewServer(norm, content);
+
+  const isHtml = PS ? PS.isHtmlPath(norm) : /\.html?$/i.test(norm);
+
+  if (isHtml) {
+    setRightOpen(true);
+    let tab = state.rightTabs.find((t) => t.kind === 'browser' && t.path === norm);
+    if (!tab) {
+      tab = state.rightTabs.find((t) => t.kind === 'browser' && (!t.path || t.path === norm));
+    }
+    let needFullRender = false;
+    if (!tab) {
+      tab = {
+        id: uid('r'),
+        kind: 'browser',
+        title: norm.split('/').pop() || '浏览器',
+        path: norm,
+        waiting: !content,
+        streaming: !!meta.streaming,
+      };
+      state.rightTabs.push(tab);
+      needFullRender = true;
+    } else {
+      tab.path = norm;
+      if (!tab.title || tab.title === '浏览器') tab.title = norm.split('/').pop() || tab.title;
+    }
+    tab.streaming = !!meta.streaming;
+    tab.waiting = !content;
+    tab.html = content;
+
+    if (state.activeRightTabId !== tab.id) {
+      state.activeRightTabId = tab.id;
+      needFullRender = true;
+    }
+
+    if (needFullRender || !$('.rp-frame')) {
+      renderRightTabs();
+      renderRightContent();
+    } else {
+      renderRightTabs();
+      setBrowserStreamingUi(!!meta.streaming);
+    }
+    // In-place write; no bust/src navigation during stream
+    paintBrowserHttp(tab, {
+      streaming: !!meta.streaming,
+      content,
+      preserveScroll: true,
+    });
+    return;
+  }
+
+  // Non-html asset: re-write open HTML entry so relative CSS/JS re-fetch
+  const active = state.rightTabs.find((t) => t.id === state.activeRightTabId);
+  if (active?.kind === 'browser' && active.path) {
+    active.streaming = true;
+    renderRightTabs();
+    setBrowserStreamingUi(true);
+    scheduleBrowserRefresh('stream');
+  }
+}
+
+function settleWriteFilePreview(toolCall, success) {
+  const PS = window.PreviewStream;
+  if (!PS) return;
+  let path = '';
+  try {
+    const args = typeof toolCall.arguments === 'string'
+      ? JSON.parse(toolCall.arguments || '{}')
+      : (toolCall.arguments || {});
+    path = PS.normalizePath(args.path);
+  } catch {
+    path = '';
+  }
+  if (!path || !PS.isPreviewAssetPath(path)) return;
+
+  if (success) {
+    PS.clearPath(path);
+    unstageFromPreviewServer(path);
+    state.rightTabs.forEach((tab) => {
+      if (tab.kind === 'browser' && (tab.path === path || PS.isHtmlPath(tab.path))) {
+        tab.streaming = false;
+        tab.waiting = false;
+      }
+    });
+    setBrowserStreamingUi(false);
+    renderRightTabs();
+    const active = state.rightTabs.find((t) => t.id === state.activeRightTabId);
+    if (active?.kind === 'browser' && active.path) {
+      // HTML entry committed: re-read disk and in-place paint
+      // CSS/JS asset committed: re-write open HTML so assets re-fetch
+      if (PS.isHtmlPath(path) && active.path === path) {
+        loadBrowserPath(active, active.path);
+      } else if (PS.isHtmlPath(active.path)) {
+        scheduleBrowserRefresh('commit');
+      }
+    }
+  } else {
+    PS.markCommitted(path);
+    state.rightTabs.forEach((tab) => {
+      if (tab.kind === 'browser') tab.streaming = false;
+    });
+    setBrowserStreamingUi(false);
+    renderRightTabs();
   }
 }
 
@@ -2308,7 +2991,7 @@ async function openPreview(payload = {}) {
 
   let tab = state.rightTabs.find((t) => t.kind === 'browser' && t.path === path);
   if (!tab) {
-    tab = { id: uid('r'), kind: 'browser', title, path, waiting: false };
+    tab = { id: uid('r'), kind: 'browser', title, path, waiting: false, streaming: false };
     state.rightTabs.push(tab);
   } else {
     tab.title = title;
@@ -2320,41 +3003,50 @@ async function openPreview(payload = {}) {
 }
 
 async function loadBrowserPath(tab, path) {
-  if (!path || !state.session?.id || !window.Tools?.fs) {
+  if (!path) {
     tab.waiting = true;
+    showBrowserEmpty(tab, {});
     return;
   }
-  try {
-    const content = await Tools.fs.read(state.session.id, path);
-    if (String(content).startsWith('错误：')) {
-      tab.waiting = true;
-      tab.html = '';
-      const empty = $('#browser-empty');
-      const frame = $('.rp-frame');
-      if (empty) {
-        empty.hidden = false;
-        const title = empty.querySelector('.rp-empty-title');
-        const desc = empty.querySelector('.rp-empty-desc');
-        if (title) title.textContent = '等待生成…';
-        if (desc) desc.textContent = path + ' 尚未创建或不存在';
-      }
-      if (frame) frame.hidden = true;
-      return;
-    }
-    tab.waiting = false;
-    tab.path = path;
-    tab.html = content;
-    const empty = $('#browser-empty');
-    const frame = $('.rp-frame');
-    if (empty) empty.hidden = true;
-    if (frame) {
-      frame.hidden = false;
-      frame.srcdoc = content;
-    }
-  } catch (err) {
-    tab.waiting = true;
-    UIDialog.toast(err?.message || String(err));
+  tab.path = path;
+  const PS = window.PreviewStream;
+  const staged = PS?.getStaging?.(path);
+
+  // If streaming staging has content, push to server overlay first
+  if (staged?.content) {
+    await stageToPreviewServer(path, staged.content);
+    tab.streaming = !!staged.streaming;
+    tab.html = staged.content;
+    await paintBrowserHttp(tab, { streaming: !!staged.streaming, content: staged.content, force: true });
+    return;
   }
+
+  // Disk file → ensure server and load via HTTP
+  if (state.session?.id && window.Tools?.fs) {
+    try {
+      const content = await Tools.fs.read(state.session.id, path);
+      if (!String(content).startsWith('错误：')) {
+        tab.waiting = false;
+        tab.streaming = false;
+        tab.html = content;
+        PS?.clearPath?.(path);
+        await paintBrowserHttp(tab, {
+          streaming: false,
+          force: true,
+          content,
+          preserveScroll: true,
+        });
+        return;
+      }
+    } catch {
+      /* fall through */
+    }
+  }
+
+  tab.waiting = true;
+  tab.streaming = false;
+  tab.html = '';
+  showBrowserEmpty(tab, {});
 }
 
 function bindBrowserTab(tab) {
@@ -2445,15 +3137,53 @@ function paintFilesTree() {
 
 async function openFileInViewer(path) {
   if (!path || !state.session?.id) return;
+  setRightOpen(true);
+  let filesTab = state.rightTabs.find((tab) => tab.kind === 'files');
+  if (!filesTab) {
+    filesTab = { id: uid('r'), kind: 'files', title: '文件' };
+    state.rightTabs.push(filesTab);
+  }
+  const isFilesTabActive = state.activeRightTabId === filesTab.id;
+  if (!isFilesTabActive) {
+    state.activeRightTabId = filesTab.id;
+    renderRightTabs();
+    renderRightContent();
+  }
   state.filesSelectedPath = path;
+  await loadFileContent(path);
+}
+
+async function loadFileContent(path) {
   const empty = $('#file-viewer-empty');
   const code = $('#file-viewer-code');
+  const viewer = $('.rp-file-viewer');
+  viewer?.querySelector('.rp-binary-viewer')?.remove();
   try {
-    const content = await Tools.fs.read(state.session.id, path);
-    if (empty) empty.hidden = true;
-    if (code) {
-      code.hidden = false;
-      code.textContent = String(content).startsWith('错误：') ? content : content;
+    if (/\.(?:png|jpe?g|gif|webp|bmp|svg)$/i.test(path)) {
+      const res = await invoke('ws_read_bytes', { args: { sessionId: state.session.id, path } });
+      if (!res?.contentBase64) throw new Error('图片内容为空');
+      if (empty) empty.hidden = true;
+      if (code) code.hidden = true;
+      if (viewer) {
+        const wrap = document.createElement('div');
+        wrap.className = 'rp-binary-viewer';
+        const image = document.createElement('img');
+        image.className = 'rp-file-image';
+        image.src = `data:${res.mime || 'image/png'};base64,${res.contentBase64}`;
+        image.alt = path;
+        const label = document.createElement('div');
+        label.className = 'rp-binary-label';
+        label.textContent = path;
+        wrap.append(image, label);
+        viewer.appendChild(wrap);
+      }
+    } else {
+      const content = await Tools.fs.read(state.session.id, path);
+      if (empty) empty.hidden = true;
+      if (code) {
+        code.hidden = false;
+        code.textContent = String(content).startsWith('错误：') ? content : content;
+      }
     }
   } catch (err) {
     if (code) {
@@ -2465,6 +3195,8 @@ async function openFileInViewer(path) {
 }
 
 function bindFilesTab() {
+  if (filesTabBound) return;
+  filesTabBound = true;
   hostAct('refresh-files', () => refreshFilesTree());
   const filter = $('#file-tree-filter');
   filter?.addEventListener('input', () => {
@@ -2472,8 +3204,7 @@ function bindFilesTab() {
     paintFilesTree();
   });
   refreshFilesTree().then(() => {
-    if (state.filesSelectedPath) openFileInViewer(state.filesSelectedPath);
-    else paintFilesTree();
+    paintFilesTree();
   });
 }
 
@@ -2512,11 +3243,12 @@ function addRightTab(kind) {
   const kinds = {
     browser: { title: '浏览器', kind: 'browser', path: '' },
     files: { title: '文件', kind: 'files' },
-    runner: { title: '运行', kind: 'runner' }
+    runner: { title: '运行', kind: 'runner' },
+    canvas: { title: '画布', kind: 'canvas' },
   };
   if (!kinds[kind]) return;
-  // Reuse single files/runner tab
-  if (kind === 'files' || kind === 'runner') {
+  // Reuse single files/runner/canvas tab
+  if (kind === 'files' || kind === 'runner' || kind === 'canvas') {
     const existing = state.rightTabs.find((t) => t.kind === kind);
     if (existing) {
       state.activeRightTabId = existing.id;
@@ -2589,15 +3321,93 @@ function bindRightEvents() {
     document.addEventListener('mouseup', stop);
   }
 }
+async function saveImageSettings() {
+  const status = $('#image-settings-status');
+  if (!window.ImageMode) {
+    if (status) status.textContent = '生图模块未加载';
+    return;
+  }
+  const patch = window.ImageMode.readImageSettingsFromPage();
+  const prev = state.settings || defaultSettings();
+  const next = {
+    ...defaultSettings(),
+    ...prev,
+    ...patch,
+    imageStylePresets: prev.imageStylePresets?.length
+      ? prev.imageStylePresets
+      : (window.ImageMode.defaultStylePresets || []),
+    providers: state.providers,
+    toolPermissions: normalizeToolPermissions(prev.toolPermissions),
+  };
+  if (status) status.textContent = '保存中…';
+  try {
+    const saved = await invoke('save_settings', { settings: next });
+    state.settings = {
+      ...defaultSettings(),
+      ...(saved || {}),
+      providers: state.providers,
+      toolPermissions: normalizeToolPermissions(saved?.toolPermissions || next.toolPermissions),
+    };
+    if (status) status.textContent = '已保存';
+    window.ImageMode.fillImageSettingsPage();
+    window.ImageMode.renderImageComposerMeta?.();
+    UIDialog.toast('生图设置已保存');
+  } catch (err) {
+    console.warn('save image settings', err);
+    if (status) status.textContent = '保存失败';
+  }
+}
+
 async function boot() {
   bindEvents();
+  if (window.ImageMode) {
+    window.ImageMode.bind({
+      getState: () => state,
+      invoke,
+      persistSession,
+      refreshSessionList: async () => {
+        try {
+          const sessions = await invoke('list_sessions');
+          state.sessions = Array.isArray(sessions) ? sessions.map((item) => normalizeSession(item)) : state.sessions;
+        } catch { /* keep local */ }
+        renderSessions();
+        window.ImageMode.renderImageSessionList();
+      },
+      loadSession: async (id) => {
+        if (state.session?.id) {
+          if (state.session.mode === 'image') state.lastImageSessionId = state.session.id;
+          else state.lastChatSessionId = state.session.id;
+        }
+        try {
+          const loaded = await invoke('load_session', { id });
+          state.session = normalizeSession(loaded);
+        } catch {
+          const item = state.sessions.find((s) => s.id === id);
+          if (item) state.session = normalizeSession(item);
+        }
+        if (state.session?.mode === 'image') state.lastImageSessionId = state.session.id;
+        else if (state.session?.id) state.lastChatSessionId = state.session.id;
+        upsertSessionIndex(state.session);
+      },
+      toast: (msg, kind) => UIDialog.toast(msg, kind === 'err' ? 4000 : 2200),
+      uid,
+      nowIso,
+      setRightOpen,
+      showImageCanvasPane,
+    });
+    window.ImageMode.bindUi();
+  }
   await bindWindowControls();
   setMode('chat');
   setSettingsPage('providers');
   setListCollapsed(false);
   setRightOpen(false);
+  window.PreviewStream?.setApplyHandler?.(applyStreamPreview);
   await loadBackend();
   bindRightEvents();
+  setMode(state.session?.mode === 'image' ? 'image' : 'chat');
+  renderSessions();
+  if (window.ImageMode) window.ImageMode.renderImageSessionList();
 }
 
 boot().catch((err) => console.error('Unable to start WePChat:', err));
