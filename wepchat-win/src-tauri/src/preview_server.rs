@@ -113,9 +113,96 @@ fn mime_for(path: &str) -> &'static str {
     }
 }
 
+/// 预览内容的 CSP：允许同源（预览服务器自身）与 data/blob 资源，
+/// 禁止外部网络、表单提交和插件。模型生成的 HTML 由此被限制在本地沙箱内。
+const PREVIEW_CSP: &str = "default-src 'self' data: blob:; \
+script-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob:; \
+style-src 'self' 'unsafe-inline' data: blob:; \
+img-src 'self' data: blob:; font-src 'self' data: blob:; \
+media-src 'self' data: blob:; connect-src 'self'; \
+form-action 'none'; object-src 'none'; base-uri 'self'";
+
+/// 隔离绘制 harness：宿主通过 postMessage 推送 HTML，harness 写入内部 iframe。
+/// 外层 iframe 运行在 127.0.0.1 随机端口独立 origin，与 Tauri 主窗口不同源，
+/// 因而即使允许 same-origin 供 harness 维护内部文档，也无法触碰应用窗口与 Tauri IPC；
+/// 文档级 CSP 由本服务器响应头下发并被 about:blank 子文档继承。
+const HARNESS_HTML: &str = r#"<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; background: #fff; }
+  iframe { border: 0; width: 100%; height: 100%; display: block; background: #fff; }
+</style>
+</head>
+<body>
+<iframe id="v"></iframe>
+<script>
+(function () {
+  'use strict';
+  var frame = document.getElementById('v');
+  var previewRoot = location.pathname.replace(/__wep_preview__$/, '');
+
+  function freshFrame() {
+    var nf = document.createElement('iframe');
+    nf.id = 'v';
+    frame.replaceWith(nf);
+    frame = nf;
+  }
+
+  function writable() {
+    if (frame.getAttribute('src')) return false;
+    try { return !!frame.contentDocument; } catch (e) { return false; }
+  }
+
+  function paint(html, preserveScroll) {
+    if (!writable()) freshFrame();
+    var doc;
+    try { doc = frame.contentDocument; } catch (e) { doc = null; }
+    if (!doc) return;
+    var sx = 0, sy = 0;
+    if (preserveScroll) {
+      try { sx = frame.contentWindow.scrollX || 0; sy = frame.contentWindow.scrollY || 0; } catch (e) {}
+    }
+    try {
+      doc.open();
+      doc.write(html);
+      doc.close();
+    } catch (e) { return; }
+    if (preserveScroll && (sx || sy)) {
+      var apply = function () { try { frame.contentWindow.scrollTo(sx, sy); } catch (e) {} };
+      apply();
+      if (window.requestAnimationFrame) requestAnimationFrame(apply);
+    }
+  }
+
+  window.addEventListener('message', function (ev) {
+    if (ev.source !== window.parent) return;
+    var d = ev.data;
+    if (!d || d.__wepPreview !== 1) return;
+    if (d.type === 'paint' && typeof d.html === 'string') {
+      paint(d.html, d.preserveScroll !== false);
+    } else if (d.type === 'navigate' && typeof d.url === 'string') {
+      var target;
+      try { target = new URL(d.url, location.href); } catch (e) { return; }
+      if (target.origin !== location.origin || !target.pathname.startsWith(previewRoot)) return;
+      freshFrame();
+      frame.src = target.href;
+    } else if (d.type === 'clear') {
+      freshFrame();
+    }
+  });
+
+  try { window.parent.postMessage({ __wepPreview: 1, type: 'ready' }, '*'); } catch (e) {}
+})();
+</script>
+</body>
+</html>
+"#;
+
 fn write_response(stream: &mut TcpStream, status: &str, content_type: &str, body: &[u8]) {
     let header = format!(
-        "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nCache-Control: no-store\r\nAccess-Control-Allow-Origin: *\r\nConnection: close\r\n\r\n",
+        "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nCache-Control: no-store\r\nAccess-Control-Allow-Origin: *\r\nContent-Security-Policy: {PREVIEW_CSP}\r\nConnection: close\r\n\r\n",
         body.len()
     );
     let _ = stream.write_all(header.as_bytes());
@@ -154,6 +241,12 @@ fn handle_client(mut stream: TcpStream, session: SessionPreview) {
             "text/plain; charset=utf-8",
             b"Forbidden",
         );
+        return;
+    }
+    // 隔离绘制 harness：postMessage 接收端，见 HARNESS_HTML
+    if segs.len() == 2 && segs[1] == "__wep_preview__" {
+        let body: &[u8] = if method == "HEAD" { &[] } else { HARNESS_HTML.as_bytes() };
+        write_response(&mut stream, "200 OK", "text/html; charset=utf-8", body);
         return;
     }
     let rel = if segs.len() == 1 {

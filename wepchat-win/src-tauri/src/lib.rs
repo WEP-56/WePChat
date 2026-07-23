@@ -1,3 +1,4 @@
+mod db;
 mod http_client;
 mod preview_server;
 mod sessions;
@@ -66,6 +67,14 @@ fn save_session(app: tauri::AppHandle, session: Value) -> Result<Value, String> 
 }
 
 #[tauri::command]
+fn session_upsert_message(
+    app: tauri::AppHandle,
+    args: sessions::UpsertMessageArgs,
+) -> Result<(), String> {
+    sessions::upsert_message(app, args)
+}
+
+#[tauri::command]
 fn delete_session(app: tauri::AppHandle, id: String) -> Result<(), String> {
     sessions::delete_session(app, id)
 }
@@ -107,6 +116,7 @@ pub fn run() {
             list_sessions,
             load_session,
             save_session,
+            session_upsert_message,
             delete_session,
             copy_session,
             get_session_workspace,

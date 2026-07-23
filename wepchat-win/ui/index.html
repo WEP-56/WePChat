@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="theme-color" content="#ffffff" />
     <title>WePChat</title>
+    <link rel="stylesheet" href="./libs/katex/katex.min.css" />
     <link rel="stylesheet" href="./css/app.css" />
   </head>
   <body>
@@ -214,6 +215,19 @@
               <p class="welcome-sub">轻量 · 克制 · 快捷</p>
             </div>
           </div>
+
+          <div class="chat-rail" id="chat-rail" aria-label="消息位置" hidden>
+            <div class="chat-rail-viewport">
+              <div class="chat-rail-track"></div>
+            </div>
+            <div class="chat-rail-tip" hidden></div>
+          </div>
+
+          <button type="button" class="jump-bottom" id="btn-jump-bottom" title="回到底部" aria-label="回到底部" hidden>
+            <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true">
+              <path fill="currentColor" d="M11 4h2v12.17l5.59-5.58L20 12l-8 8-8-8 1.41-1.41L11 16.17V4z" />
+            </svg>
+          </button>
 
           <div class="branch-blocked" id="branch-blocked" hidden>
             当前查看的是旧回答分支。切回后续消息所使用的版本后，才能继续对话。
@@ -763,6 +777,8 @@
     <script src="./libs/marked.min.js"></script>
     <script src="./libs/purify.min.js"></script>
     <script src="./libs/highlight.min.js"></script>
+    <script src="./libs/katex/katex.min.js"></script>
+    <script src="./libs/katex/auto-render.min.js"></script>
     <script src="./js/runtime.js"></script>
     <script src="./js/ui-dialog.js"></script>
     <script src="./js/markdown.js"></script>

@@ -1,0 +1,236 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="graphite">
+<head>
+  <meta charset="UTF-8" />
+  <title>WePChat 渲染冒烟测试</title>
+  <link rel="stylesheet" href="../libs/katex/katex.min.css" />
+  <link rel="stylesheet" href="../css/app.css" />
+  <style>
+    body { display: block; height: 100vh; overflow: hidden; }
+    .rt-shell { display: flex; flex-direction: column; height: 100vh; }
+    .rt-bar {
+      display: flex; gap: 8px; padding: 8px 12px; flex: none;
+      border-bottom: 1px solid var(--border); align-items: center; flex-wrap: wrap;
+      background: var(--bg2);
+    }
+    .rt-bar button { padding: 5px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); cursor: pointer; font-size: 12px; }
+    .rt-stage { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; }
+    #rt-stats { font-size: 11px; color: var(--text3); margin-left: auto; font-variant-numeric: tabular-nums; }
+  </style>
+</head>
+<body>
+  <div class="rt-shell">
+    <div class="rt-bar">
+      <button id="b-seed">造 12 轮会话</button>
+      <button id="b-stream-md">流式 Markdown</button>
+      <button id="b-math-task">公式与任务列表</button>
+      <button id="b-stream-code">流式 HTML 围栏</button>
+      <button id="b-stream-tools">流式思考+工具</button>
+      <button id="b-clear">清空会话</button>
+      <span id="rt-stats"></span>
+    </div>
+    <div class="rt-stage main-view is-active" data-view="chat" style="display:flex">
+      <div class="chat-scroll" id="chat-scroll"></div>
+      <div class="chat-rail" id="chat-rail" hidden>
+        <div class="chat-rail-viewport"><div class="chat-rail-track"></div></div>
+        <div class="chat-rail-tip" hidden></div>
+      </div>
+      <button type="button" class="jump-bottom" id="btn-jump-bottom" title="回到底部" hidden>↓</button>
+    </div>
+  </div>
+
+  <script src="../libs/marked.min.js"></script>
+  <script src="../libs/purify.min.js"></script>
+  <script src="../libs/highlight.min.js"></script>
+  <script src="../libs/katex/katex.min.js"></script>
+  <script src="../libs/katex/auto-render.min.js"></script>
+  <script src="../js/runtime.js"></script>
+  <script src="../js/markdown.js"></script>
+  <script type="module">
+    import {
+      initChatView, renderChatView, scheduleStreamUpdate, getMessageElement,
+    } from '../js/chat-view.js';
+    import * as ChatScroll from '../js/chat-scroll.js';
+    import { initChatRail, updateChatRail } from '../js/chat-rail.js';
+
+    const session = { id: 's_test', messages: [] };
+    let uidSeq = 0;
+    const uid = (p) => `${p}_${++uidSeq}`;
+    const stats = { renders: 0, mutations: 0 };
+
+    const host = document.getElementById('chat-scroll');
+    initChatView({
+      host,
+      callbacks: {
+        copyMessage: (m) => console.log('copy', m.id),
+        deleteMessage: (i) => { session.messages.splice(i, 1); render(); },
+        editUserMessage: (i) => console.log('edit', i),
+        regenerateMessage: (i) => console.log('regen', i),
+        switchAssistantVariant: (i, d) => console.log('variant', i, d),
+        canRegenerateMessage: () => true,
+        toolStatusLabel: (s) => ({ composing: '准备中', running: '运行中', done: '完成', error: '出错' }[s] || s || ''),
+        formatToolCardArgs: (t) => String(t.arguments || ''),
+        openImage: () => {},
+        onLiveCodeBlock: (info) => { window.__liveCode = info; },
+        onAfterRender(reason) {
+          stats.renders++;
+          if (reason === 'session') ChatScroll.resetToBottom();
+          else ChatScroll.notifyContentChanged();
+          updateChatRail(session);
+          paintStats();
+        },
+      },
+    });
+    ChatScroll.initChatScroll({ host, jumpButton: document.getElementById('btn-jump-bottom') });
+    initChatRail({
+      root: document.getElementById('chat-rail'),
+      chatHost: host,
+      getMessageElement,
+      onJump: (el) => ChatScroll.scrollToMessage(el),
+    });
+
+    // DOM 变更计数：验证稳定块不被重建
+    const mo = new MutationObserver((list) => { stats.mutations += list.length; paintStats(); });
+    mo.observe(host, { childList: true, subtree: true, characterData: true });
+
+    function paintStats() {
+      document.getElementById('rt-stats').textContent =
+        `渲染 ${stats.renders} · DOM 变更 ${stats.mutations} · 消息 ${session.messages.length}`;
+    }
+    function render() { renderChatView(session); }
+
+    function userMsg(content) {
+      return { id: uid('m'), role: 'user', content, createdAt: new Date().toISOString() };
+    }
+    function botMsg(extra = {}) {
+      return {
+        id: uid('m'), role: 'assistant', content: '', reasoning: '', toolCalls: [],
+        status: 'streaming', model: 'test-model', createdAt: new Date().toISOString(),
+        usage: null, durationMs: 0, ...extra,
+      };
+    }
+
+    const LONG_MD = [
+      '## 分段标题 A\n\n这是**第一段**普通文本，包含 `inline code` 和 [链接](https://example.com)。\n\n',
+      '- 列表项 1\n- 列表项 2\n- 列表项 3\n\n',
+      '> 引用块：滚动跟随时不应闪烁。\n\n',
+      '| 列一 | 列二 |\n| --- | --- |\n| a | b |\n| c | d |\n\n',
+      '```js\nfunction hello(name) {\n  console.log("hi", name);\n}\n```\n\n',
+      '收尾一段文字，验证块级缓存只重渲染活跃尾部。\n',
+    ].join('');
+
+    const HTML_FENCE = '看看这个页面：\n\n```html\n<!doctype html>\n<html><head><style>body{font-family:sans-serif;background:#fafafa}</style></head>\n<body><h1>Hello</h1><p>artifact 预览测试</p></body></html>\n```\n\n完成。';
+
+    document.getElementById('b-seed').onclick = () => {
+      for (let i = 1; i <= 12; i++) {
+        session.messages.push(userMsg(`第 ${i} 个问题：请解释一下第 ${i} 号主题，包括原理和示例？`));
+        session.messages.push(botMsg({
+          content: `这是第 ${i} 个回答。\n\n${LONG_MD}`,
+          status: 'done',
+          usage: { inputTokens: 1200 + i, outputTokens: 640 + i, totalTokens: 1840 },
+          durationMs: 37000 + i * 100,
+        }));
+      }
+      render();
+    };
+
+    function streamInto(msg, fullText, opts = {}) {
+      const step = opts.step || 7;
+      const interval = opts.interval || 16;
+      let pos = 0;
+      const timer = setInterval(() => {
+        pos = Math.min(fullText.length, pos + step);
+        msg.content = fullText.slice(0, pos);
+        scheduleStreamUpdate(session, msg);
+        if (pos >= fullText.length) {
+          clearInterval(timer);
+          msg.status = 'done';
+          msg.usage = { inputTokens: 990, outputTokens: 1600, totalTokens: 2590 };
+          msg.durationMs = 12800;
+          render();
+          window.__streamDone = true;
+        }
+      }, interval);
+    }
+
+    document.getElementById('b-stream-md').onclick = () => {
+      window.__streamDone = false;
+      session.messages.push(userMsg('流式 Markdown 测试：请输出一段长文档'));
+      const m = botMsg();
+      session.messages.push(m);
+      render();
+      streamInto(m, LONG_MD + LONG_MD);
+    };
+
+    document.getElementById('b-math-task').onclick = () => {
+      session.messages.push(userMsg('公式和空任务项渲染测试'));
+      session.messages.push(botMsg({
+        content: [
+          '行内公式：$E = mc^2$，括号公式：\\(a^2+b^2=c^2\\)。',
+          '',
+          '$$\\int_0^1 x^2\\,dx = \\frac{1}{3}$$',
+          '',
+          '\\[',
+          'e^{i\\pi}+1=0',
+          '\\]',
+          '',
+          '1. [ ]',
+          '2. [x] 已完成项',
+        ].join('\n'),
+        status: 'done',
+      }));
+      render();
+    };
+
+    document.getElementById('b-stream-code').onclick = () => {
+      window.__streamDone = false;
+      session.messages.push(userMsg('写一个 HTML 页面'));
+      const m = botMsg();
+      session.messages.push(m);
+      render();
+      streamInto(m, HTML_FENCE, { step: 5, interval: 20 });
+    };
+
+    document.getElementById('b-stream-tools').onclick = () => {
+      window.__streamDone = false;
+      session.messages.push(userMsg('带思考和工具的流式测试'));
+      const m = botMsg();
+      session.messages.push(m);
+      render();
+      let phase = 0;
+      const timer = setInterval(() => {
+        phase++;
+        if (phase <= 20) {
+          m.reasoning += `思考步骤 ${phase}：分析问题的第 ${phase} 个方面。\n`;
+        } else if (phase === 21) {
+          m.toolCalls.push({ id: 'call_1', name: 'write_file', arguments: '', status: 'composing', result: null, _open: true });
+        } else if (phase <= 40) {
+          m.toolCalls[0].arguments += `{"path":"index.html"} 内容片段 ${phase} … `;
+        } else if (phase === 41) {
+          m.toolCalls[0].status = 'done';
+          m.toolCalls[0].result = '已写入 index.html (1.2 KB)';
+          m.toolCalls[0]._open = false; m.toolCalls[0]._userOpen = false;
+        } else if (phase <= 70) {
+          m.content += `工具完成后的正文输出，第 ${phase - 41} 段。`;
+        } else {
+          clearInterval(timer);
+          m.status = 'done';
+          m.durationMs = 9000;
+          render();
+          window.__streamDone = true;
+          return;
+        }
+        scheduleStreamUpdate(session, m);
+      }, 30);
+    };
+
+    document.getElementById('b-clear').onclick = () => {
+      session.messages = [];
+      render();
+    };
+
+    window.__test = { session, render, ChatScroll, getMessageElement };
+    render();
+  </script>
+</body>
+</html>

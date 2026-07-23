@@ -21,3 +21,4 @@ regex = "1"
 base64 = "0.22"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream", "charset", "http2"] }
 futures-util = "0.3"
+rusqlite = { version = "0.32", features = ["bundled"] }

@@ -22,6 +22,29 @@ import {
 } from './app-core.js';
 import { bindAppearanceEvents, renderThemeUI } from './appearance.js';
 import { bindWindowControls } from './window-controls.js';
+import {
+  initChatView,
+  renderChatView,
+  scheduleStreamUpdate,
+  getMessageElement,
+} from './chat-view.js';
+import * as ChatScroll from './chat-scroll.js';
+import { initChatRail, updateChatRail } from './chat-rail.js';
+
+const LAST_SESSION_KEY = 'wepchat:last-active-session';
+
+function rememberedSessionId() {
+  try { return localStorage.getItem(LAST_SESSION_KEY) || ''; }
+  catch { return ''; }
+}
+
+function rememberActiveSession(session) {
+  if (!session?.id) return;
+  try { localStorage.setItem(LAST_SESSION_KEY, session.id); }
+  catch { /* WebView storage unavailable: keep the in-memory session */ }
+  state.filesTree = null;
+  state.filesSelectedPath = '';
+}
 
 /* ---------- App shell ---------- */
 
@@ -36,6 +59,7 @@ function setMode(mode) {
     }
     if (!target) {
       state.session = createSession();
+      rememberActiveSession(state.session);
       state.lastChatSessionId = state.session.id;
       persistSession().catch((err) => console.warn('create chat session', err));
     }
@@ -348,6 +372,7 @@ function normalizeMessage(raw) {
     m.status = m.status || 'done';
     m.error = String(m.error || '');
     m.model = m.model || '';
+    m.durationMs = Number(m.durationMs || 0);
     m.toolCalls = Array.isArray(m.toolCalls) ? m.toolCalls : [];
     m.images = Array.isArray(m.images) ? m.images : [];
     m.images.forEach((image) => {
@@ -365,6 +390,7 @@ function normalizeMessage(raw) {
       v.model = v.model || '';
       v.toolCalls = Array.isArray(v.toolCalls) ? v.toolCalls : [];
       v.status = v.status === 'streaming' ? 'done' : (v.status || 'done');
+      v.durationMs = Number(v.durationMs || 0);
     });
     m.activeVariantIndex = m.variants.length
       ? Math.max(0, Math.min(m.variants.length - 1, parseInt(m.activeVariantIndex || 0, 10) || 0))
@@ -418,6 +444,7 @@ function snapshotAssistantVariant(m, id) {
     usage: m?.usage ? cloneJson(m.usage) : null,
     model: m?.model || '',
     createdAt: m?.createdAt || nowIso(),
+    durationMs: Number(m?.durationMs || 0),
     status: m?.status === 'streaming' ? 'streaming' : (m?.status || 'done'),
   };
 }
@@ -460,6 +487,7 @@ function applyAssistantVariant(m, index) {
   m.usage = v.usage ? cloneJson(v.usage) : null;
   m.model = v.model || m.model || '';
   m.createdAt = v.createdAt || m.createdAt;
+  m.durationMs = Number(v.durationMs || 0);
   m.status = v.status === 'streaming' ? 'done' : (v.status || 'done');
 }
 
@@ -1015,10 +1043,12 @@ function hasUntitledSessionTitle(title) {
 function sessionTitle(session) {
   return session.title
     || session.messages?.find((message) => message.role === 'user')?.content?.split(/\r?\n/)[0]?.slice(0, 48)
+    || String(session.summary || '').slice(0, 48)
     || '新会话';
 }
 
 function sessionSummary(session) {
+  const messages = Array.isArray(session.messages) ? session.messages : [];
   return {
     id: session.id,
     title: session.title || '',
@@ -1027,7 +1057,10 @@ function sessionSummary(session) {
     mode: session.mode === 'image' ? 'image' : 'chat',
     providerId: session.providerId || '',
     model: session.model || '',
-    messages: session.messages || [],
+    messages,
+    summary: messages.find((m) => m.role === 'user')?.content?.split(/\r?\n/)[0]?.trim().slice(0, 64)
+      || session.summary || '',
+    messageCount: messages.length || session.messageCount || 0,
     workspacePath: session.workspacePath || '',
     pinned: !!session.pinned,
     contextModel: session.contextModel || '',
@@ -1139,6 +1172,44 @@ function renderSessions() {
   renderWorkspaceSessionPath();
 }
 
+/** 落盘前剥离图片 dataUrl（图片本体在工作区文件系统） */
+function stripMessageImages(message) {
+  if (Array.isArray(message.images)) {
+    message.images = message.images.map((image) => ({
+      path: image.path || '', mime: image.mime || 'image/png', prompt: image.prompt || '',
+      revisedPrompt: image.revisedPrompt || '', imageMeta: image.imageMeta,
+    }));
+  }
+  return message;
+}
+
+/** 会话写操作统一走每会话串行链，保证与全量保存的顺序 */
+function queueSessionWrite(sessionId, task) {
+  const previous = state.sessionSaveChains.get(sessionId) || Promise.resolve();
+  const current = previous.catch(() => {}).then(task);
+  state.sessionSaveChains.set(sessionId, current);
+  return current;
+}
+
+function sessionDiskSnapshot(target) {
+  const diskSession = cloneJson(target);
+  (diskSession.messages || []).forEach(stripMessageImages);
+  return diskSession;
+}
+
+async function saveFullSessionToDisk(target, diskSession = sessionDiskSnapshot(target)) {
+  try {
+    const saved = await invoke('save_session', { session: diskSession });
+    if (saved && typeof saved === 'object') {
+      target.workspacePath = saved.workspacePath || target.workspacePath || '';
+      upsertSessionIndex(target);
+    }
+  } catch (err) {
+    console.warn('Unable to save session:', err);
+    if (state.session?.id === target.id) UIDialog.toast('会话保存失败：' + (err?.message || err), 3200);
+  }
+}
+
 async function persistSession(sessionArg = null) {
   const target = sessionArg || state.session;
   if (!target?.id || state.deletedSessionIds.has(target.id)) return;
@@ -1151,30 +1222,37 @@ async function persistSession(sessionArg = null) {
   upsertSessionIndex(target);
   renderSessions();
   if (window.ImageMode) window.ImageMode.renderImageSessionList();
-  const diskSession = cloneJson(target);
-  (diskSession.messages || []).forEach((message) => {
-    if (!Array.isArray(message.images)) return;
-    message.images = message.images.map((image) => ({
-      path: image.path || '', mime: image.mime || 'image/png', prompt: image.prompt || '',
-      revisedPrompt: image.revisedPrompt || '', imageMeta: image.imageMeta,
-    }));
-  });
-  const previous = state.sessionSaveChains.get(target.id) || Promise.resolve();
-  const current = previous.catch(() => {}).then(async () => {
+  // Keep the original queue semantics: each full save persists its call-time snapshot.
+  const diskSession = sessionDiskSnapshot(target);
+  await queueSessionWrite(target.id, () => saveFullSessionToDisk(target, diskSession));
+  if (state.session?.id === target.id) renderWorkspaceSessionPath();
+}
+
+/**
+ * S2 流式热路径：只写当前活跃消息一行 + 会话 updated_at。
+ * 会话结构已变化（seq 冲突、行不存在）时由 Rust 报错，这里回退整包保存。
+ */
+async function persistActiveMessage(session, message) {
+  const target = session || state.session;
+  if (!target?.id || state.deletedSessionIds.has(target.id)) return;
+  const seq = (target.messages || []).indexOf(message);
+  if (seq < 0) {
+    await persistSession(target);
+    return;
+  }
+  target.updatedAt = nowIso();
+  const updatedAt = target.updatedAt;
+  const row = stripMessageImages(cloneJson(message));
+  await queueSessionWrite(target.id, async () => {
     try {
-      const saved = await invoke('save_session', { session: diskSession });
-      if (saved && typeof saved === 'object') {
-        target.workspacePath = saved.workspacePath || target.workspacePath || '';
-        upsertSessionIndex(target);
-      }
+      await invoke('session_upsert_message', {
+        args: { sessionId: target.id, seq, updatedAt, message: row },
+      });
     } catch (err) {
-      console.warn('Unable to save session:', err);
-      if (state.session?.id === target.id) UIDialog.toast('会话保存失败：' + (err?.message || err), 3200);
+      console.warn('incremental save fell back to full save:', err);
+      await saveFullSessionToDisk(target);
     }
   });
-  state.sessionSaveChains.set(target.id, current);
-  await current;
-  if (state.session?.id === target.id) renderWorkspaceSessionPath();
 }
 
 async function hydrateSessionImages(session) {
@@ -1212,15 +1290,13 @@ async function openSession(id) {
     const loaded = await invoke('load_session', { id });
     nextSession = normalizeSession(loaded);
   } catch (err) {
-    const item = state.sessions.find((session) => session.id === id);
-    if (!item) {
-      UIDialog.toast('会话不存在');
-      return;
-    }
-    nextSession = normalizeSession(item);
+    // 索引项不含消息，不能当完整会话打开（否则一次保存就会清空该会话）
+    UIDialog.toast('无法加载会话：' + (err?.message || err), 3200);
+    return;
   }
   if (navigationSeq !== state.sessionNavigationSeq || !nextSession) return;
   state.session = nextSession;
+  rememberActiveSession(state.session);
   if (task) task.unread = false;
   syncActiveTaskState();
   await hydrateSessionImages(state.session);
@@ -1244,6 +1320,7 @@ async function createNewChat() {
   previewServerInfo = null;
   window.PreviewStream?.clearAll?.();
   state.session = createSession();
+  rememberActiveSession(state.session);
   syncActiveTaskState();
   state.lastChatSessionId = state.session.id;
   await persistSession();
@@ -1312,6 +1389,7 @@ async function copySession(id) {
     copied.updatedAt = nowIso();
     const saved = await invoke('save_session', { session: copied });
     state.session = normalizeSession(saved || copied);
+    rememberActiveSession(state.session);
     syncActiveTaskState();
     upsertSessionIndex(state.session);
     renderSessions();
@@ -1358,13 +1436,16 @@ async function deleteSessionById(id) {
       try {
         state.session = normalizeSession(await invoke('load_session', { id: next.id }));
       } catch {
-        state.session = normalizeSession(next);
+        // 索引项不含消息，加载失败时新建会话而不是拿空索引当会话
+        state.session = createSession();
+        await persistSession();
       }
     } else {
       state.session = createSession();
       await persistSession();
     }
     syncActiveTaskState();
+    rememberActiveSession(state.session);
   }
   renderSessions();
   renderModelSelect();
@@ -1437,20 +1518,6 @@ function renderComposerState() {
   renderTokenMeter();
 }
 
-function makeMsgAction(label, title, onClick, disabled) {
-  const btn = document.createElement('button');
-  btn.type = 'button';
-  btn.className = 'msg-action-btn';
-  btn.textContent = label;
-  btn.title = title || label;
-  btn.disabled = !!disabled;
-  btn.addEventListener('click', (event) => {
-    event.stopPropagation();
-    onClick();
-  });
-  return btn;
-}
-
 function formatToolCardArgs(t) {
   const PS = window.PreviewStream;
   if (PS?.formatToolArgsForDisplay) {
@@ -1459,205 +1526,47 @@ function formatToolCardArgs(t) {
   return U.truncate(String(t.arguments || ''), 2000);
 }
 
-function renderChat() {
+let chatViewReady = false;
+
+function ensureChatView() {
+  if (chatViewReady) return;
   const host = $('#chat-scroll');
   if (!host) return;
-  const stickBottom = host.scrollHeight - host.scrollTop - host.clientHeight < 96;
-  host.innerHTML = '';
-  const messages = state.session?.messages || [];
-  if (!messages.length) {
-    const welcome = document.createElement('div');
-    welcome.className = 'welcome';
-    welcome.innerHTML = '<div class="welcome-mark" aria-hidden="true">W</div><p class="welcome-brand">WePChat</p><p class="welcome-sub">轻量 · 克制 · 快捷</p>';
-    host.appendChild(welcome);
-    return;
-  }
-
-  const inner = document.createElement('div');
-  inner.className = 'chat-inner';
-
-  messages.forEach((message, index) => {
-    const item = document.createElement('article');
-    item.className = `chat-message chat-message--${message.role}`;
-    item.dataset.messageId = message.id;
-    item.setAttribute('aria-label', message.role === 'user' ? '你' : '助手');
-
-    if (message.role === 'assistant' && message.reasoning) {
-      const reason = document.createElement('details');
-      reason.className = 'chat-reasoning';
-      if (message.status === 'streaming' && !message.content) reason.open = true;
-      const summary = document.createElement('summary');
-      summary.textContent = message.status === 'streaming' && !message.content ? '思考中…' : '思考过程';
-      const pre = document.createElement('pre');
-      pre.textContent = message.reasoning;
-      reason.append(summary, pre);
-      item.append(reason);
-    }
-
-    if (message.role === 'assistant' && Array.isArray(message.toolCalls) && message.toolCalls.length) {
-      const toolsHost = document.createElement('div');
-      toolsHost.className = 'chat-tools';
-      message.toolCalls.forEach((t) => {
-        if (!t || !t.name) return;
-        const active = t.status === 'composing' || t.status === 'running';
-        const card = document.createElement('details');
-        card.className = 'tool-card tool-card--' + (t.status || 'done') + (active ? ' is-live' : '');
-        // 进行中强制展开；完成后默认收起；用户手动点过则尊重 _open
-        if (active) card.open = true;
-        else if (t._userOpen) card.open = !!t._open;
-        else card.open = false;
-        card.addEventListener('toggle', () => {
-          t._open = card.open;
-          t._userOpen = true;
-        });
-        const head = document.createElement('summary');
-        head.className = 'tool-head';
-        head.innerHTML = `<span class="tool-pulse" aria-hidden="true"></span><span class="tool-name"></span><span class="tool-status"></span>`;
-        head.querySelector('.tool-name').textContent = t.name;
-        head.querySelector('.tool-status').textContent = toolStatusLabel(t.status);
-        const bodyEl = document.createElement('div');
-        bodyEl.className = 'tool-body';
-        const argsSec = document.createElement('div');
-        argsSec.className = 'tool-sec';
-        argsSec.textContent = active && t.name === 'write_file' ? '内容' : '参数';
-        const argsPre = document.createElement('pre');
-        argsPre.className = 'tool-pre' + (active ? ' tool-pre--live' : '');
-        argsPre.textContent = formatToolCardArgs(t);
-        bodyEl.append(argsSec, argsPre);
-        if (t.result != null && t.result !== '') {
-          const resSec = document.createElement('div');
-          resSec.className = 'tool-sec';
-          resSec.textContent = '结果';
-          const resPre = document.createElement('pre');
-          resPre.className = 'tool-pre';
-          resPre.textContent = U.truncate(String(t.result), 4000);
-          bodyEl.append(resSec, resPre);
-        }
-        card.append(head, bodyEl);
-        toolsHost.appendChild(card);
-      });
-      item.append(toolsHost);
-    }
-
-    const body = document.createElement('div');
-    body.className = 'chat-message-body' + (message.role === 'assistant' ? ' md' : '');
-    const hasTools = message.role === 'assistant' && Array.isArray(message.toolCalls) && message.toolCalls.length;
-    if (message.role === 'assistant' && !message.error && message.content) {
-      body.innerHTML = message.status === 'streaming'
-        ? MD.renderStreaming(message.content)
-        : MD.render(message.content);
-      $all('a', body).forEach((link) => {
-        link.target = '_blank';
-        link.rel = 'noreferrer';
-      });
-    } else if (message.error) {
-      body.classList.add('has-error');
-      body.textContent = message.content ? `${message.content}\n\n${message.error}` : message.error;
-    } else if (message.status === 'streaming' && !message.content && !message.reasoning && !hasTools) {
-      body.innerHTML = '<span class="typing-dot" aria-hidden="true"></span>';
-    } else {
-      body.textContent = message.content || '';
-    }
-    if (body.textContent || body.innerHTML) item.append(body);
-
-    if (message.role === 'assistant' && Array.isArray(message.images) && message.images.length) {
-      const grid = document.createElement('div');
-      grid.className = 'chat-image-grid';
-      message.images.forEach((image) => {
-        if (!image?.path && !image?.dataUrl) return;
-        const card = document.createElement('button');
-        card.type = 'button';
-        card.className = 'chat-image-card';
-        card.title = image.path || '打开图片';
-        card.addEventListener('click', () => {
-          if (image.path) openFileInViewer(image.path);
-        });
-        if (image.dataUrl) {
-          const img = document.createElement('img');
-          img.src = image.dataUrl;
-          img.alt = image.path || '生成图片';
-          img.loading = 'lazy';
-          card.appendChild(img);
-        } else {
-          card.textContent = image.path || '图片';
-        }
-        grid.appendChild(card);
-      });
-      if (grid.childElementCount) item.append(grid);
-    }
-
-    if (message.role === 'assistant' && message.error && message.status !== 'streaming') {
-      const errRow = document.createElement('div');
-      errRow.className = 'chat-error-row';
-      const retry = document.createElement('button');
-      retry.type = 'button';
-      retry.className = 'err-retry-btn';
-      retry.textContent = '重试';
-      retry.disabled = !canRegenerateMessage(index);
-      retry.addEventListener('click', () => regenerateMessage(index));
-      errRow.appendChild(retry);
-      item.append(errRow);
-    }
-
-    if (message.status !== 'streaming') {
-      const actions = document.createElement('div');
-      actions.className = 'msg-actions';
-      actions.appendChild(makeMsgAction('复制', '复制内容', () => copyMessage(message)));
-
-      if (message.role === 'assistant') {
-        const variants = Array.isArray(message.variants) ? message.variants : [];
-        if (variants.length > 1) {
-          const switcher = document.createElement('span');
-          switcher.className = 'msg-variant-switch';
-          const prev = document.createElement('button');
-          prev.type = 'button';
-          prev.textContent = '‹';
-          prev.disabled = (message.activeVariantIndex || 0) <= 0;
-          prev.title = '上一个回答版本';
-          prev.addEventListener('click', () => switchAssistantVariant(index, -1));
-          const meta = document.createElement('b');
-          meta.textContent = `${(message.activeVariantIndex || 0) + 1}/${variants.length}`;
-          const next = document.createElement('button');
-          next.type = 'button';
-          next.textContent = '›';
-          next.disabled = (message.activeVariantIndex || 0) >= variants.length - 1;
-          next.title = '下一个回答版本';
-          next.addEventListener('click', () => switchAssistantVariant(index, 1));
-          switcher.append(prev, meta, next);
-          actions.appendChild(switcher);
-        }
-        actions.appendChild(makeMsgAction(
-          '重新生成',
-          canRegenerateMessage(index) ? '重新生成（最多 6 个版本）' : '无法继续重新生成',
-          () => regenerateMessage(index),
-          !canRegenerateMessage(index)
-        ));
-      }
-
-      if (message.role === 'user') {
-        actions.appendChild(makeMsgAction('编辑', '编辑此消息并截断后续', () => editUserMessage(index)));
-      }
-      actions.appendChild(makeMsgAction('删除', '删除此消息', () => deleteMessage(index)));
-
-      if (message.role === 'assistant' && message.model) {
-        const tag = document.createElement('span');
-        tag.className = 'msg-model-tag';
-        tag.textContent = message.model;
-        actions.appendChild(tag);
-      }
-      item.append(actions);
-    }
-
-    if (message.status === 'streaming') item.classList.add('is-streaming');
-    inner.appendChild(item);
+  initChatView({
+    host,
+    callbacks: {
+      copyMessage,
+      deleteMessage,
+      editUserMessage,
+      regenerateMessage,
+      switchAssistantVariant,
+      canRegenerateMessage,
+      toolStatusLabel,
+      formatToolCardArgs,
+      openImage: (image) => { if (image.path) openFileInViewer(image.path); },
+      onLiveCodeBlock: handleLiveCodeBlock,
+      onAfterRender(reason) {
+        if (reason === 'session') ChatScroll.resetToBottom();
+        else ChatScroll.notifyContentChanged();
+        if (reason === 'stream') renderTokenMeter();
+        updateChatRail(state.session);
+      },
+    },
   });
-
-  host.appendChild(inner);
-  // 进行中的工具卡片：参数/内容区贴底滚动，像代码在一行行出来
-  $all('.tool-pre--live', host).forEach((pre) => {
-    pre.scrollTop = pre.scrollHeight;
+  ChatScroll.initChatScroll({ host, jumpButton: $('#btn-jump-bottom') });
+  initChatRail({
+    root: $('#chat-rail'),
+    chatHost: host,
+    getMessageElement,
+    onJump: (el) => ChatScroll.scrollToMessage(el),
   });
-  if (stickBottom) host.scrollTop = host.scrollHeight;
+  chatViewReady = true;
+}
+
+/** 全量 reconcile：消息节点按 id 复用，只更新变化的部位（chat-view.js） */
+function renderChat() {
+  ensureChatView();
+  renderChatView(state.session);
 }
 
 async function copyMessage(message) {
@@ -1928,6 +1837,7 @@ async function generateAssistant(opts = {}) {
     unread: false,
     startedAt: nowIso(),
   };
+  const startedMs = Date.now();
   state.backgroundTasks.set(session.id, task);
   const refresh = () => {
     renderSessions();
@@ -2027,10 +1937,8 @@ async function generateAssistant(opts = {}) {
           }
           assistantMsg.status = 'streaming';
           if (assistantMsg.variants?.length) syncActiveAssistantVariant(assistantMsg);
-          if (state.session?.id === session.id) {
-            renderChat();
-            renderTokenMeter();
-          }
+          // 40ms 合并 + rAF 对齐的局部更新，不再逐 token 重建整个消息列表
+          if (state.session?.id === session.id) scheduleStreamUpdate(session, assistantMsg);
         },
       });
 
@@ -2096,7 +2004,8 @@ async function generateAssistant(opts = {}) {
       });
       if (assistantMsg.variants?.length) syncActiveAssistantVariant(assistantMsg);
       if (state.session?.id === session.id) renderChat();
-      if (state.backgroundTasks.get(session.id) === task) await persistSession(session);
+      // S2：工具轮边界只增量写当前助手消息，避免整会话重写
+      if (state.backgroundTasks.get(session.id) === task) await persistActiveMessage(session, assistantMsg);
 
       for (let ti = 0; ti < displayCalls.length; ti++) {
         const t = displayCalls[ti];
@@ -2115,7 +2024,7 @@ async function generateAssistant(opts = {}) {
         workingMessages.push({ role: 'tool', toolCallId: t.id, content: out });
         if (assistantMsg.variants?.length) syncActiveAssistantVariant(assistantMsg);
         if (state.session?.id === session.id) renderChat();
-        if (state.backgroundTasks.get(session.id) === task) await persistSession(session);
+        if (state.backgroundTasks.get(session.id) === task) await persistActiveMessage(session, assistantMsg);
       }
     }
 
@@ -2138,6 +2047,8 @@ async function generateAssistant(opts = {}) {
     }
     if (assistantMsg.variants?.length) syncActiveAssistantVariant(assistantMsg);
   } finally {
+    assistantMsg.durationMs = Date.now() - startedMs;
+    if (assistantMsg.variants?.length) syncActiveAssistantVariant(assistantMsg);
     const registered = state.backgroundTasks.get(session.id) === task;
     task.status = task.stopRequested ? 'stopped' : (assistantMsg.status === 'error' ? 'error' : 'done');
     task.unread = registered && state.session?.id !== session.id && task.status !== 'stopped';
@@ -2152,6 +2063,7 @@ async function generateAssistant(opts = {}) {
       renderRightTabs();
       renderChat();
       renderComposerState();
+      settleCodeArtifacts(assistantMsg);
     }
     renderSessions();
     if (registered) await persistSession(session);
@@ -2205,6 +2117,7 @@ async function sendMessage() {
   if (state.session?.id === session.id) {
     renderChat();
     renderComposerState();
+    ChatScroll.jumpToBottom();
   }
   await persistSession(session);
   await generateAssistant({ session });
@@ -2342,16 +2255,31 @@ function bindEvents() {
     }
   });
   $('#chat-scroll')?.addEventListener('click', async (event) => {
-    const button = event.target.closest('.code-btn[data-act="copy"]');
+    const button = event.target.closest('.code-btn');
     if (!button) return;
-    const code = button.closest('.code-block')?.querySelector('code')?.textContent || '';
-    try {
-      await navigator.clipboard.writeText(code);
-      const before = button.textContent;
-      button.textContent = '已复制';
-      setTimeout(() => { button.textContent = before; }, 1200);
-    } catch (err) {
-      console.warn('Unable to copy code:', err);
+    const blockEl = button.closest('.code-block');
+    if (!blockEl) return;
+    if (button.dataset.act === 'copy') {
+      const code = blockEl.querySelector('code')?.textContent || '';
+      try {
+        await navigator.clipboard.writeText(code);
+        const before = button.textContent;
+        button.textContent = '已复制';
+        setTimeout(() => { button.textContent = before; }, 1200);
+      } catch (err) {
+        console.warn('Unable to copy code:', err);
+      }
+      return;
+    }
+    if (button.dataset.act === 'preview') {
+      const code = blockEl.querySelector('code')?.textContent || '';
+      const lang = blockEl.querySelector('.code-lang')?.textContent?.trim() || 'html';
+      const messageId = button.closest('.chat-message')?.dataset.messageId || '';
+      const bodyEl = button.closest('.chat-message-body');
+      const fenceIndex = bodyEl
+        ? Math.max(0, [...bodyEl.querySelectorAll('.code-block')].indexOf(blockEl))
+        : 0;
+      if (messageId) openCodeArtifact({ messageId, fenceIndex, lang, code });
     }
   });
 
@@ -2482,16 +2410,22 @@ async function loadBackend() {
       ? state.settings.providers.map((item) => normalizeProvider(item))
       : [];
     state.sessions = Array.isArray(sessions) ? sessions.map((item) => normalizeSession(item)) : [];
-    if (state.sessions[0]) {
+    const remembered = rememberedSessionId();
+    const initialSession = state.sessions.find((session) => session.id === remembered) || state.sessions[0];
+    if (initialSession) {
       try {
-        state.session = normalizeSession(await invoke('load_session', { id: state.sessions[0].id }));
-      } catch {
-        state.session = normalizeSession(state.sessions[0]);
+        state.session = normalizeSession(await invoke('load_session', { id: initialSession.id }));
+      } catch (err) {
+        // 索引项不含消息，加载失败时新建会话，避免把有内容的会话当空会话覆盖
+        console.warn('load first session failed:', err);
+        state.session = createSession();
+        await persistSession();
       }
     } else {
       state.session = createSession();
       await persistSession();
     }
+    rememberActiveSession(state.session);
     if (state.session?.mode === 'image') state.lastImageSessionId = state.session.id;
     else if (state.session?.id) state.lastChatSessionId = state.session.id;
     await hydrateSessionImages(state.session);
@@ -2697,7 +2631,6 @@ function renderRightContent() {
 let previewRefreshTimer = null;
 let previewServerInfo = null; // { baseUrl, port, token, sessionId }
 let previewPaintGen = 0; // drop stale async paints
-let filesTabBound = false;
 
 async function ensurePreviewServer() {
   const sid = state.session?.id;
@@ -2782,13 +2715,15 @@ function showBrowserEmpty(tab, opts = {}) {
 
 /**
  * Paint browser preview with minimal flicker.
- * Prefer in-place document.write + <base href> (relative CSS/JS via preview server).
- * Only navigate frame.src when we have a path but no HTML body yet.
+ * HTML 一律经 BrowserPreview 桥 postMessage 给 preview_server 的隔离 harness 绘制，
+ * 主窗口不再直接向 iframe 写入模型 HTML；无内容且磁盘已有文件时，
+ * 让 harness 内部 iframe 直接加载该文件（相对资源天然可用）。
  */
 async function paintBrowserHttp(tab, opts = {}) {
   if (!tab || state.activeRightTabId !== tab.id) return;
   const path = tab.path;
-  if (!path) {
+  const isArtifact = !!tab.artifact;
+  if (!path && !isArtifact) {
     showBrowserEmpty(tab, opts);
     return;
   }
@@ -2797,7 +2732,7 @@ async function paintBrowserHttp(tab, opts = {}) {
   const empty = $('#browser-empty');
   const frame = $('.rp-frame');
   const BP = window.BrowserPreview;
-  const staged = window.PreviewStream?.getStaging?.(path);
+  const staged = path ? window.PreviewStream?.getStaging?.(path) : null;
   let content = opts.content != null
     ? String(opts.content)
     : (staged?.content != null ? String(staged.content) : (tab.html || ''));
@@ -2807,61 +2742,49 @@ async function paintBrowserHttp(tab, opts = {}) {
 
   tab.streaming = !!opts.streaming;
   setBrowserStreamingUi(!!opts.streaming);
+  if (!frame || !BP) return;
 
-  // Have HTML body → smooth in-place write (no frame.src navigation)
-  if (content && frame) {
-    const info = await ensurePreviewServer();
-    if (gen !== previewPaintGen || state.activeRightTabId !== tab.id) return;
-    const baseHref = BP && info?.baseUrl
-      ? BP.baseHrefFor(info.baseUrl, path)
-      : '';
+  // 流式中还没有正文：保持等待态，不必启动服务
+  if (!content && opts.streaming) {
+    showBrowserEmpty(tab, opts);
+    return;
+  }
 
+  const info = await ensurePreviewServer();
+  if (gen !== previewPaintGen || state.activeRightTabId !== tab.id) return;
+  if (!info?.baseUrl) {
+    showBrowserEmpty(tab, opts);
+    return;
+  }
+
+  // Have HTML body → postMessage 给 harness 平滑重绘（不重载外层 iframe）
+  if (content) {
+    const baseHref = path ? BP.baseHrefFor(info.baseUrl, path) : '';
     tab.waiting = false;
     tab.html = content;
     if (empty) empty.hidden = true;
     frame.hidden = false;
-
-    const result = BP
-      ? BP.writeHtml(frame, content, {
-          path,
-          baseHref,
-          force: !!opts.force,
-          preserveScroll: opts.preserveScroll !== false,
-        })
-      : null;
-
-    if (result === 'failed' || result == null) {
-      // Last resort: srcdoc without base (single-file)
-      try {
-        frame.removeAttribute('src');
-        frame.srcdoc = content;
-      } catch {
-        /* ignore */
-      }
-    }
+    BP.writeHtml(frame, content, {
+      previewBaseUrl: info.baseUrl,
+      path: path || tab.artifactKey || 'artifact',
+      baseHref,
+      force: !!opts.force,
+      preserveScroll: opts.preserveScroll !== false,
+    });
     return;
   }
 
-  // No body yet: show waiting, optionally navigate once for existing disk file
-  if (!content) {
-    // Try loading via HTTP only when not streaming (disk may already have file)
-    if (!opts.streaming) {
-      const info = await ensurePreviewServer();
-      if (gen !== previewPaintGen || state.activeRightTabId !== tab.id) return;
-      if (info?.baseUrl && frame) {
-        const bust = opts.bust != null ? opts.bust : Date.now();
-        const url = browserPreviewUrl(path, bust);
-        tab.waiting = false;
-        if (empty) empty.hidden = true;
-        frame.hidden = false;
-        frame.removeAttribute('srcdoc');
-        BP?.invalidate?.(frame);
-        frame.src = url;
-        return;
-      }
-    }
-    if (gen === previewPaintGen) showBrowserEmpty(tab, opts);
+  // No body yet: 磁盘可能已有文件 → harness 内部 iframe 直接加载
+  if (path) {
+    const bust = opts.bust != null ? opts.bust : Date.now();
+    const url = browserPreviewUrl(path, bust);
+    tab.waiting = false;
+    if (empty) empty.hidden = true;
+    frame.hidden = false;
+    BP.navigate(frame, url, { previewBaseUrl: info.baseUrl });
+    return;
   }
+  if (gen === previewPaintGen) showBrowserEmpty(tab, opts);
 }
 
 function scheduleBrowserRefresh(reason) {
@@ -3020,7 +2943,7 @@ async function openPreview(payload = {}) {
     return;
   }
 
-  let tab = state.rightTabs.find((t) => t.kind === 'browser' && t.path === path);
+  let tab = state.rightTabs.find((t) => t.kind === 'browser' && !t.artifact && t.path === path);
   if (!tab) {
     tab = { id: uid('r'), kind: 'browser', title, path, waiting: false, streaming: false };
     state.rightTabs.push(tab);
@@ -3031,6 +2954,98 @@ async function openPreview(payload = {}) {
   renderRightTabs();
   renderRightContent();
   await loadBrowserPath(tab, path);
+}
+
+/* ---------- 代码块 artifact 预览（聊天 Markdown 中的 html/svg 等围栏） ---------- */
+
+function artifactKeyOf(messageId, fenceIndex) {
+  return `${messageId}:${fenceIndex}`;
+}
+
+/** 把围栏内容包装为可预览文档；html 片段由 harness 侧 injectBaseHref 兜底补壳 */
+function artifactHtmlFor(lang, code) {
+  const src = String(code || '');
+  if (String(lang || '').toLowerCase() === 'svg') {
+    return '<!doctype html><html><head><meta charset="utf-8"><style>html,body{margin:0;height:100%;display:grid;place-items:center;background:#fff}svg{max-width:96vw;max-height:96vh}</style></head><body>'
+      + src + '</body></html>';
+  }
+  return src;
+}
+
+function findArtifactTab(key) {
+  return state.rightTabs.find((t) => t.kind === 'browser' && t.artifact && t.artifactKey === key);
+}
+
+/** 代码块「运行」：在右栏打开该围栏的隔离预览 */
+function openCodeArtifact({ messageId, fenceIndex, lang, code }) {
+  const key = artifactKeyOf(messageId, fenceIndex);
+  const title = `${String(lang || 'html').toLowerCase()} 预览`;
+  setRightOpen(true);
+  let tab = findArtifactTab(key);
+  if (!tab) {
+    tab = {
+      id: uid('r'),
+      kind: 'browser',
+      title,
+      path: '',
+      artifact: true,
+      artifactKey: key,
+      waiting: false,
+      streaming: false,
+      html: '',
+    };
+    state.rightTabs.push(tab);
+  }
+  tab.title = title;
+  tab.html = artifactHtmlFor(lang, code);
+  state.activeRightTabId = tab.id;
+  renderRightTabs();
+  renderRightContent();
+}
+
+let liveArtifactTimer = 0;
+let liveArtifactInfo = null;
+
+/** 流式中活跃尾部是可预览围栏：若对应 artifact 标签开着，节流 500ms 刷新预览 */
+function handleLiveCodeBlock(info) {
+  const key = artifactKeyOf(info.messageId, info.fenceIndex);
+  if (!findArtifactTab(key)) return;
+  liveArtifactInfo = { ...info, key };
+  if (liveArtifactTimer) return;
+  liveArtifactTimer = setTimeout(() => {
+    liveArtifactTimer = 0;
+    const cur = liveArtifactInfo;
+    liveArtifactInfo = null;
+    if (!cur) return;
+    const tab = findArtifactTab(cur.key);
+    if (!tab) return;
+    tab.html = artifactHtmlFor(cur.lang, cur.code);
+    tab.streaming = true;
+    if (state.activeRightTabId === tab.id) {
+      paintBrowserHttp(tab, { content: tab.html, streaming: true, force: true, preserveScroll: true });
+    }
+  }, 500);
+}
+
+/** 消息完成：该消息的 artifact 标签用最终围栏内容收尾 */
+function settleCodeArtifacts(message) {
+  if (!message?.id) return;
+  const prefix = `${message.id}:`;
+  const tabs = state.rightTabs.filter(
+    (t) => t.kind === 'browser' && t.artifact && String(t.artifactKey || '').startsWith(prefix)
+  );
+  if (!tabs.length) return;
+  const fences = window.MD.lexBlocks(message.content || '').filter((b) => b.type === 'code');
+  tabs.forEach((tab) => {
+    const idx = parseInt(String(tab.artifactKey).slice(prefix.length), 10);
+    const fence = Number.isInteger(idx) ? fences[idx] : null;
+    tab.streaming = false;
+    if (fence) tab.html = artifactHtmlFor(fence.lang, fence.text);
+    if (state.activeRightTabId === tab.id) {
+      paintBrowserHttp(tab, { content: tab.html, streaming: false, force: true, preserveScroll: true });
+    }
+  });
+  renderRightTabs();
 }
 
 async function loadBrowserPath(tab, path) {
@@ -3086,20 +3101,31 @@ function bindBrowserTab(tab) {
     const path = (input?.value || '').trim().replace(/\\/g, '/').replace(/^\/+/, '');
     if (!path) return;
     tab.path = path;
+    tab.artifact = false;
+    tab.artifactKey = '';
     tab.title = path.split('/').pop() || '浏览器';
     renderRightTabs();
     loadBrowserPath(tab, path);
   };
   hostAct('go', go);
-  hostAct('refresh', () => loadBrowserPath(tab, tab.path || input?.value || ''));
+  hostAct('refresh', () => {
+    if (tab.artifact && tab.html) {
+      paintBrowserHttp(tab, { content: tab.html, streaming: !!tab.streaming, force: true });
+      return;
+    }
+    loadBrowserPath(tab, tab.path || input?.value || '');
+  });
   input?.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') {
       e.preventDefault();
       go();
     }
   });
-  if (tab.path && !tab.waiting) loadBrowserPath(tab, tab.path);
-  else if (tab.path) loadBrowserPath(tab, tab.path);
+  if (tab.artifact && tab.html) {
+    paintBrowserHttp(tab, { content: tab.html, streaming: !!tab.streaming, force: true });
+    return;
+  }
+  if (tab.path) loadBrowserPath(tab, tab.path);
 }
 
 function hostAct(name, fn) {
@@ -3226,8 +3252,6 @@ async function loadFileContent(path) {
 }
 
 function bindFilesTab() {
-  if (filesTabBound) return;
-  filesTabBound = true;
   hostAct('refresh-files', () => refreshFilesTree());
   const filter = $('#file-tree-filter');
   filter?.addEventListener('input', () => {
@@ -3338,15 +3362,24 @@ function bindRightEvents() {
   function startResize(e, side) {
     e.preventDefault();
     const startX = e.clientX;
-    const startWidth = side === 'list' ? 272 : 360;
+    const pane = side === 'list' ? $('#list-pane') : $('#right-pane');
+    const startWidth = pane?.getBoundingClientRect().width || (side === 'list' ? 268 : 360);
+    document.documentElement.classList.add('is-resizing');
     const move = (ev) => {
       const dx = ev.clientX - startX;
-      const newWidth = Math.max(180, Math.min(side === 'list' ? 400 : 800, startWidth + dx));
-      document.documentElement.style.setProperty(side === 'list' ? '--list-w' : '--right-w', `${newWidth}px`);
+      const max = side === 'list' ? 400 : 800;
+      const newWidth = Math.max(180, Math.min(max, startWidth + (side === 'list' ? dx : -dx)));
+      if (side === 'list') {
+        document.documentElement.style.setProperty('--list-w', `${newWidth}px`);
+      } else {
+        document.documentElement.style.setProperty('--right-w', `${newWidth}px`);
+        document.documentElement.style.setProperty('--right-w-wide', `${newWidth}px`);
+      }
     };
     const stop = () => {
       document.removeEventListener('mousemove', move);
       document.removeEventListener('mouseup', stop);
+      document.documentElement.classList.remove('is-resizing');
     };
     document.addEventListener('mousemove', move);
     document.addEventListener('mouseup', stop);
@@ -3414,10 +3447,12 @@ async function boot() {
           const loaded = await invoke('load_session', { id });
           if (navigationSeq !== state.sessionNavigationSeq) return;
           state.session = normalizeSession(loaded);
-        } catch {
+          rememberActiveSession(state.session);
+        } catch (err) {
           if (navigationSeq !== state.sessionNavigationSeq) return;
-          const item = state.sessions.find((s) => s.id === id);
-          if (item) state.session = normalizeSession(item);
+          // 索引项不含消息，不能当完整会话使用；保持当前会话并提示
+          UIDialog.toast('无法加载会话：' + (err?.message || err), 3200);
+          return;
         }
         if (state.session?.mode === 'image') state.lastImageSessionId = state.session.id;
         else if (state.session?.id) state.lastChatSessionId = state.session.id;

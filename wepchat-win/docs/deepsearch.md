@@ -298,3 +298,28 @@ WePChat 当前已实现会话级后台任务、侧栏加载状态和完成红点
 - [HTML artifact 面板](../example/DEEIX-Chat/frontend/features/chat/components/sections/chat-artifact.tsx)
 - [WePChat 当前聊天渲染](../ui/js/app.js)
 
+## 实施记录
+
+### 2026-07-23：P0 全部 + P1 主体落地
+
+**P0（渲染与滚动）**
+
+- 新增 `ui/js/chat-view.js`：消息按 id 映射为稳定 DOM 节点，reasoning / 工具卡 / 正文 / 图片 / 错误 / 操作行分部位按需更新；`renderChat()` 变为薄包装。工具卡以对象身份为键（流式中 id 会从 streamKey 换成真实 id），展开状态在增量更新下天然保留。
+- 流式正文块级缓存：`markdown.js` 新增 `lexBlocks`/`renderBlock`，流式期间只重渲染 raw 变化的顶层块（通常仅活跃尾部），完成后做一次完整解析收尾并绑定动作。
+- 流式合并刷新：`generateAssistant` 的 `onUpdate` 不再逐 token 全量重建，改为 40ms 合并 + rAF 对齐的 `scheduleStreamUpdate`；token 圆环随 flush 更新。
+- 新增 `ui/js/chat-scroll.js`：方向感知的跟随状态机（上翻即脱离、滚回近底或触底恢复）、ResizeObserver 兜底贴底、「回到底部」悬浮按钮；发送消息强制回底。
+
+**P1（内容表达）**
+
+- 消息级元信息行：`模型 · HH:MM · 输入/输出 token · 耗时`，随 hover 操作行出现；`durationMs` 进消息与 variant 快照。
+- 新增 `ui/js/chat-rail.js`：按用户提问生成刻度、hover 一行摘要、点击居中跳转、活动刻度居中；少于 2 个提问隐藏。
+- 代码块「运行」按钮修复（原先无事件处理）：html/svg 等围栏一键打开右栏 artifact 预览；流式中活跃围栏 500ms 节流刷新，消息完成后用最终内容收尾。
+
+**安全修复（预览隔离）**
+
+- 原实现 `rp-frame` 带 `allow-same-origin` 且宿主直接 `contentDocument.write()` 模型 HTML——写入文档继承应用 origin，模型脚本可达 `window.parent.__TAURI__`。已改为：`preview_server.rs` 新增 `__wep_preview__` harness 路由与全响应 CSP（禁外部网络、禁表单/插件），外层 iframe 仅 `sandbox="allow-scripts"` 加载 harness（127.0.0.1 独立 origin），HTML 经 postMessage 由 harness 写入其内部 iframe；`browser-preview.js` 重写为该桥接层，移除 srcdoc 回退。
+
+**验证**：`cargo check` 通过；全部改动 JS `node --check` 通过；`ui/dev/render-test.html`（新增渲染冒烟页：造会话 / 流式 Markdown / 流式围栏 / 思考+工具）浏览器实测通过、无控制台报错。
+
+**未做**（后续按需）：P2 会话截图与历史分页；Rust 侧任务注册表与断线续接（见「流式缓冲与任务稳定性」）；存储改造见 `docs/sqlite-storage-plan.md`。
+
