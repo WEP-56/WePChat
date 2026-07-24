@@ -532,9 +532,19 @@
 
   async function generateViaChat(ctx) {
     const { provider, model, prompt, format } = requestBase(ctx);
+    const references = (ctx.referenceImages || []).filter((image) => image && image.dataUrl);
+    const content = references.length
+      ? [
+        { type: 'text', text: prompt },
+        ...references.map((image) => ({
+          type: 'image_url',
+          image_url: { url: image.dataUrl },
+        })),
+      ]
+      : prompt;
     const body = {
       model,
-      messages: [{ role: 'user', content: prompt }],
+      messages: [{ role: 'user', content }],
       stream: false,
     };
     const url = endpointUrl(ctx, '/chat/completions', 'chatEndpointPath');
@@ -549,8 +559,26 @@
   async function generate(ctx) {
     const settings = ctx.settings || {};
     const mode = settings.apiMode || settings.imageApiMode || 'images';
+    if (ctx.mode === 'reference' && (ctx.referenceImages || []).length) {
+      return generateViaChat(ctx);
+    }
     if (ctx.mode === 'edit' && (ctx.referenceImages || []).length) {
-      return editViaImages(ctx);
+      if (mode === 'chat') return generateViaChat(ctx);
+      if (mode === 'images') return editViaImages(ctx);
+      const errors = [];
+      for (const step of ['edits', 'chat']) {
+        try {
+          const res = step === 'chat' ? await generateViaChat(ctx) : await editViaImages(ctx);
+          if (res.images && res.images.length) return res;
+          errors.push(step + ': 接口未返回图片');
+        } catch (e) {
+          errors.push(step + ': ' + (e && e.message || String(e)));
+          if (e && /^(IMAGE-SUBMIT-UNKNOWN|IMAGE-TOO-LARGE|IMAGE-DOWNLOAD-|NET-ABORTED)/.test(e.code || '')) throw e;
+        }
+      }
+      const err = new Error('图片参考生成失败。已尝试 edits / chat：\n' + errors.join('\n'));
+      err.code = 'IMAGE-REFERENCE-GENERATION-FAILED';
+      throw err;
     }
     const imageOnly = settings.imageOnly ||
       /^gpt-image/i.test(ctx.model || '') ||

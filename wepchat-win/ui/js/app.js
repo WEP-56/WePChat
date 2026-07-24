@@ -78,8 +78,8 @@ function setMode(mode) {
   renderSessions();
   if (window.ImageMode) window.ImageMode.renderImageSessionList();
   if (mode === 'image') {
-    // Image mode: keep right pane open as canvas workspace
-    showImageCanvasPane();
+    // Image mode owns its canvas inside the main studio; the right pane remains for chat/files/browser.
+    setRightOpen(false);
     if (window.ImageMode) {
       window.ImageMode.enterImageMode().catch((err) => console.warn('enterImageMode', err));
     }

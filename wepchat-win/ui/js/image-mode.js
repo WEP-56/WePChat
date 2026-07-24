@@ -29,6 +29,10 @@
   let generating = false;
   let abortCtl = null;
   let referencePath = '';
+  let referencePaths = [];
+  let referenceMode = 'reference';
+  let pendingCanvasItemId = '';
+  let imageSessionSearchQuery = '';
 
   function bind(h) {
     hooks = Object.assign(hooks, h || {});
@@ -193,6 +197,37 @@
     return 'images/' + stamp + '_' + title + suffix + '.' + ext;
   }
 
+  function uploadImageFileName(name, index, mime) {
+    const extFromMime = /jpe?g/i.test(mime || '') ? 'jpg' : /webp/i.test(mime || '') ? 'webp' : /gif/i.test(mime || '') ? 'gif' : 'png';
+    const cleanName = String(name || 'upload')
+      .replace(/\.[^.]+$/, '')
+      .replace(/[^\w一-鿿]+/g, '_')
+      .replace(/^_+|_+$/g, '')
+      .slice(0, 32) || 'upload';
+    const d = new Date();
+    const pad = (n) => String(n).padStart(2, '0');
+    const stamp = [
+      d.getFullYear(),
+      pad(d.getMonth() + 1),
+      pad(d.getDate()),
+      '_',
+      pad(d.getHours()),
+      pad(d.getMinutes()),
+      pad(d.getSeconds()),
+    ].join('');
+    const suffix = index > 0 ? '_' + (index + 1) : '';
+    return 'images/uploads/' + stamp + '_' + cleanName + suffix + '.' + extFromMime;
+  }
+
+  function readFileAsDataUrl(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result || ''));
+      reader.onerror = () => reject(reader.error || new Error('读取图片失败'));
+      reader.readAsDataURL(file);
+    });
+  }
+
   /** Persist session without embedding base64 image payloads in session.json. */
   async function persistImageSessionLightweight(session) {
     if (!session || !hooks.persistSession) return;
@@ -280,7 +315,7 @@
         throw new Error('无法读取参考图片 ' + path + '：' + (err?.message || String(err)));
       }
       const mime = String(res?.mime || 'image/png').toLowerCase();
-      if (!res?.contentBase64 || !/^image\/(png|jpe?g|webp|gif)$/i.test(mime)) {
+      if (!res?.contentBase64 || !/^image\//i.test(mime)) {
         throw new Error('参考文件不是支持的图片：' + path);
       }
       references.push({
@@ -355,6 +390,7 @@
     const background = args.background || settings.imageBackground || 'auto';
     const count = args.count || settings.imageDefaultCount || 1;
     const outputFormat = args.outputFormat || settings.imageOutputFormat || 'png';
+    const selectedReferenceMode = args.referenceMode || (args.source === 'image_mode' ? 'reference' : 'edit');
 
     const referenceImages = refs.length
       ? await readReferenceImages(state.session.id, refs)
@@ -388,7 +424,7 @@
       size,
       quality,
       background,
-      mode: refs.length ? 'edit' : 'generate',
+      mode: refs.length ? (selectedReferenceMode === 'edit' ? 'edit' : 'reference') : 'generate',
       referenceImages,
       settings: apiSettings,
       signal: args.signal,
@@ -398,7 +434,7 @@
     const saved = await saveGeneratedImages(result.images || [], {
       prompt: args.prompt,
       targetFile: args.targetFile,
-      mode: refs.length ? 'edit' : 'generate',
+      mode: refs.length ? (selectedReferenceMode === 'edit' ? 'edit' : 'reference') : 'generate',
       size,
       count,
       quality,
@@ -441,7 +477,7 @@
       workspacePath: '',
       pinned: false,
       imageCanvas: null,
-      draft: { input: '', referencePath: '' },
+      draft: { input: '', referencePath: '', referencePaths: [], referenceMode: 'reference' },
     };
   }
 
@@ -457,6 +493,10 @@
     const empty = $('#image-list-empty');
     if (!listEl) return;
     const sessions = filterImageSessions(state?.sessions || [])
+      .filter((s) => {
+        const q = imageSessionSearchQuery.trim().toLowerCase();
+        return !q || String(s.title || '未命名生图').toLowerCase().includes(q);
+      })
       .slice()
       .sort((a, b) => {
         if (!!b.pinned !== !!a.pinned) return b.pinned ? 1 : -1;
@@ -473,13 +513,36 @@
     listEl.innerHTML = sessions.map((s) => {
       const active = state.session?.id === s.id ? ' is-active' : '';
       const title = s.title || '未命名生图';
+      const meta = [
+        s.model || '',
+        imageCountOfSession(s) ? imageCountOfSession(s) + ' 张' : '',
+      ].filter(Boolean).join(' · ');
       return `<li class="session-item${active}" data-id="${escapeAttr(s.id)}">
-        <button type="button" class="session-item-btn" data-act="open-image-session">
-          <span class="session-title">${escapeHtml(title)}</span>
-          <span class="session-meta">${escapeHtml((s.model || '').slice(0, 28))}</span>
-        </button>
+        <div class="session-item-row">
+          <button type="button" class="session-item-btn" data-act="open-image-session">
+            <span class="session-title">${escapeHtml(title)}</span>
+            <span class="session-meta">${escapeHtml(meta.slice(0, 36))}</span>
+          </button>
+          <button type="button" class="session-item-more" data-act="image-session-menu" title="会话操作" aria-label="会话操作">⋯</button>
+        </div>
+        <div class="session-menu image-session-menu" hidden>
+          <button type="button" class="session-menu-item" data-image-session-act="rename">重命名</button>
+          <button type="button" class="session-menu-item" data-image-session-act="pin">${s.pinned ? '取消置顶' : '置顶'}</button>
+          <button type="button" class="session-menu-item" data-image-session-act="copy">复制会话</button>
+          <button type="button" class="session-menu-item is-danger" data-image-session-act="delete">删除</button>
+        </div>
       </li>`;
     }).join('');
+  }
+
+  function imageCountOfSession(session) {
+    const canvasCount = Array.isArray(session?.imageCanvas?.items) ? session.imageCanvas.items.length : 0;
+    const messageCount = (session?.messages || []).reduce((sum, m) => sum + (Array.isArray(m.images) ? m.images.length : 0), 0);
+    return Math.max(canvasCount, messageCount);
+  }
+
+  function closeImageSessionMenus() {
+    document.querySelectorAll('.image-session-menu').forEach((menu) => { menu.hidden = true; });
   }
 
   function renderImageTimeline() {
@@ -498,10 +561,11 @@
     }
     scroll.innerHTML = messages.map((m) => {
       if (m.role === 'user') {
+        const refModeLabel = m.imageReferenceMode === 'edit' ? '编辑' : '参考';
         return `<div class="img-msg img-msg--user">
           <div class="img-msg-bubble">${escapeHtml(m.content || '')}</div>
           ${m.referenceFiles && m.referenceFiles.length
-            ? `<div class="img-msg-ref">参考：${escapeHtml(m.referenceFiles.join(', '))}</div>`
+            ? `<div class="img-msg-ref">${refModeLabel}：${escapeHtml(m.referenceFiles.join(', '))}</div>`
             : ''}
         </div>`;
       }
@@ -549,18 +613,106 @@
 
   function updateReferenceChip() {
     const chip = $('#image-ref-chip');
+    const modeEl = $('#image-ref-mode');
     if (!chip) return;
-    if (referencePath) {
+    const paths = getReferencePaths();
+    if (paths.length) {
       chip.hidden = false;
-      chip.querySelector('.img-ref-path').textContent = referencePath;
+      if (modeEl) modeEl.hidden = false;
+      chip.innerHTML = paths.map((path) => {
+        const item = canvasState?.items?.find((it) => it.path === path);
+        const name = path.split(/[\\/]/).pop() || path;
+        return `<span class="img-ref-item" title="${escapeAttr(path)}">
+          <span class="img-ref-preview">${item?.dataUrl ? `<img src="${escapeAttr(item.dataUrl)}" alt="" />` : ''}</span>
+          <span>参考</span>
+          <span class="img-ref-path">${escapeHtml(name)}</span>
+          <button type="button" class="img-ref-clear" data-ref-remove="${escapeAttr(path)}" title="移除参考">×</button>
+        </span>`;
+      }).join('') + '<button type="button" class="img-ref-clear img-ref-clear-all" id="btn-image-ref-clear" title="清除全部参考">×</button>';
     } else {
       chip.hidden = true;
+      if (modeEl) modeEl.hidden = true;
+    }
+    updateReferenceModeUi();
+  }
+
+  function normalizeReferencePath(path) {
+    return path ? String(path).replace(/\\/g, '/').replace(/^\/+/, '') : '';
+  }
+
+  function getReferencePaths() {
+    const paths = referencePaths.length ? referencePaths : (referencePath ? [referencePath] : []);
+    return [...new Set(paths.map(normalizeReferencePath).filter(Boolean))];
+  }
+
+  function persistReferenceDraft() {
+    const session = S()?.session;
+    const paths = getReferencePaths();
+    referencePaths = paths;
+    referencePath = paths[0] || '';
+    if (session && session.mode === 'image') {
+      session.draft = session.draft || {};
+      session.draft.referencePath = referencePath;
+      session.draft.referencePaths = paths;
+      session.draft.referenceMode = referenceMode;
     }
   }
 
-  function setReferencePath(path) {
-    referencePath = path ? String(path).replace(/\\/g, '/').replace(/^\/+/, '') : '';
+  function setReferencePaths(paths) {
+    referencePaths = [...new Set((paths || []).map(normalizeReferencePath).filter(Boolean))].slice(0, 8);
+    referencePath = referencePaths[0] || '';
+    persistReferenceDraft();
     updateReferenceChip();
+  }
+
+  function updateReferenceModeUi() {
+    document.querySelectorAll('[data-ref-mode]').forEach((btn) => {
+      btn.classList.toggle('is-active', btn.getAttribute('data-ref-mode') === referenceMode);
+    });
+  }
+
+  function setReferenceMode(mode) {
+    referenceMode = mode === 'edit' ? 'edit' : 'reference';
+    const session = S()?.session;
+    if (session && session.mode === 'image') {
+      session.draft = session.draft || {};
+      session.draft.referenceMode = referenceMode;
+    }
+    updateReferenceModeUi();
+    renderCanvas();
+  }
+
+  function setReferencePath(path) {
+    setReferencePaths(path ? [path] : []);
+  }
+
+  function addReferencePath(path) {
+    const clean = normalizeReferencePath(path);
+    if (!clean) return;
+    setReferencePaths(getReferencePaths().concat(clean));
+  }
+
+  function removeReferencePath(path) {
+    const clean = normalizeReferencePath(path);
+    setReferencePaths(getReferencePaths().filter((item) => item !== clean));
+  }
+
+  function clearReferenceSelection() {
+    referencePath = '';
+    referencePaths = [];
+    const session = S()?.session;
+    if (session && session.mode === 'image') {
+      session.draft = session.draft || {};
+      session.draft.referencePath = '';
+      session.draft.referencePaths = [];
+    }
+    const cs = ensureCanvasState();
+    if (cs && window.ImageCanvas) {
+      window.ImageCanvas.select(cs, null);
+      if (session) session.imageCanvas = window.ImageCanvas.serialize(cs);
+    }
+    updateReferenceChip();
+    renderCanvas();
   }
 
   function renderImageComposerMeta() {
@@ -598,6 +750,64 @@
       ).join('');
       sizeSel.dataset.bound = '1';
     }
+    renderImageModelPicker();
+    renderImageSizePicker();
+  }
+
+  function renderImageModelPicker() {
+    const select = $('#image-model-select');
+    const btn = $('#image-model-picker-btn');
+    const title = $('#image-model-picker-title');
+    const pop = $('#image-model-picker-popover');
+    if (!select || !btn || !pop) return;
+    const selected = select.selectedOptions?.[0];
+    if (title) title.textContent = selected && selected.value ? selected.textContent : '选择生图模型';
+    btn.disabled = select.disabled;
+    const groups = [];
+    [...select.children].forEach((node) => {
+      if (node.tagName === 'OPTGROUP') {
+        const opts = [...node.children].filter((opt) => opt.value);
+        if (opts.length) groups.push({ label: node.label, options: opts });
+      }
+    });
+    pop.innerHTML = groups.length ? groups.map((group) => `
+      <div class="image-picker-group">
+        <div class="image-picker-group-title">${escapeHtml(group.label)}</div>
+        ${group.options.map((opt) => `
+          <button type="button" class="image-picker-option${opt.selected ? ' is-active' : ''}" data-image-model-value="${escapeAttr(opt.value)}" role="option" aria-selected="${opt.selected ? 'true' : 'false'}">
+            <span>${escapeHtml(opt.textContent || '')}</span>
+          </button>
+        `).join('')}
+      </div>
+    `).join('') : '<div class="image-picker-empty">暂无生图模型</div>';
+  }
+
+  function renderImageSizePicker() {
+    const select = $('#image-size-select');
+    const btn = $('#image-size-picker-btn');
+    const pop = $('#image-size-picker-popover');
+    if (!select || !btn || !pop) return;
+    btn.textContent = select.value || 'auto';
+    pop.innerHTML = [...select.options].map((opt) => `
+      <button type="button" class="image-size-option${opt.selected ? ' is-active' : ''}" data-image-size-value="${escapeAttr(opt.value)}" role="option" aria-selected="${opt.selected ? 'true' : 'false'}">
+        ${escapeHtml(opt.textContent || opt.value)}
+      </button>
+    `).join('');
+  }
+
+  function closeImagePickers(except) {
+    const model = $('#image-model-picker-popover');
+    const modelBtn = $('#image-model-picker-btn');
+    const size = $('#image-size-picker-popover');
+    const sizeBtn = $('#image-size-picker-btn');
+    if (except !== 'model' && model && modelBtn) {
+      model.hidden = true;
+      modelBtn.setAttribute('aria-expanded', 'false');
+    }
+    if (except !== 'size' && size && sizeBtn) {
+      size.hidden = true;
+      sizeBtn.setAttribute('aria-expanded', 'false');
+    }
   }
 
   /* ---------- Canvas ---------- */
@@ -631,13 +841,36 @@
     const cs = ensureCanvasState();
     window.ImageCanvas.render(host, cs, {
       onSelect(it) {
-        if (it) setReferencePath(it.path);
+        if (it?.path) setReferencePath(it.path);
+        else clearReferenceSelection();
+      },
+      onSelectMany(items) {
+        const paths = (items || []).map((it) => it?.path).filter(Boolean);
+        if (paths.length) setReferencePaths(paths);
+        else clearReferenceSelection();
       },
       onUseReference(it) {
         if (it) {
-          setReferencePath(it.path);
+          addReferencePath(it.path);
           toast('已设为参考：' + it.path, 'ok');
         }
+      },
+      onUpload() {
+        uploadImagesToCanvas().catch((err) => {
+          toast(err?.message || String(err), 'err');
+        });
+      },
+      referenceMode,
+      onReferenceModeChange(mode) {
+        setReferenceMode(mode);
+      },
+      onEditPrompt(it, prompt, mode) {
+        if (!it?.path || !prompt) return;
+        setReferencePath(it.path);
+        setReferenceMode(mode);
+        const input = $('#image-composer-input');
+        if (input) input.value = '';
+        sendImagePrompt(prompt);
       },
       onChange(st) {
         const session = S()?.session;
@@ -647,6 +880,79 @@
         }
       },
     });
+  }
+
+  async function uploadImagesToCanvas() {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = 'image/png,image/jpeg,image/webp,image/gif';
+    input.multiple = true;
+    const picked = await new Promise((resolve) => {
+      input.addEventListener('change', () => resolve(Array.from(input.files || [])), { once: true });
+      input.click();
+    });
+    const files = (picked || []).filter((file) => /^image\/(png|jpe?g|webp|gif)$/i.test(file.type || ''));
+    if (!files.length) return;
+    const state = S();
+    if (!state) return;
+    if (!state.session || state.session.mode !== 'image') {
+      state.session = createImageSession();
+      state.sessions = state.sessions || [];
+      state.sessions.unshift(state.session);
+    }
+    const session = state.session;
+    const saved = [];
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
+      const dataUrl = await readFileAsDataUrl(file);
+      const mime = (dataUrl.match(/^data:([^;]+)/) || [])[1] || file.type || 'image/png';
+      const path = uploadImageFileName(file.name, i, mime);
+      await writeBinary(session.id, path, dataUrl, mime);
+      saved.push({
+        path,
+        mime,
+        dataUrl,
+        prompt: '',
+        imageMeta: {
+          mode: 'upload',
+          source: 'canvas_upload',
+          originalName: file.name || '',
+        },
+      });
+    }
+    const cs = ensureCanvasState();
+    const added = window.ImageCanvas?.addItems?.(cs, saved) || [];
+    const last = added[added.length - 1];
+    if (last) {
+      window.ImageCanvas.select(cs, last.id);
+      setReferencePaths(saved.map((item) => item.path));
+    }
+    session.imageCanvas = window.ImageCanvas.serialize(cs);
+    session.updatedAt = nowIso();
+    await persistImageSessionLightweight(session);
+    renderImageSessionList();
+    renderCanvas();
+    toast('已上传到画布', 'ok');
+  }
+
+  function addCanvasTaskPlaceholder(prompt) {
+    const cs = ensureCanvasState();
+    if (!cs || !window.ImageCanvas?.addPending) return '';
+    const item = window.ImageCanvas.addPending(cs, {
+      label: 'Generating',
+      prompt: String(prompt || '').slice(0, 120),
+    });
+    pendingCanvasItemId = item.id;
+    renderCanvas();
+    return item.id;
+  }
+
+  function removeCanvasTaskPlaceholder(id) {
+    const cs = ensureCanvasState();
+    const targetId = id || pendingCanvasItemId;
+    if (!cs || !targetId || !window.ImageCanvas?.removeById) return;
+    window.ImageCanvas.removeById(cs, targetId);
+    if (pendingCanvasItemId === targetId) pendingCanvasItemId = '';
   }
 
   async function placeOnCanvas(saved) {
@@ -691,6 +997,12 @@
     }
     const prompt = String(text || '').trim();
     if (!prompt) return;
+    const activeReferencePaths = getReferencePaths();
+    const composerInput = $('#image-composer-input');
+    if (composerInput) {
+      composerInput.value = '';
+      autoResizeImageInput(composerInput);
+    }
 
     if (!state.session || state.session.mode !== 'image') {
       state.session = createImageSession();
@@ -706,7 +1018,8 @@
       role: 'user',
       content: prompt,
       createdAt: nowIso(),
-      referenceFiles: referencePath ? [referencePath] : [],
+      referenceFiles: activeReferencePaths,
+      imageReferenceMode: activeReferencePaths.length ? referenceMode : '',
     };
     const assistantMsg = {
       id: uid('message'),
@@ -726,13 +1039,15 @@
 
     generating = true;
     abortCtl = typeof AbortController !== 'undefined' ? new AbortController() : null;
+    const canvasTaskId = addCanvasTaskPlaceholder(prompt);
     setComposerBusy(true);
 
     try {
       const result = await runImageRequest({
         prompt,
         size,
-        referenceFiles: referencePath ? [referencePath] : [],
+        referenceFiles: activeReferencePaths,
+        referenceMode: activeReferencePaths.length ? referenceMode : 'generate',
         source: 'image_mode',
         signal: abortCtl?.signal,
         onStatus(info) {
@@ -755,6 +1070,7 @@
         ? '已生成 ' + result.saved.length + ' 张图片'
         : '未返回图片';
       assistantMsg.model = result.model;
+      removeCanvasTaskPlaceholder(canvasTaskId);
       await placeOnCanvas(result.saved);
       await persistImageSessionLightweight(session);
       if (hooks.refreshSessionList) await hooks.refreshSessionList();
@@ -771,6 +1087,8 @@
         toast(assistantMsg.error, 'err');
       }
       renderImageTimeline();
+      removeCanvasTaskPlaceholder(canvasTaskId);
+      renderCanvas();
       await persistImageSessionLightweight(session);
     } finally {
       generating = false;
@@ -786,6 +1104,13 @@
     if (input) input.disabled = !!busy;
     if (send) send.hidden = !!busy;
     if (stop) stop.hidden = !busy;
+  }
+
+  function autoResizeImageInput(input) {
+    if (!input) return;
+    input.style.height = 'auto';
+    input.style.height = Math.min(120, Math.max(34, input.scrollHeight)) + 'px';
+    input.style.overflowY = input.scrollHeight > 120 ? 'auto' : 'hidden';
   }
 
   function stopGenerate() {
@@ -892,7 +1217,11 @@
       canvasState = window.ImageCanvas.createState();
       window.ImageCanvas.restore(canvasState, state.session.imageCanvas);
     }
-    referencePath = state.session?.draft?.referencePath || '';
+    referencePaths = Array.isArray(state.session?.draft?.referencePaths)
+      ? state.session.draft.referencePaths.map(normalizeReferencePath).filter(Boolean)
+      : (state.session?.draft?.referencePath ? [normalizeReferencePath(state.session.draft.referencePath)] : []);
+    referencePath = referencePaths[0] || '';
+    referenceMode = state.session?.draft?.referenceMode === 'edit' ? 'edit' : 'reference';
     renderImageSessionList();
     renderImageComposerMeta();
     updateReferenceChip();
@@ -900,11 +1229,6 @@
     renderImageTimeline();
     await hydrateCanvasImages();
     renderCanvas();
-
-    // Default open right pane as canvas (unique for image mode)
-    setRightOpen(true);
-    renderRightPane();
-    if (typeof hooks.showImageCanvasPane === 'function') hooks.showImageCanvasPane();
   }
 
   async function newImageSession() {
@@ -917,6 +1241,8 @@
     state.sessions.unshift(session);
     canvasState = window.ImageCanvas ? window.ImageCanvas.createState() : null;
     referencePath = '';
+    referencePaths = [];
+    referenceMode = 'reference';
     if (hooks.persistSession) await hooks.persistSession(session);
     if (hooks.refreshSessionList) await hooks.refreshSessionList();
     renderImageSessionList();
@@ -934,7 +1260,11 @@
   async function openImageSession(id) {
     if (hooks.loadSession) await hooks.loadSession(id);
     canvasState = null;
-    referencePath = S()?.session?.draft?.referencePath || '';
+    referencePaths = Array.isArray(S()?.session?.draft?.referencePaths)
+      ? S().session.draft.referencePaths.map(normalizeReferencePath).filter(Boolean)
+      : (S()?.session?.draft?.referencePath ? [normalizeReferencePath(S().session.draft.referencePath)] : []);
+    referencePath = referencePaths[0] || '';
+    referenceMode = S()?.session?.draft?.referenceMode === 'edit' ? 'edit' : 'reference';
     await enterImageMode();
   }
 
@@ -946,6 +1276,7 @@
         const input = $('#image-composer-input');
         if (input) {
           input.value = p;
+          autoResizeImageInput(input);
           input.focus();
         }
         return;
@@ -956,15 +1287,77 @@
         if (li) openImageSession(li.getAttribute('data-id'));
         return;
       }
-      if (e.target.closest?.('#btn-image-ref-clear')) {
-        setReferencePath('');
+      const menuBtn = e.target.closest?.('[data-act="image-session-menu"]');
+      if (menuBtn) {
+        e.stopPropagation();
+        const item = menuBtn.closest('[data-id]');
+        const menu = item?.querySelector('.image-session-menu');
+        const open = menu && !menu.hidden;
+        closeImageSessionMenus();
+        if (menu && !open) menu.hidden = false;
         return;
+      }
+      const sessionAct = e.target.closest?.('[data-image-session-act]');
+      if (sessionAct) {
+        e.stopPropagation();
+        const item = sessionAct.closest('[data-id]');
+        const id = item?.getAttribute('data-id');
+        const act = sessionAct.getAttribute('data-image-session-act');
+        closeImageSessionMenus();
+        if (id) handleImageSessionAction(id, act);
+        return;
+      }
+      const refRemove = e.target.closest?.('[data-ref-remove]')?.getAttribute('data-ref-remove');
+      if (refRemove != null) {
+        removeReferencePath(refRemove);
+        return;
+      }
+      if (e.target.closest?.('#btn-image-ref-clear')) {
+        clearReferenceSelection();
+        return;
+      }
+      const refModeBtn = e.target.closest?.('[data-ref-mode]');
+      if (refModeBtn) {
+        setReferenceMode(refModeBtn.getAttribute('data-ref-mode'));
+        return;
+      }
+      const modelValue = e.target.closest?.('[data-image-model-value]')?.getAttribute('data-image-model-value');
+      if (modelValue != null) {
+        const select = $('#image-model-select');
+        if (select) {
+          select.value = modelValue;
+          select.dispatchEvent(new Event('change'));
+        }
+        closeImagePickers();
+        return;
+      }
+      const sizeValue = e.target.closest?.('[data-image-size-value]')?.getAttribute('data-image-size-value');
+      if (sizeValue != null) {
+        const select = $('#image-size-select');
+        if (select) {
+          select.value = sizeValue;
+          renderImageSizePicker();
+        }
+        closeImagePickers();
+        return;
+      }
+      if (!e.target.closest?.('.image-model-picker-popover, .image-model-picker-btn, .image-size-picker-popover, .image-size-picker-btn')) {
+        closeImagePickers();
+        closeImageSessionMenus();
       }
     });
 
     const send = $('#btn-image-send');
     const stop = $('#btn-image-stop');
     const input = $('#image-composer-input');
+    const modelPickerBtn = $('#image-model-picker-btn');
+    const modelPickerPopover = $('#image-model-picker-popover');
+    const sizePickerBtn = $('#image-size-picker-btn');
+    const sizePickerPopover = $('#image-size-picker-popover');
+    $('#image-session-search')?.addEventListener('input', (event) => {
+      imageSessionSearchQuery = event.target.value || '';
+      renderImageSessionList();
+    });
     $('#image-model-select')?.addEventListener('change', async (event) => {
       const [providerId, model] = event.target.value.split('\n');
       const state = S();
@@ -975,8 +1368,25 @@
       renderImageComposerMeta();
       renderImageSessionList();
     });
+    modelPickerBtn?.addEventListener('click', (event) => {
+      event.stopPropagation();
+      if (modelPickerBtn.disabled) return;
+      const open = !!modelPickerPopover?.hidden;
+      closeImagePickers(open ? 'model' : undefined);
+      if (modelPickerPopover) modelPickerPopover.hidden = !open;
+      modelPickerBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
+    });
+    sizePickerBtn?.addEventListener('click', (event) => {
+      event.stopPropagation();
+      const open = !!sizePickerPopover?.hidden;
+      closeImagePickers(open ? 'size' : undefined);
+      if (sizePickerPopover) sizePickerPopover.hidden = !open;
+      sizePickerBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
+    });
     send?.addEventListener('click', () => sendImagePrompt(input?.value || ''));
     stop?.addEventListener('click', stopGenerate);
+    autoResizeImageInput(input);
+    input?.addEventListener('input', () => autoResizeImageInput(input));
     input?.addEventListener('keydown', (e) => {
       if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault();
@@ -986,6 +1396,62 @@
     $('#btn-new-image')?.addEventListener('click', () => {
       newImageSession();
     });
+    $('#btn-new-image-compact')?.addEventListener('click', () => {
+      newImageSession();
+    });
+  }
+
+  async function handleImageSessionAction(id, action) {
+    const state = S();
+    const session = state?.sessions?.find((s) => s.id === id) || (state?.session?.id === id ? state.session : null);
+    if (!session) return;
+    try {
+      if (action === 'rename') {
+        const name = await window.UIDialog?.prompt?.('重命名会话', session.title || '未命名生图', '会话名称');
+        if (!name) return;
+        session.title = String(name).trim() || session.title;
+        session.updatedAt = nowIso();
+        await persistImageSessionLightweight(session);
+      } else if (action === 'pin') {
+        session.pinned = !session.pinned;
+        session.updatedAt = nowIso();
+        await persistImageSessionLightweight(session);
+      } else if (action === 'copy') {
+        if (state.session?.id === id) await persistImageSessionLightweight(state.session);
+        const copied = await hooks.invoke('copy_session', { id });
+        const normalized = copied && typeof copied === 'object' ? copied : null;
+        if (normalized) {
+          normalized.createdAt = nowIso();
+          normalized.updatedAt = nowIso();
+          normalized.title = (normalized.title || session.title || '未命名生图') + ' 副本';
+          const saved = await hooks.invoke('save_session', { session: normalized });
+          state.session = saved || normalized;
+          state.sessions = [state.session].concat((state.sessions || []).filter((s) => s.id !== state.session.id));
+          state.lastImageSessionId = state.session.id;
+          canvasState = null;
+          await enterImageMode();
+        }
+      } else if (action === 'delete') {
+        const ok = await window.UIDialog?.confirm?.(
+          `删除后无法恢复：\n${session.title || '未命名生图'}\n\n将删除会话消息及其工作区目录。`,
+          '删除生图会话',
+          { danger: true, okText: '删除' }
+        );
+        if (!ok) return;
+        await hooks.invoke('delete_session', { id });
+        state.sessions = (state.sessions || []).filter((s) => s.id !== id);
+        if (state.session?.id === id) {
+          state.session = null;
+          canvasState = null;
+          await enterImageMode();
+        }
+      }
+      if (hooks.refreshSessionList) await hooks.refreshSessionList();
+      renderImageSessionList();
+      window.UIDialog?.toast?.('已更新');
+    } catch (err) {
+      toast(err?.message || String(err), 'err');
+    }
   }
 
   function escapeHtml(s) {
@@ -1003,12 +1469,15 @@
   async function imageGoTool(args, ctx) {
     const prompt = String(args.prompt || '').trim();
     if (!prompt) return '错误：缺少 prompt';
+    const style = String(args.style || '').trim();
+    const toolPrompt = style ? prompt + '\n\nStyle: ' + style : prompt;
     try {
       const result = await runImageRequest({
-        prompt,
+        prompt: toolPrompt,
         size: args.size,
         count: args.count,
         targetFile: args.targetFile,
+        stylePresetId: args.stylePresetId,
         referenceFiles: args.referenceFiles || [],
         source: 'image_go',
         signal: ctx?.signal,
@@ -1051,6 +1520,7 @@
     resolveImageModel,
     setReferencePath,
     getReferencePath: () => referencePath,
+    getReferencePaths,
     SIZE_OPTIONS,
     QUALITY_OPTIONS,
     FORMAT_OPTIONS,

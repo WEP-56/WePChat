@@ -1,6 +1,6 @@
 # Handoff：WePChat Windows
 
-> 最后更新：2026-07-24（普通聊天附件/工作区上传拖拽、SQLite S3 分页/标题搜索）
+> 最后更新：2026-07-24（生图 I1 布局首段：小生成对话列 + 主画布）
 > 项目目录：`E:\wepchat\wepchat\wepchat-win`  
 > Git 仓库：`E:\wepchat\wepchat`，分支 `main`，当前 HEAD `8310ad7`  
 > 当前工作树有大量未提交改动；除非用户明确要求，不要 commit，也不要清理或覆盖用户文件。
@@ -26,7 +26,7 @@ Windows 端是 Tauri 2 + 原生 HTML/CSS/JS 的桌面应用。本轮已经完成
 - 工作区文件恢复正常，真实文件从未丢失。
 - 手动 HTML 预览和 Preview Sandbox/代码块“运行”均已正常。
 
-下一阶段可选：补 S3 性能基准与实机回归；或按 `docs/image-mode-plan.md` 实施生图模式「小对话框 + 大画布」改造。FTS5 全局消息搜索和截图能力按用户意见延后。
+下一阶段可选：继续补 S3 性能基准与实机回归；或沿 `docs/image-mode-plan.md` 继续生图 I1/I2。当前已把生图主视图改成左侧窄生成对话列 + 右侧主画布，且进入生图模式不再强制打开右侧 tab 画布。画布已补选择/抓手工具、框选、上传图片到当前会话工作区、选中图作为 composer 多参考附件、参考/编辑显式模式选择、点击图像后的画布内编辑输入框、生成中占位卡片、拖拽吸附黄线。已修复参考取消、composer stop 按钮隐藏/颜色、输入框自动增高，并把图片模型/尺寸选择改成 WePChat 风格自绘 popover。左侧生图列表已改为搜索 + 新建生图行 + 会话行更多菜单。FTS5 全局消息搜索和截图能力按用户意见延后。
 
 ---
 
@@ -36,7 +36,7 @@ Windows 端是 Tauri 2 + 原生 HTML/CSS/JS 的桌面应用。本轮已经完成
 | --- | --- |
 | `docs/sqlite-storage-plan.md` | 存储改造实施依据；S1/S2 已完成，S3 已完成分页/标题搜索/checkpoint，FTS5 延后 |
 | `docs/deepsearch.md` | 渲染/滚动/artifact 调研与路线；P0 + P1 主体已落地 |
-| `docs/image-mode-plan.md` | 生图模式 Grok-like「小对话框 + 大画布」改造计划；已补 I0 基础链路、左栏会话管理、生成对话列向普通聊天靠齐要求；待实施 |
+| `docs/image-mode-plan.md` | 生图模式 Grok-like「小对话框 + 大画布」改造计划；I1 布局首段与部分 I2 画布交互已落地，I0 对话链路补齐、会话列表管理和更多文件操作仍待继续 |
 | `docs/HANDOFF.md` | 本文件，下一会话先读 |
 | `docs/product-boundary.md` | 产品边界 |
 | `docs/architecture.md` | 总体架构 |
@@ -338,7 +338,7 @@ git status --short
 ```text
 继续 wepchat-win。先完整阅读 docs/HANDOFF.md、docs/sqlite-storage-plan.md；要做生图模式先读 docs/image-mode-plan.md；需要处理聊天长期性能时再读 docs/deepsearch.md。
 
-当前：SQLite S1/S2 已落地并通过实测；S3 已完成 session_messages_page、聊天历史 prepend 保位、左侧标题搜索、退出 WAL checkpoint；FTS5 全局搜索延后。稳定聊天 DOM/流式滚动/rail/KaTeX/task list 已完成；手动 HTML 与代码块 artifact 预览均已实测可用。生图模式改造计划见 docs/image-mode-plan.md，实施时先做 I0 基础链路/左栏/生成对话列对齐，再做大画布。工作树未提交，勿覆盖用户改动。
+当前：SQLite S1/S2 已落地并通过实测；S3 已完成 session_messages_page、聊天历史 prepend 保位、左侧标题搜索、退出 WAL checkpoint；FTS5 全局搜索延后。稳定聊天 DOM/流式滚动/rail/KaTeX/task list 已完成；手动 HTML 与代码块 artifact 预览均已实测可用。生图模式改造计划见 docs/image-mode-plan.md；I1 布局首段已把生图主视图改成左侧窄生成对话列 + 右侧主画布，并取消进入生图时强制打开右侧 tab 画布；画布已补选择/抓手、框选、上传、多参考附件、参考/编辑显式选择、画布内编辑输入、生成占位、拖拽吸附黄线；已修复参考取消、stop 按钮、输入框自动增高和生图模型/尺寸自绘选择器；左侧生图列表已改为搜索 + 新建生图 + 更多菜单。工作树未提交，勿覆盖用户改动。
 
 优先补 SQLite S3 性能基准和实机回归，或实施生图模式 I1/I2；任何 schema 变化必须走 user_version 迁移。预览 iframe 当前必须保留 allow-scripts allow-same-origin，原因与安全边界见 HANDOFF。
 ```

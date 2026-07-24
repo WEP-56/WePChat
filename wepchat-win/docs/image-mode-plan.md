@@ -130,6 +130,7 @@
 - 输入框随文字行数自动增高，超过高度上限才滚动，和普通聊天 composer 保持一致。
 - 参考图、工作区图片、上传图片都以 composer 上方 chip 表示；图片必须先进入当前会话工作区。
 - 支持从画布选中项、工作区文件树、外部拖拽/粘贴进入参考图；LLM/API 看到工作区路径。
+- 生图模式不依赖 LLM 做复杂参考/编辑意图判断：只要有图片输入，无论来自画布内输入框还是生成对话列 composer，都应弹出“参考 / 编辑”选择抽屉，由用户明确决定本轮图片作为风格/内容参考，还是作为待编辑源图。
 - 发送后立即插入 user prompt 消息和 pending assistant 任务消息。
 - 生成中 send 按钮切换为 stop；任务状态留在对应 assistant 行，不用全局 toast 承担主要状态。
 - 失败错误显示在该轮消息里，可重试；停止生成显示为已停止，不污染画布。
@@ -234,6 +235,7 @@
 - API 链路：
   - generations、edits/reference、chat fallback 都从同一 `sendImagePrompt` 任务模型进入。
   - 生成任务携带 provider/model/size/count/referencePath/prompt/messageId/batchId。
+  - 有图片输入时先记录用户选择的 `reference` 或 `edit` 语义，再决定请求链路；不要在生图模式里用 prompt 关键词猜测。
 
 验收：
 

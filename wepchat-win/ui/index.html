@@ -112,9 +112,21 @@
         </section>
 
         <section class="list-panel" data-panel="image">
-          <header class="list-header">
+          <div class="list-search">
+            <input type="search" id="image-session-search" placeholder="搜索会话标题" aria-label="搜索生图会话标题" />
+          </div>
+          <button type="button" class="btn-new-chat" id="btn-new-image">
+            <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+              <path
+                fill="currentColor"
+                d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04c.39-.39.39-1.02 0-1.41l-2.34-2.34a.996.996 0 0 0-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"
+              />
+            </svg>
+            新建生图
+          </button>
+          <header class="list-header image-list-title-row">
             <h1 class="list-title">生图</h1>
-            <button type="button" class="icon-btn" id="btn-new-image" title="新建生图">
+            <button type="button" class="icon-btn" id="btn-new-image-compact" title="新建生图">
               <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
                 <path fill="currentColor" d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z" />
               </svg>
@@ -265,49 +277,65 @@
         </section>
 
         <section class="main-view" data-view="image">
-          <header class="main-top">
-            <div class="main-top-left"></div>
-            <div class="main-top-center">
-              <label class="model-switch" title="选择生图模型">
-                <select id="image-model-select" class="model-select" aria-label="选择生图模型" disabled>
-                  <option value="">选择生图模型</option>
-                </select>
-                <span class="model-provider" id="image-model-label">尚未配置生图模型</span>
-              </label>
-            </div>
-            <div class="main-top-right">
-              <button type="button" class="tool-btn" id="btn-toggle-image-canvas" title="画布">
-                <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
-                  <path fill="currentColor" d="M21 3H3c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h18c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm0 16H3V5h18v14zM5 15h4v4H5zm5-6h4v10h-4zm5-4h4v14h-4z"/>
-                </svg>
-              </button>
-            </div>
-          </header>
+          <div class="image-studio">
+            <section class="image-chat-panel" aria-label="生图对话">
+              <header class="main-top">
+                <div class="main-top-left"></div>
+                <div class="main-top-center">
+                  <label class="model-switch" title="选择生图模型">
+                    <select id="image-model-select" class="model-select" aria-label="选择生图模型" disabled>
+                      <option value="">选择生图模型</option>
+                    </select>
+                    <button type="button" class="image-model-picker-btn" id="image-model-picker-btn" aria-haspopup="listbox" aria-expanded="false" disabled>
+                      <span id="image-model-picker-title">选择生图模型</span>
+                      <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true">
+                        <path fill="currentColor" d="M7.41 8.59 12 13.17l4.59-4.58L18 10l-6 6-6-6 1.41-1.41z" />
+                      </svg>
+                    </button>
+                    <div class="image-model-picker-popover" id="image-model-picker-popover" role="listbox" hidden></div>
+                    <span class="model-provider" id="image-model-label">尚未配置生图模型</span>
+                  </label>
+                </div>
+                <div class="main-top-right"></div>
+              </header>
 
-          <div class="image-workbench">
-            <div class="image-timeline" id="image-timeline"></div>
-            <footer class="image-composer">
-              <div class="img-ref-chip" id="image-ref-chip" hidden>
-                <span>参考</span>
-                <span class="img-ref-path"></span>
-                <button type="button" class="img-ref-clear" id="btn-image-ref-clear" title="清除参考">×</button>
+              <div class="image-workbench">
+                <div class="image-timeline" id="image-timeline"></div>
+                <footer class="image-composer">
+                  <div class="img-ref-chip" id="image-ref-chip" hidden>
+                    <span>参考</span>
+                    <span class="img-ref-path"></span>
+                    <button type="button" class="img-ref-clear" id="btn-image-ref-clear" title="清除参考">×</button>
+                  </div>
+                  <div class="img-ref-mode" id="image-ref-mode" hidden role="group" aria-label="图片输入模式">
+                    <button type="button" class="img-ref-mode-btn is-active" data-ref-mode="reference">参考生成</button>
+                    <button type="button" class="img-ref-mode-btn" data-ref-mode="edit">编辑图片</button>
+                  </div>
+                  <div class="image-composer-box">
+                    <div class="image-size-picker">
+                      <select id="image-size-select" class="image-size-select" title="尺寸" aria-label="图片尺寸"></select>
+                      <button type="button" class="image-size-picker-btn" id="image-size-picker-btn" aria-haspopup="listbox" aria-expanded="false">auto</button>
+                      <div class="image-size-picker-popover" id="image-size-picker-popover" role="listbox" hidden></div>
+                    </div>
+                    <textarea id="image-composer-input" rows="1" placeholder="描述你想生成的图片…"></textarea>
+                    <button type="button" class="send-btn" id="btn-image-send" title="生成" aria-label="生成">
+                      <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+                        <path fill="currentColor" d="M4 12l1.41 1.41L11 7.83V20h2V7.83l5.58 5.59L20 12l-8-8-8 8z" />
+                      </svg>
+                    </button>
+                    <button type="button" class="send-btn is-stop" id="btn-image-stop" title="停止" aria-label="停止" hidden>
+                      <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
+                        <path fill="currentColor" d="M6 6h12v12H6z" />
+                      </svg>
+                    </button>
+                  </div>
+                  <p class="composer-hint">生图模式仅调用图片模型 · 图会保存到当前会话工作区</p>
+                </footer>
               </div>
-              <div class="image-composer-box">
-                <select id="image-size-select" class="image-size-select" title="尺寸" aria-label="图片尺寸"></select>
-                <textarea id="image-composer-input" rows="1" placeholder="描述你想生成的图片…"></textarea>
-                <button type="button" class="send-btn" id="btn-image-send" title="生成" aria-label="生成">
-                  <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
-                    <path fill="currentColor" d="M4 12l1.41 1.41L11 7.83V20h2V7.83l5.58 5.59L20 12l-8-8-8 8z" />
-                  </svg>
-                </button>
-                <button type="button" class="send-btn is-stop" id="btn-image-stop" title="停止" aria-label="停止" hidden>
-                  <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
-                    <path fill="currentColor" d="M6 6h12v12H6z" />
-                  </svg>
-                </button>
-              </div>
-              <p class="composer-hint">生图模式仅调用图片模型 · 图会保存到当前会话工作区</p>
-            </footer>
+            </section>
+            <section class="image-canvas-main" aria-label="生图画布">
+              <div class="img-canvas-host" id="image-canvas-host"></div>
+            </section>
           </div>
         </section>
 
