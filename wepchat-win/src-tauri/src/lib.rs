@@ -1,10 +1,12 @@
 mod db;
+mod external_agent;
 mod http_client;
 mod preview_server;
 mod sessions;
 mod settings;
 mod workspace_fs;
 
+use external_agent::{external_agent_detect_all, external_agent_supported};
 use http_client::{http_request, http_stream, http_stream_abort, AbortRegistry};
 use preview_server::{preview_ensure, preview_stage, preview_stop, preview_unstage};
 use serde_json::Value;
@@ -153,6 +155,8 @@ pub fn run() {
             preview_stage,
             preview_unstage,
             preview_stop,
+            external_agent_supported,
+            external_agent_detect_all,
         ])
         .run(tauri::generate_context!())
         .expect("error while running WePChat");

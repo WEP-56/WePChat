@@ -31,6 +31,50 @@ impl Default for ToolPermissions {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExternalAgentSettings {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub agents: serde_json::Value,
+    #[serde(default)]
+    pub projects: serde_json::Value,
+}
+
+impl Default for ExternalAgentSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            agents: serde_json::json!({
+                "codex": {
+                    "enabled": false,
+                    "commandPath": null,
+                    "extraArgs": [],
+                    "env": {}
+                },
+                "claude": {
+                    "enabled": false,
+                    "commandPath": null,
+                    "extraArgs": [],
+                    "env": {}
+                },
+                "pi": {
+                    "enabled": false,
+                    "commandPath": null,
+                    "extraArgs": [],
+                    "env": {}
+                }
+            }),
+            projects: serde_json::json!({
+                "codex": [],
+                "claude": [],
+                "pi": []
+            }),
+        }
+    }
+}
+
 /// User-facing app settings. Stored as JSON under the app data directory.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -72,6 +116,9 @@ pub struct AppSettings {
     /// Per-tool-group permissions (ask | always | never). Aligns with Android.
     #[serde(default)]
     pub tool_permissions: ToolPermissions,
+    /// Optional local agent CLI bridge (Codex/Claude/OpenCode...). Advanced and off by default.
+    #[serde(default)]
+    pub external_connections: ExternalAgentSettings,
 
     /* ---------- Image generation (align Android store.js) ---------- */
     #[serde(default)]
@@ -162,6 +209,7 @@ impl Default for AppSettings {
             max_tool_rounds: default_max_tool_rounds(),
             max_tool_calls: default_max_tool_calls(),
             tool_permissions: ToolPermissions::default(),
+            external_connections: ExternalAgentSettings::default(),
             image_provider_id: String::new(),
             image_model: String::new(),
             image_edit_model: String::new(),

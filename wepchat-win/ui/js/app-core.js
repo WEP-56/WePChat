@@ -131,6 +131,34 @@ export function defaultSettings() {
     maxToolRounds: 8,
     maxToolCalls: 24,
     toolPermissions: defaultToolPermissions(),
+    externalConnections: {
+      enabled: false,
+      agents: {
+        codex: {
+          enabled: false,
+          commandPath: null,
+          extraArgs: [],
+          env: {},
+        },
+        claude: {
+          enabled: false,
+          commandPath: null,
+          extraArgs: [],
+          env: {},
+        },
+        pi: {
+          enabled: false,
+          commandPath: null,
+          extraArgs: [],
+          env: {},
+        },
+      },
+      projects: {
+        codex: [],
+        claude: [],
+        pi: [],
+      },
+    },
     ...img,
   };
 }

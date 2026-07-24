@@ -155,6 +155,9 @@
             <button type="button" class="settings-nav-item" data-settings="agent">
               工具与代理
             </button>
+            <button type="button" class="settings-nav-item" data-settings="external">
+              外部连接
+            </button>
             <button type="button" class="settings-nav-item" data-settings="image">
               生图
             </button>
@@ -478,6 +481,71 @@
               <div class="field-actions">
                 <button type="button" class="primary-btn" id="btn-save-agent">保存</button>
                 <span class="field-status" id="agent-status"></span>
+              </div>
+            </div>
+
+            <div class="settings-page" data-settings-page="external">
+              <h2 class="settings-h">外部连接</h2>
+              <p class="settings-p">高级功能。当前仅保留设置、检测和启用状态；连接方案会在新计划确定后重新实现。</p>
+              <div class="settings-card">
+                <div class="settings-row">
+                  <div class="settings-row-text">
+                    <span class="settings-row-title">启用外部连接</span>
+                    <span class="settings-row-sub">关闭时不显示任何 agent 入口</span>
+                  </div>
+                  <button type="button" class="switch" id="external-enabled" aria-pressed="false" title="启用外部连接"></button>
+                </div>
+              </div>
+              <h3 class="settings-subh">支持的 Agent</h3>
+              <div class="settings-card external-agent-list" id="external-agent-list">
+                <div class="settings-row external-agent-row" data-agent-kind="codex">
+                  <div class="settings-row-text">
+                    <span class="settings-row-title">Codex</span>
+                    <span class="settings-row-sub" id="external-codex-status">未检测 · 目标协议：JSON-RPC</span>
+                  </div>
+                  <div class="external-agent-controls">
+                    <button type="button" class="secondary-btn" data-external-detect="codex">检测</button>
+                    <button type="button" class="switch" id="external-codex-enabled" aria-pressed="false" title="启用 Codex"></button>
+                  </div>
+                </div>
+                <label class="field external-agent-path">
+                  <span class="field-label">Codex CLI 路径（可选）</span>
+                  <input type="text" id="external-codex-path" class="field-input mono" placeholder="留空则从 PATH 检测 codex" />
+                </label>
+
+                <div class="settings-row external-agent-row" data-agent-kind="claude">
+                  <div class="settings-row-text">
+                    <span class="settings-row-title">Claude Code</span>
+                    <span class="settings-row-sub" id="external-claude-status">未检测 · 目标协议：CLI</span>
+                  </div>
+                  <div class="external-agent-controls">
+                    <button type="button" class="secondary-btn" data-external-detect="claude">检测</button>
+                    <button type="button" class="switch" id="external-claude-enabled" aria-pressed="false" title="启用 Claude Code"></button>
+                  </div>
+                </div>
+                <label class="field external-agent-path">
+                  <span class="field-label">Claude CLI 路径（可选）</span>
+                  <input type="text" id="external-claude-path" class="field-input mono" placeholder="留空则从 PATH 检测 claude" />
+                </label>
+
+                <div class="settings-row external-agent-row" data-agent-kind="pi">
+                  <div class="settings-row-text">
+                    <span class="settings-row-title">Pi</span>
+                    <span class="settings-row-sub" id="external-pi-status">未检测 · 目标协议：JSON-RPC</span>
+                  </div>
+                  <div class="external-agent-controls">
+                    <button type="button" class="secondary-btn" data-external-detect="pi">检测</button>
+                    <button type="button" class="switch" id="external-pi-enabled" aria-pressed="false" title="启用 Pi"></button>
+                  </div>
+                </div>
+                <label class="field external-agent-path">
+                  <span class="field-label">Pi CLI 路径（可选）</span>
+                  <input type="text" id="external-pi-path" class="field-input mono" placeholder="留空则从 PATH 检测 pi" />
+                </label>
+              </div>
+              <div class="field-actions">
+                <button type="button" class="primary-btn" id="btn-save-external">保存</button>
+                <span class="field-status" id="external-status"></span>
               </div>
             </div>
 

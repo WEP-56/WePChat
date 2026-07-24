@@ -1,4 +1,4 @@
-/* WePChat Windows shell
+﻿/* WePChat Windows shell
    墨白 graphite · light（与安卓 css/app.css :root 对齐） */
 
 :root {
@@ -4827,4 +4827,20 @@ dialog #wc-toast {
   font-size: 12.5px;
   max-height: 100%;
   overflow: auto;
+}
+/* External agent settings */
+.external-agent-row:not(:first-child) {
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+
+.external-agent-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.external-agent-path {
+  margin: 12px 0 0;
 }

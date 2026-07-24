@@ -30,6 +30,7 @@ import {
 } from './chat-view.js';
 import * as ChatScroll from './chat-scroll.js';
 import { initChatRail, updateChatRail } from './chat-rail.js';
+import { initExternalAgentMode } from './external-agent-mode.js';
 
 const LAST_SESSION_KEY = 'wepchat:last-active-session';
 const MESSAGE_PAGE_LIMIT = 50;
@@ -4255,6 +4256,19 @@ async function saveImageSettings() {
 
 async function boot() {
   bindEvents();
+  initExternalAgentMode({
+    getState: () => state,
+    invoke,
+    uid,
+    nowIso,
+    setMode,
+    persistSettings,
+    refreshSessions: async () => {
+      const sessions = await invoke('list_sessions');
+      state.sessions = Array.isArray(sessions) ? sessions.map((item) => normalizeSession(item)) : state.sessions;
+      renderSessions();
+    },
+  });
   if (window.ImageMode) {
     window.ImageMode.bind({
       getState: () => state,
@@ -4306,6 +4320,7 @@ async function boot() {
   setRightOpen(false);
   window.PreviewStream?.setApplyHandler?.(applyStreamPreview);
   await loadBackend();
+  window.ExternalAgentMode?.refresh?.();
   bindRightEvents();
   setMode(state.session?.mode === 'image' ? 'image' : 'chat');
   renderSessions();
