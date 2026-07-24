@@ -292,14 +292,50 @@ fn text_mime(path: &str) -> &'static str {
         "text/html"
     } else if lower.ends_with(".css") {
         "text/css"
-    } else if lower.ends_with(".js") || lower.ends_with(".mjs") {
+    } else if lower.ends_with(".js") || lower.ends_with(".mjs") || lower.ends_with(".cjs") {
+        "text/javascript"
+    } else if lower.ends_with(".ts") || lower.ends_with(".tsx") {
+        "text/typescript"
+    } else if lower.ends_with(".jsx") {
         "text/javascript"
     } else if lower.ends_with(".json") {
         "application/json"
-    } else if lower.ends_with(".md") {
+    } else if lower.ends_with(".md") || lower.ends_with(".markdown") {
         "text/markdown"
     } else if lower.ends_with(".csv") {
         "text/csv"
+    } else if lower.ends_with(".toml") {
+        "application/toml"
+    } else if lower.ends_with(".yaml") || lower.ends_with(".yml") {
+        "application/yaml"
+    } else if lower.ends_with(".xml") {
+        "application/xml"
+    } else if lower.ends_with(".py")
+        || lower.ends_with(".rs")
+        || lower.ends_with(".go")
+        || lower.ends_with(".java")
+        || lower.ends_with(".c")
+        || lower.ends_with(".cc")
+        || lower.ends_with(".cpp")
+        || lower.ends_with(".h")
+        || lower.ends_with(".hpp")
+        || lower.ends_with(".cs")
+        || lower.ends_with(".php")
+        || lower.ends_with(".rb")
+        || lower.ends_with(".swift")
+        || lower.ends_with(".kt")
+        || lower.ends_with(".kts")
+        || lower.ends_with(".sql")
+        || lower.ends_with(".sh")
+        || lower.ends_with(".ps1")
+        || lower.ends_with(".bat")
+        || lower.ends_with(".cmd")
+        || lower.ends_with(".txt")
+        || lower.ends_with(".log")
+        || lower.ends_with(".ini")
+        || lower.ends_with(".env")
+    {
+        "text/plain"
     } else if lower.ends_with(".svg") {
         "image/svg+xml"
     } else if lower.ends_with(".png") {
@@ -312,6 +348,14 @@ fn text_mime(path: &str) -> &'static str {
         "image/gif"
     } else if lower.ends_with(".bmp") {
         "image/bmp"
+    } else if lower.ends_with(".avif") {
+        "image/avif"
+    } else if lower.ends_with(".ico") {
+        "image/x-icon"
+    } else if lower.ends_with(".tif") || lower.ends_with(".tiff") {
+        "image/tiff"
+    } else if lower.ends_with(".heic") || lower.ends_with(".heif") {
+        "image/heif"
     } else {
         "text/plain"
     }
@@ -325,6 +369,13 @@ fn is_image_path(path: &str) -> bool {
         || lower.ends_with(".webp")
         || lower.ends_with(".gif")
         || lower.ends_with(".bmp")
+        || lower.ends_with(".svg")
+        || lower.ends_with(".avif")
+        || lower.ends_with(".ico")
+        || lower.ends_with(".tif")
+        || lower.ends_with(".tiff")
+        || lower.ends_with(".heic")
+        || lower.ends_with(".heif")
 }
 
 fn fmt_size(n: u64) -> String {
@@ -1255,4 +1306,25 @@ pub fn ws_stat_tree(app: AppHandle, args: WsSessionArgs) -> Result<Value, String
         "workspacePath": workspace.to_string_lossy(),
         "tree": root,
     }))
+}
+
+#[tauri::command]
+pub fn ws_open_workspace(app: AppHandle, args: WsSessionArgs) -> Result<(), String> {
+    let workspace = workspace_dir(&app, &args.session_id)?;
+    tauri_plugin_opener::open_path(workspace, None::<&str>).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn ws_reveal_path(app: AppHandle, args: WsPathArgs) -> Result<(), String> {
+    let workspace = workspace_dir(&app, &args.session_id)?;
+    let rel = normalize_rel(&args.path, true)?;
+    if rel.is_empty() {
+        return tauri_plugin_opener::open_path(workspace, None::<&str>)
+            .map_err(|e| e.to_string());
+    }
+    let path = resolve_in_workspace(&workspace, &rel)?;
+    if !path.exists() {
+        return Err(format!("路径不存在: {rel}"));
+    }
+    tauri_plugin_opener::reveal_item_in_dir(path).map_err(|e| e.to_string())
 }

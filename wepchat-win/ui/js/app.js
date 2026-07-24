@@ -32,6 +32,7 @@ import * as ChatScroll from './chat-scroll.js';
 import { initChatRail, updateChatRail } from './chat-rail.js';
 
 const LAST_SESSION_KEY = 'wepchat:last-active-session';
+const MESSAGE_PAGE_LIMIT = 50;
 
 function rememberedSessionId() {
   try { return localStorage.getItem(LAST_SESSION_KEY) || ''; }
@@ -59,6 +60,7 @@ function setMode(mode) {
     }
     if (!target) {
       state.session = createSession();
+      state.pendingAttachments = [];
       rememberActiveSession(state.session);
       state.lastChatSessionId = state.session.id;
       persistSession().catch((err) => console.warn('create chat session', err));
@@ -258,6 +260,9 @@ function estimateContextUsage(session, inputText = '') {
     if (Array.isArray(attachments)) used += attachments.length * 256;
   }
   used += estimate(inputText || '');
+  for (const attachment of state.pendingAttachments || []) {
+    used += attachment.kind === 'text' && attachment.content ? estimate(attachment.content) : 256;
+  }
   const limit = Math.max(1, Number(context?.contextWindow || 128000));
   return { used, limit, ratio: Math.min(1, used / limit), context };
 }
@@ -398,7 +403,19 @@ function normalizeMessage(raw) {
   } else if (m.role === 'user') {
     m.parentAssistantId = m.parentAssistantId || '';
     m.parentVariantId = m.parentVariantId || '';
-    m.attachments = Array.isArray(m.attachments) ? m.attachments : [];
+    m.attachments = Array.isArray(m.attachments) ? m.attachments.map((att) => {
+      const a = att && typeof att === 'object' ? { ...att } : {};
+      a.id = String(a.id || uid('att'));
+      a.kind = ['image', 'text', 'file'].includes(a.kind) ? a.kind : attachmentKindFor(a.name || a.path, a.mime || '');
+      a.name = String(a.name || a.path || 'file');
+      a.path = String(a.path || '');
+      a.mime = String(a.mime || '');
+      a.size = Number(a.size || 0);
+      a.source = a.source === 'workspace' ? 'workspace' : 'upload';
+      if (a.content != null) a.content = String(a.content);
+      if (a.dataUrl != null) a.dataUrl = String(a.dataUrl);
+      return a;
+    }) : [];
     m.referenceFiles = Array.isArray(m.referenceFiles) ? m.referenceFiles : [];
   }
   return m;
@@ -432,6 +449,316 @@ function normalizeSession(raw) {
     }
   });
   return out;
+}
+
+/* ---------- Chat attachments: every external file first becomes a workspace file ---------- */
+
+const WORKSPACE_DRAG_MIME = 'application/x-wepchat-workspace-path';
+const ATTACHMENT_UPLOAD_DIR = 'attachments';
+const MAX_TEXT_UPLOAD_BYTES = 512 * 1024;
+let attachmentUploadSeq = 0;
+let draggingWorkspacePath = '';
+
+const IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg', 'avif', 'ico', 'tif', 'tiff', 'heic', 'heif']);
+const TEXT_EXTS = new Set([
+  'txt', 'md', 'markdown', 'csv', 'json', 'jsonl', 'html', 'htm', 'css', 'js', 'mjs', 'cjs', 'ts', 'tsx', 'jsx',
+  'py', 'rs', 'go', 'java', 'c', 'cc', 'cpp', 'h', 'hpp', 'cs', 'php', 'rb', 'swift', 'kt', 'kts',
+  'toml', 'yaml', 'yml', 'xml', 'sql', 'sh', 'bash', 'zsh', 'ps1', 'bat', 'cmd', 'ini', 'env', 'log',
+]);
+
+function fileExt(name = '') {
+  const m = /\.([^.\/\\]+)$/.exec(String(name || '').toLowerCase());
+  return m ? m[1] : '';
+}
+
+function fileIconLabel(name = '', mime = '') {
+  const ext = fileExt(name);
+  if (String(mime || '').startsWith('image/') || IMAGE_EXTS.has(ext)) return 'IMG';
+  return ({
+    js: 'JS', mjs: 'JS', cjs: 'JS', ts: 'TS', tsx: 'TSX', jsx: 'JSX',
+    py: 'PY', rs: 'RS', go: 'GO', java: 'JAVA', c: 'C', cc: 'C++', cpp: 'C++',
+    h: 'H', hpp: 'H++', cs: 'CS', php: 'PHP', rb: 'RB', swift: 'SW', kt: 'KT',
+    md: 'MD', markdown: 'MD', json: 'JSON', jsonl: 'JSON', html: 'HTML', htm: 'HTML',
+    css: 'CSS', toml: 'TOML', yaml: 'YAML', yml: 'YAML', xml: 'XML', csv: 'CSV',
+    sql: 'SQL', sh: 'SH', ps1: 'PS1', bat: 'BAT', cmd: 'CMD', txt: 'TXT', log: 'LOG',
+  })[ext] || 'FILE';
+}
+
+function treeIconClass(name = '', mime = '') {
+  const ext = fileExt(name);
+  if (isImageNameOrMime(name, mime)) return 'is-img';
+  if (ext === 'json' || ext === 'jsonl') return 'is-json';
+  if (ext === 'html' || ext === 'htm') return 'is-html';
+  if (ext === 'md' || ext === 'markdown') return 'is-md';
+  if (['js', 'mjs', 'cjs', 'ts', 'tsx', 'jsx'].includes(ext)) return 'is-js';
+  return '';
+}
+
+function isImageNameOrMime(name = '', mime = '') {
+  return String(mime || '').startsWith('image/') || IMAGE_EXTS.has(fileExt(name));
+}
+
+function isTextNameOrMime(name = '', mime = '') {
+  const type = String(mime || '').toLowerCase();
+  return type.startsWith('text/')
+    || ['application/json', 'application/xml', 'application/yaml', 'application/toml', 'application/javascript'].includes(type)
+    || TEXT_EXTS.has(fileExt(name));
+}
+
+function attachmentKindFor(name = '', mime = '') {
+  if (isImageNameOrMime(name, mime)) return 'image';
+  if (isTextNameOrMime(name, mime)) return 'text';
+  return 'file';
+}
+
+function sanitizeUploadName(name = '') {
+  const raw = String(name || 'file').trim() || 'file';
+  let clean = raw.replace(/[\\/:*?"<>|\x00-\x1f]/g, '_').replace(/^\.+$/, 'file').slice(0, 96);
+  if (/^session\.json(?:\.tmp)?$/i.test(clean)) clean = `upload_${clean}`;
+  return clean || 'file';
+}
+
+function uploadPathForFile(file) {
+  const d = new Date();
+  const pad = (n) => String(n).padStart(2, '0');
+  const stamp = [
+    d.getFullYear(), pad(d.getMonth() + 1), pad(d.getDate()), '_',
+    pad(d.getHours()), pad(d.getMinutes()), pad(d.getSeconds()),
+  ].join('');
+  attachmentUploadSeq += 1;
+  return `${ATTACHMENT_UPLOAD_DIR}/${stamp}_${attachmentUploadSeq}_${sanitizeUploadName(file?.name)}`;
+}
+
+function dataUrlBase64(dataUrl) {
+  const m = /^data:[^;]*;base64,(.*)$/s.exec(String(dataUrl || ''));
+  return m ? m[1] : '';
+}
+
+function readFileAsDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(reader.error || new Error('读取文件失败'));
+    reader.onload = () => resolve(String(reader.result || ''));
+    reader.readAsDataURL(file);
+  });
+}
+
+function cloneAttachmentForDisk(att) {
+  if (!att || typeof att !== 'object') return null;
+  return {
+    id: String(att.id || uid('att')),
+    kind: ['image', 'text', 'file'].includes(att.kind) ? att.kind : 'file',
+    name: String(att.name || att.path || 'file'),
+    path: String(att.path || ''),
+    mime: String(att.mime || ''),
+    size: Number(att.size || 0),
+    source: att.source === 'workspace' ? 'workspace' : 'upload',
+  };
+}
+
+function attachmentRenderTitle(att) {
+  return [att?.name || att?.path || 'file', att?.path].filter(Boolean).join('\n');
+}
+
+function renderAttachmentChip(att, opts = {}) {
+  const chip = document.createElement('div');
+  chip.className = 'attachment-chip' + (att.kind === 'image' ? ' is-image' : ' is-file');
+  chip.title = attachmentRenderTitle(att);
+  const preview = document.createElement('div');
+  preview.className = 'attachment-preview';
+  if (att.kind === 'image' && att.dataUrl) {
+    const img = document.createElement('img');
+    img.src = att.dataUrl;
+    img.alt = att.name || att.path || 'image';
+    preview.appendChild(img);
+  } else {
+    preview.textContent = fileIconLabel(att.name || att.path, att.mime);
+  }
+  const meta = document.createElement('div');
+  meta.className = 'attachment-meta';
+  const name = document.createElement('div');
+  name.className = 'attachment-name';
+  name.textContent = att.name || att.path || 'file';
+  const sub = document.createElement('div');
+  sub.className = 'attachment-path';
+  sub.textContent = att.path || (att.size ? U.fmtSize(att.size) : '');
+  meta.append(name, sub);
+  chip.append(preview, meta);
+  if (opts.onRemove) {
+    const remove = document.createElement('button');
+    remove.type = 'button';
+    remove.className = 'attachment-remove';
+    remove.title = '移除附件';
+    remove.textContent = '×';
+    remove.addEventListener('click', (event) => {
+      event.stopPropagation();
+      opts.onRemove(att);
+    });
+    chip.appendChild(remove);
+  }
+  if (opts.onOpen && att.path) {
+    chip.classList.add('is-clickable');
+    chip.addEventListener('click', () => opts.onOpen(att));
+  }
+  return chip;
+}
+
+function renderPendingAttachments() {
+  const row = $('#composer-attachments');
+  if (!row) return;
+  row.innerHTML = '';
+  const attachments = state.pendingAttachments || [];
+  row.hidden = !attachments.length;
+  attachments.forEach((att) => {
+    row.appendChild(renderAttachmentChip(att, {
+      onRemove(removeAtt) {
+        state.pendingAttachments = state.pendingAttachments.filter((item) => item.id !== removeAtt.id);
+        renderPendingAttachments();
+        renderComposerState();
+      },
+      onOpen(openAtt) {
+        if (openAtt.path) openFileInViewer(openAtt.path);
+      },
+    }));
+  });
+}
+
+async function writeUploadToWorkspace(file, { attach = true } = {}) {
+  if (!state.session?.id) throw new Error('缺少当前会话');
+  const name = sanitizeUploadName(file?.name || 'file');
+  const mime = String(file?.type || '');
+  let kind = attachmentKindFor(name, mime);
+  let content = '';
+  let dataUrl = '';
+  let encoding = 'utf8';
+  let payload = '';
+
+  if (kind === 'text' && Number(file.size || 0) <= MAX_TEXT_UPLOAD_BYTES) {
+    content = await file.text();
+    payload = content;
+  } else {
+    if (kind === 'text') kind = 'file';
+    dataUrl = await readFileAsDataUrl(file);
+    payload = dataUrlBase64(dataUrl);
+    encoding = 'base64';
+  }
+
+  const path = uploadPathForFile({ name });
+  const res = await invoke('ws_write', {
+    args: { sessionId: state.session.id, path, content: payload, mime: mime || null, encoding },
+  });
+  if (res && typeof res === 'object' && res.ok === false) {
+    throw new Error(String(res.content || '写入工作区失败'));
+  }
+  const att = {
+    id: uid('att'),
+    kind,
+    name,
+    path,
+    mime: mime || (kind === 'text' ? 'text/plain' : ''),
+    size: Number(file.size || 0),
+    source: 'upload',
+  };
+  if (attach && kind === 'text') att.content = content;
+  if (attach && kind === 'image') att.dataUrl = dataUrl;
+  return att;
+}
+
+async function importFilesToWorkspace(fileList, { attach = true } = {}) {
+  const files = Array.from(fileList || []).filter(Boolean);
+  if (!files.length) return [];
+  if (!state.session?.id) {
+    UIDialog.toast('请先创建或打开一个会话');
+    return [];
+  }
+  const imported = [];
+  for (const file of files) {
+    try {
+      const att = await writeUploadToWorkspace(file, { attach });
+      imported.push(att);
+    } catch (err) {
+      UIDialog.toast(`${file?.name || '文件'} 上传失败：${err?.message || err}`, 4200);
+    }
+  }
+  if (imported.length) {
+    if (attach) {
+      state.pendingAttachments.push(...imported);
+      renderPendingAttachments();
+      renderComposerState();
+    }
+    await refreshFilesTree();
+    if (attach) UIDialog.toast(`已加入 ${imported.length} 个附件`);
+    else UIDialog.toast(`已上传 ${imported.length} 个文件到工作区`);
+  }
+  return imported;
+}
+
+function parseWsExists(res) {
+  try {
+    const value = JSON.parse(String(res?.content || '{}'));
+    return value && typeof value === 'object' ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+async function hydrateAttachment(att, sessionId = state.session?.id) {
+  if (!att?.path || !sessionId) return att;
+  try {
+    if (att.kind === 'image' && !att.dataUrl) {
+      const res = await invoke('ws_read_bytes', { args: { sessionId, path: att.path } });
+      if (res?.contentBase64) {
+        const mime = String(res.mime || '').startsWith('image/') ? res.mime : (att.mime || 'image/png');
+        att.mime = mime;
+        att.size = Number(res.size || att.size || 0);
+        att.dataUrl = `data:${mime};base64,${res.contentBase64}`;
+      }
+    } else if (att.kind === 'text' && !att.content) {
+      const res = await invoke('ws_read', { args: { sessionId, path: att.path } });
+      const text = typeof res === 'string' ? res : String(res?.content || '');
+      if (text && !text.startsWith('错误：')) att.content = text;
+    }
+  } catch {
+    /* Keep path-only attachments usable. */
+  }
+  return att;
+}
+
+async function addWorkspacePathToComposer(path) {
+  const rel = String(path || '').trim().replace(/\\/g, '/').replace(/^\/+/, '');
+  if (!rel || !state.session?.id) return;
+  try {
+    const exists = parseWsExists(await invoke('ws_exists', { args: { sessionId: state.session.id, path: rel } }));
+    if (!exists?.exists || exists.type !== 'file') {
+      UIDialog.toast('只能引用工作区文件');
+      return;
+    }
+    const kind = attachmentKindFor(rel, exists.mime || '');
+    const att = {
+      id: uid('att'),
+      kind,
+      name: rel.split('/').pop() || rel,
+      path: rel,
+      mime: exists.mime || '',
+      size: Number(exists.size || 0),
+      source: 'workspace',
+    };
+    await hydrateAttachment(att, state.session.id);
+    state.pendingAttachments.push(att);
+    renderPendingAttachments();
+    renderComposerState();
+  } catch (err) {
+    UIDialog.toast('引用文件失败：' + (err?.message || err), 3600);
+  }
+}
+
+function currentModelHasVision() {
+  const session = state.session;
+  const provider = activeSessionProvider();
+  const model = session?.model || '';
+  if (!session || !provider || !model) return true;
+  const meta = modelMetaOf(provider, model);
+  return session.contextVision !== false && meta.capabilities?.vision !== false;
 }
 
 function snapshotAssistantVariant(m, id) {
@@ -1097,14 +1424,132 @@ function liveSessionById(id) {
   return state.backgroundTasks.get(id)?.session || null;
 }
 
+function markSessionHistoryComplete(session) {
+  if (!session?.id) return;
+  state.messagePageState.set(session.id, {
+    beforeSeq: null,
+    hasMore: false,
+    loading: false,
+  });
+}
+
+function setSessionHistoryPage(sessionId, page) {
+  if (!sessionId) return;
+  state.messagePageState.set(sessionId, {
+    beforeSeq: page?.nextBeforeSeq ?? null,
+    hasMore: !!page?.hasMore,
+    loading: false,
+  });
+}
+
+function indexedSessionById(id) {
+  return state.sessions.find((item) => item.id === id) || null;
+}
+
+async function loadChatSessionInitial(id) {
+  const indexItem = indexedSessionById(id);
+  if (indexItem?.mode === 'image') {
+    const loaded = normalizeSession(await invoke('load_session', { id }));
+    markSessionHistoryComplete(loaded);
+    return loaded;
+  }
+  const page = await invoke('session_messages_page', {
+    args: { sessionId: id, beforeSeq: null, limit: MESSAGE_PAGE_LIMIT },
+  });
+  const session = normalizeSession({
+    ...(indexItem || {}),
+    id,
+    mode: 'chat',
+    messages: Array.isArray(page?.messages) ? page.messages : [],
+  });
+  setSessionHistoryPage(id, page);
+  return session;
+}
+
+async function loadOlderMessagesFor(session) {
+  if (!session?.id) return false;
+  const pageState = state.messagePageState.get(session.id);
+  if (!pageState?.hasMore) return false;
+  if (pageState.loading) return pageState.promise || false;
+  pageState.loading = true;
+  pageState.promise = (async () => {
+    const page = await invoke('session_messages_page', {
+      args: {
+        sessionId: session.id,
+        beforeSeq: pageState.beforeSeq,
+        limit: MESSAGE_PAGE_LIMIT,
+      },
+    });
+    const older = Array.isArray(page?.messages) ? page.messages.map(normalizeMessage) : [];
+    if (!older.length) {
+      pageState.hasMore = false;
+      pageState.beforeSeq = null;
+      return false;
+    }
+    const existing = new Set((session.messages || []).map((message) => message.id));
+    const fresh = older.filter((message) => !existing.has(message.id));
+    session.messages = fresh.concat(session.messages || []);
+    pageState.beforeSeq = page?.nextBeforeSeq ?? null;
+    pageState.hasMore = !!page?.hasMore;
+    await hydrateSessionImages({ id: session.id, messages: fresh });
+    return fresh.length > 0;
+  })();
+  try {
+    return await pageState.promise;
+  } catch (err) {
+    console.warn('load older messages failed:', err);
+    UIDialog.toast('加载历史消息失败：' + (err?.message || err), 3200);
+    return false;
+  } finally {
+    pageState.loading = false;
+    pageState.promise = null;
+  }
+}
+
+async function ensureFullHistoryLoaded(session) {
+  if (!session?.id) return;
+  const pageState = state.messagePageState.get(session.id);
+  if (!pageState?.hasMore) return;
+  while (pageState.hasMore) {
+    const changed = await loadOlderMessagesFor(session);
+    if (!changed) break;
+  }
+}
+
+async function loadOlderActiveMessages() {
+  const session = state.session;
+  if (!session?.id || session.mode === 'image') return;
+  const pageState = state.messagePageState.get(session.id);
+  if (!pageState?.hasMore || pageState.loading || state.generating) return;
+  await ChatScroll.preserveAnchor(async () => {
+    const changed = await loadOlderMessagesFor(session);
+    if (changed) renderChat();
+  });
+}
+
 function renderSessions() {
   const list = $('#session-list');
   const empty = $('.list-panel[data-panel="chat"] .empty-hint');
   if (!list) return;
   list.innerHTML = '';
-  const chatSessions = (state.sessions || []).filter((s) => s.mode !== 'image');
+  const allChatSessions = (state.sessions || []).filter((s) => s.mode !== 'image');
+  const query = String(state.sessionSearchQuery || '').trim().toLowerCase();
+  const chatSessions = query
+    ? allChatSessions.filter((s) => sessionTitle(s).toLowerCase().includes(query))
+    : allChatSessions;
   list.hidden = chatSessions.length === 0;
-  if (empty) empty.hidden = chatSessions.length > 0;
+  if (empty) {
+    empty.hidden = chatSessions.length > 0;
+    const title = empty.querySelector('.empty-title');
+    const desc = empty.querySelector('.empty-desc');
+    if (query && allChatSessions.length) {
+      if (title) title.textContent = '没有匹配会话';
+      if (desc) desc.textContent = '换个标题关键词试试。';
+    } else {
+      if (title) title.textContent = '还没有会话';
+      if (desc) desc.textContent = '新建一条，或配置模型后开始对话。';
+    }
+  }
   chatSessions.forEach((session) => {
     const item = document.createElement('li');
     item.className = 'session-item' + (session.id === state.session?.id && state.session?.mode !== 'image' ? ' is-active' : '');
@@ -1172,13 +1617,18 @@ function renderSessions() {
   renderWorkspaceSessionPath();
 }
 
-/** 落盘前剥离图片 dataUrl（图片本体在工作区文件系统） */
+/** 落盘前剥离图片/附件正文（文件本体在工作区文件系统） */
 function stripMessageImages(message) {
   if (Array.isArray(message.images)) {
     message.images = message.images.map((image) => ({
       path: image.path || '', mime: image.mime || 'image/png', prompt: image.prompt || '',
       revisedPrompt: image.revisedPrompt || '', imageMeta: image.imageMeta,
     }));
+  }
+  if (Array.isArray(message.attachments)) {
+    message.attachments = message.attachments
+      .map(cloneAttachmentForDisk)
+      .filter(Boolean);
   }
   return message;
 }
@@ -1213,6 +1663,7 @@ async function saveFullSessionToDisk(target, diskSession = sessionDiskSnapshot(t
 async function persistSession(sessionArg = null) {
   const target = sessionArg || state.session;
   if (!target?.id || state.deletedSessionIds.has(target.id)) return;
+  await ensureFullHistoryLoaded(target);
   target.updatedAt = nowIso();
   if (hasUntitledSessionTitle(target.title)) {
     const firstUser = target.messages?.find((message) => message.role === 'user');
@@ -1258,17 +1709,23 @@ async function persistActiveMessage(session, message) {
 async function hydrateSessionImages(session) {
   if (!session?.id) return;
   for (const message of session.messages || []) {
-    if (message.role !== 'assistant' || !Array.isArray(message.images)) continue;
-    for (const image of message.images) {
-      if (!image?.path || image.dataUrl) continue;
-      try {
-        const res = await invoke('ws_read_bytes', { args: { sessionId: session.id, path: image.path } });
-        if (res?.contentBase64) {
-          image.dataUrl = `data:${res.mime || image.mime || 'image/png'};base64,${res.contentBase64}`;
-          image.mime = res.mime || image.mime || 'image/png';
+    if (message.role === 'assistant' && Array.isArray(message.images)) {
+      for (const image of message.images) {
+        if (!image?.path || image.dataUrl) continue;
+        try {
+          const res = await invoke('ws_read_bytes', { args: { sessionId: session.id, path: image.path } });
+          if (res?.contentBase64) {
+            image.dataUrl = `data:${res.mime || image.mime || 'image/png'};base64,${res.contentBase64}`;
+            image.mime = res.mime || image.mime || 'image/png';
+          }
+        } catch {
+          /* Keep the path so the file pane can still open it. */
         }
-      } catch {
-        /* Keep the path so the file pane can still open it. */
+      }
+    }
+    if (message.role === 'user' && Array.isArray(message.attachments)) {
+      for (const attachment of message.attachments) {
+        await hydrateAttachment(attachment, session.id);
       }
     }
   }
@@ -1287,8 +1744,7 @@ async function openSession(id) {
   if (task?.session) {
     nextSession = task.session;
   } else try {
-    const loaded = await invoke('load_session', { id });
-    nextSession = normalizeSession(loaded);
+    nextSession = await loadChatSessionInitial(id);
   } catch (err) {
     // 索引项不含消息，不能当完整会话打开（否则一次保存就会清空该会话）
     UIDialog.toast('无法加载会话：' + (err?.message || err), 3200);
@@ -1296,6 +1752,7 @@ async function openSession(id) {
   }
   if (navigationSeq !== state.sessionNavigationSeq || !nextSession) return;
   state.session = nextSession;
+  state.pendingAttachments = [];
   rememberActiveSession(state.session);
   if (task) task.unread = false;
   syncActiveTaskState();
@@ -1320,6 +1777,7 @@ async function createNewChat() {
   previewServerInfo = null;
   window.PreviewStream?.clearAll?.();
   state.session = createSession();
+  state.pendingAttachments = [];
   rememberActiveSession(state.session);
   syncActiveTaskState();
   state.lastChatSessionId = state.session.id;
@@ -1389,6 +1847,7 @@ async function copySession(id) {
     copied.updatedAt = nowIso();
     const saved = await invoke('save_session', { session: copied });
     state.session = normalizeSession(saved || copied);
+    markSessionHistoryComplete(state.session);
     rememberActiveSession(state.session);
     syncActiveTaskState();
     upsertSessionIndex(state.session);
@@ -1434,7 +1893,7 @@ async function deleteSessionById(id) {
     const next = state.sessions[0];
     if (next) {
       try {
-        state.session = normalizeSession(await invoke('load_session', { id: next.id }));
+        state.session = await loadChatSessionInitial(next.id);
       } catch {
         // 索引项不含消息，加载失败时新建会话而不是拿空索引当会话
         state.session = createSession();
@@ -1463,13 +1922,23 @@ function renderWorkspaceSessionPath() {
 function renderModelSelect() {
   const select = $('#model-select');
   const providerLabel = $('#model-provider-label');
+  const pickerTitle = $('#model-picker-title');
+  const pickerBtn = $('#model-picker-btn');
+  const picker = $('#model-picker-popover');
   if (!select) return;
   const selectedProviderId = state.session?.mode === 'chat' ? (state.session.providerId || '') : '';
   const selectedModel = state.session?.mode === 'chat' ? (state.session.model || '') : '';
   select.innerHTML = '<option value="">选择对话模型</option>';
+  if (picker) picker.innerHTML = '';
   state.providers.forEach((provider) => {
     const group = document.createElement('optgroup');
     group.label = provider.name;
+    const pickerGroup = document.createElement('div');
+    pickerGroup.className = 'model-picker-group';
+    const groupTitle = document.createElement('div');
+    groupTitle.className = 'model-picker-group-title';
+    groupTitle.textContent = provider.name || 'Provider';
+    pickerGroup.appendChild(groupTitle);
     (provider.models || []).forEach((model) => {
       const option = document.createElement('option');
       option.value = `${provider.id}\n${model}`;
@@ -1478,10 +1947,36 @@ function renderModelSelect() {
       option.title = modelSummary(provider, model);
       option.selected = provider.id === selectedProviderId && model === selectedModel;
       group.appendChild(option);
+
+      const item = document.createElement('button');
+      item.type = 'button';
+      item.className = 'model-picker-option' + (option.selected ? ' is-active' : '');
+      item.role = 'option';
+      item.setAttribute('aria-selected', option.selected ? 'true' : 'false');
+      item.dataset.providerId = provider.id;
+      item.dataset.model = model;
+      const name = document.createElement('span');
+      name.className = 'model-picker-model';
+      name.textContent = model;
+      const summary = document.createElement('span');
+      summary.className = 'model-picker-summary';
+      summary.textContent = caps || modelSummary(provider, model);
+      item.append(name, summary);
+      item.addEventListener('click', async () => {
+        closeModelPicker();
+        await selectChatModel(provider.id, model);
+      });
+      pickerGroup.appendChild(item);
     });
     if (group.childElementCount) select.appendChild(group);
+    if (picker && pickerGroup.children.length > 1) picker.appendChild(pickerGroup);
   });
   select.disabled = state.providers.length === 0 || state.generating;
+  if (pickerBtn) {
+    pickerBtn.disabled = select.disabled;
+    pickerBtn.setAttribute('aria-disabled', select.disabled ? 'true' : 'false');
+  }
+  if (pickerTitle) pickerTitle.textContent = selectedModel || '选择对话模型';
   const provider = currentProvider();
   if (providerLabel) {
     if (!provider) providerLabel.textContent = '尚未配置供应商';
@@ -1491,19 +1986,102 @@ function renderModelSelect() {
   renderTokenMeter();
 }
 
+function closeModelPicker() {
+  const root = $('.main-top-center .model-switch');
+  const btn = $('#model-picker-btn');
+  const popover = $('#model-picker-popover');
+  root?.classList.remove('is-open');
+  if (btn) btn.setAttribute('aria-expanded', 'false');
+  if (popover) {
+    setTimeout(() => {
+      if (!root?.classList.contains('is-open')) popover.hidden = true;
+    }, 160);
+  }
+}
+
+function openModelPicker() {
+  const root = $('.main-top-center .model-switch');
+  const btn = $('#model-picker-btn');
+  const popover = $('#model-picker-popover');
+  if (!root || !btn || !popover || btn.disabled) return;
+  popover.hidden = false;
+  requestAnimationFrame(() => {
+    root.classList.add('is-open');
+    btn.setAttribute('aria-expanded', 'true');
+  });
+}
+
+function toggleModelPicker() {
+  if ($('.main-top-center .model-switch')?.classList.contains('is-open')) closeModelPicker();
+  else openModelPicker();
+}
+
+async function selectChatModel(providerId, model) {
+  if (!providerId || !model) return;
+  if (state.session) {
+    const changed = state.session.model && (state.session.providerId !== providerId || state.session.model !== model);
+    if (changed && state.session.messages?.length && !state.session.contextModel) {
+      ensureSessionContext(
+        state.session,
+        state.providers.find((item) => item.id === state.session.providerId),
+        state.session.model
+      );
+    }
+    const hasImages = (state.session.messages || []).some((message) => {
+      const attachments = message.attachments || message.referenceFiles || [];
+      return (Array.isArray(attachments) && attachments.length > 0)
+        || (Array.isArray(message.images) && message.images.length > 0);
+    });
+    if (changed && state.session.messages?.length) {
+      UIDialog.toast('当前会话中途切换模型可能导致上下文风格和工具能力不一致', 4200);
+    }
+    const targetMeta = modelMetaOf(state.providers.find((item) => item.id === providerId), model);
+    if (changed && hasImages && targetMeta.capabilities?.vision === false) {
+      UIDialog.toast('切换的目标模型无视觉能力，上下文内的图片将会被忽略。', 4500);
+    }
+    state.session.providerId = providerId;
+    state.session.model = model;
+    if (!state.session.messages.length) {
+      state.session.contextModel = '';
+      state.session.contextProviderId = '';
+      state.session.contextWindow = 0;
+    }
+    if (!state.session.contextModel) {
+      ensureSessionContext(state.session, state.providers.find((item) => item.id === providerId), model);
+    }
+  }
+  await persistSession();
+  renderModelSelect();
+  renderComposerState();
+}
+
+function resizeChatComposer() {
+  const input = $('#composer-input');
+  if (!input) return;
+  input.style.height = 'auto';
+  const max = parseInt(getComputedStyle(input).maxHeight || '180', 10) || 180;
+  const next = Math.min(max, Math.max(24, input.scrollHeight));
+  input.style.height = `${next}px`;
+  input.style.overflowY = input.scrollHeight > max ? 'auto' : 'hidden';
+}
+
 function renderComposerState() {
   const input = $('#composer-input');
   const send = $('#btn-send');
   const hint = $('#composer-hint');
+  const attach = $('#btn-attach');
   const blocked = isBranchBlocked();
   const ready = Boolean(activeSessionProvider()) && !blocked;
   const hasContent = Boolean(input?.value.trim());
+  const hasAttachments = Boolean(state.pendingAttachments?.length);
   if (input) input.disabled = !ready || state.generating;
+  resizeChatComposer();
+  if (attach) attach.disabled = !state.session?.id || state.generating || blocked;
   if (send) {
-    send.disabled = state.generating ? false : (!ready || !hasContent);
+    send.disabled = state.generating ? false : (!ready || (!hasContent && !hasAttachments));
     send.title = state.generating ? '停止生成' : (blocked ? '请先切回后续消息使用的回答版本' : '发送');
     send.setAttribute('aria-label', send.title);
-    send.classList.toggle('is-ready', state.generating || (ready && hasContent));
+    send.classList.toggle('is-ready', state.generating || (ready && (hasContent || hasAttachments)));
     const icon = send.querySelector('path');
     if (icon) icon.setAttribute('d', state.generating ? 'M7 7h10v10H7z' : 'M4 12l1.41 1.41L11 7.83V20h2V7.83l5.58 5.59L20 12l-8-8-8 8z');
   }
@@ -1513,6 +2091,7 @@ function renderComposerState() {
     else if (ready) hint.textContent = 'Enter 发送，Shift+Enter 换行';
     else hint.textContent = '添加供应商并选择模型后即可开始对话';
   }
+  renderPendingAttachments();
   const banner = $('#branch-blocked');
   if (banner) banner.hidden = !blocked;
   renderTokenMeter();
@@ -1544,6 +2123,7 @@ function ensureChatView() {
       toolStatusLabel,
       formatToolCardArgs,
       openImage: (image) => { if (image.path) openFileInViewer(image.path); },
+      openAttachment: (attachment) => { if (attachment.path) openFileInViewer(attachment.path); },
       onLiveCodeBlock: handleLiveCodeBlock,
       onAfterRender(reason) {
         if (reason === 'session') ChatScroll.resetToBottom();
@@ -1553,7 +2133,11 @@ function ensureChatView() {
       },
     },
   });
-  ChatScroll.initChatScroll({ host, jumpButton: $('#btn-jump-bottom') });
+  ChatScroll.initChatScroll({
+    host,
+    jumpButton: $('#btn-jump-bottom'),
+    onNearTop: loadOlderActiveMessages,
+  });
   initChatRail({
     root: $('#chat-rail'),
     chatHost: host,
@@ -1597,9 +2181,11 @@ async function editUserMessage(index) {
   if (!m || m.role !== 'user') return;
   const input = $('#composer-input');
   if (input) input.value = m.content || '';
+  state.pendingAttachments = cloneJson(m.attachments || []);
   state.session.messages.splice(index);
   await persistSession();
   renderChat();
+  renderPendingAttachments();
   renderComposerState();
   input?.focus();
 }
@@ -1888,7 +2474,13 @@ async function generateAssistant(opts = {}) {
       if (m.role === 'assistant') {
         return { role: 'assistant', content: m.content || '', reasoning: m.reasoning || '' };
       }
-      return { role: 'user', content: m.content || '', attachments: m.attachments || [] };
+      const attachments = cloneJson(m.attachments || []);
+      if (session.contextVision === false) {
+        attachments.forEach((att) => {
+          if (att?.kind === 'image') delete att.dataUrl;
+        });
+      }
+      return { role: 'user', content: m.content || '', attachments };
     });
 
   const agentOn = state.settings?.agentEnabled !== false;
@@ -2084,10 +2676,11 @@ async function sendMessage() {
   }
   const input = $('#composer-input');
   const content = input?.value.trim() || '';
+  const attachments = cloneJson(state.pendingAttachments || []);
   const session = state.session;
   const provider = activeSessionProvider();
   const model = session?.model || '';
-  if (!content || !provider || !model || !session) return;
+  if ((!content && !attachments.length) || !provider || !model || !session) return;
 
   const messages = session.messages || [];
   let parentAssistant = null;
@@ -2101,6 +2694,7 @@ async function sendMessage() {
     id: uid('message'),
     role: 'user',
     content,
+    attachments,
     createdAt: nowIso(),
     parentAssistantId: parentAssistant?.id || '',
     parentVariantId: parentAssistant ? activeAssistantVariantId(parentAssistant) : '',
@@ -2108,11 +2702,19 @@ async function sendMessage() {
   session.providerId = provider.id;
   session.model = model;
   ensureSessionContext(session, provider, model);
+  if (attachments.some((att) => att.kind === 'image') && !currentModelHasVision()) {
+    UIDialog.toast('当前模型无多模态能力，图片会作为工作区文件路径进入上下文。', 4500);
+  }
   if (hasUntitledSessionTitle(session.title)) {
-    session.title = content.split(/\r?\n/)[0].replace(/\s+/g, ' ').trim().slice(0, 48);
+    const baseTitle = content
+      ? content.split(/\r?\n/)[0].replace(/\s+/g, ' ').trim()
+      : `附件：${attachments.map((att) => att.name || att.path).filter(Boolean).slice(0, 3).join(', ')}`;
+    session.title = baseTitle.slice(0, 48);
   }
   session.messages.push(user);
   input.value = '';
+  state.pendingAttachments = [];
+  renderPendingAttachments();
   renderSessions();
   if (state.session?.id === session.id) {
     renderChat();
@@ -2121,6 +2723,154 @@ async function sendMessage() {
   }
   await persistSession(session);
   await generateAssistant({ session });
+}
+
+function pickFilesForWorkspace({ attach = true } = {}) {
+  const input = attach ? $('#composer-file-input') : document.createElement('input');
+  if (!input) return;
+  input.type = 'file';
+  input.multiple = true;
+  input.onchange = async () => {
+    const files = Array.from(input.files || []);
+    input.value = '';
+    input.onchange = null;
+    await importFilesToWorkspace(files, { attach });
+  };
+  input.click();
+}
+
+function dragHasChatAttachment(dataTransfer) {
+  const types = Array.from(dataTransfer?.types || []);
+  const lowered = types.map((type) => String(type || '').toLowerCase());
+  return !!draggingWorkspacePath
+    || lowered.includes('files')
+    || lowered.includes(WORKSPACE_DRAG_MIME)
+    || lowered.includes('text/x-wepchat-workspace-path');
+}
+
+function filesFromTransfer(dataTransfer) {
+  const files = Array.from(dataTransfer?.files || []).filter(Boolean);
+  if (files.length) return files;
+  return Array.from(dataTransfer?.items || [])
+    .filter((item) => item.kind === 'file')
+    .map((item) => item.getAsFile())
+    .filter(Boolean);
+}
+
+function setComposerDragOver(on) {
+  $('.composer')?.classList.toggle('is-drag-over', !!on);
+  $('.composer-box')?.classList.toggle('is-drag-over', !!on);
+}
+
+async function handleComposerDrop(event) {
+  const dt = event.dataTransfer;
+  if (!dragHasChatAttachment(dt)) return;
+  event.preventDefault();
+  setComposerDragOver(false);
+  const files = filesFromTransfer(dt);
+  if (files.length) {
+    await importFilesToWorkspace(files, { attach: true });
+    return;
+  }
+  const path = dt.getData(WORKSPACE_DRAG_MIME)
+    || dt.getData('text/x-wepchat-workspace-path')
+    || draggingWorkspacePath;
+  if (path) await addWorkspacePathToComposer(path);
+  draggingWorkspacePath = '';
+}
+
+function hideContextMenu() {
+  const menu = $('#context-menu');
+  if (!menu) return;
+  menu.hidden = true;
+  menu.innerHTML = '';
+}
+
+function isEditableElement(el) {
+  return !!el?.closest?.('textarea, input, [contenteditable="true"]');
+}
+
+function selectedTextOf(target) {
+  const editable = target?.closest?.('textarea, input');
+  if (editable && typeof editable.selectionStart === 'number') {
+    return editable.value.slice(editable.selectionStart, editable.selectionEnd);
+  }
+  return String(window.getSelection?.()?.toString() || '');
+}
+
+async function runContextAction(action, target) {
+  const editable = target?.closest?.('textarea, input');
+  editable?.focus?.();
+  try {
+    if (action === 'copy') {
+      const text = selectedTextOf(target);
+      if (text) await navigator.clipboard.writeText(text);
+    } else if (action === 'cut' && editable) {
+      const text = selectedTextOf(editable);
+      if (text) await navigator.clipboard.writeText(text);
+      document.execCommand('delete');
+      resizeChatComposer();
+      renderComposerState();
+    } else if (action === 'paste' && editable) {
+      const text = await navigator.clipboard.readText();
+      document.execCommand('insertText', false, text);
+      resizeChatComposer();
+      renderComposerState();
+    } else if (action === 'select-all') {
+      if (editable?.select) editable.select();
+      else document.execCommand('selectAll');
+    }
+  } catch {
+    UIDialog.toast('操作失败，可能需要剪贴板权限');
+  }
+}
+
+function showContextMenu(event) {
+  const menu = $('#context-menu');
+  if (!menu) return;
+  event.preventDefault();
+  closeModelPicker();
+  const target = event.target;
+  const editable = isEditableElement(target);
+  const hasSelection = Boolean(selectedTextOf(target));
+  const items = [
+    editable && { label: '剪切', kbd: 'Ctrl+X', action: 'cut', disabled: !hasSelection },
+    { label: '复制', kbd: 'Ctrl+C', action: 'copy', disabled: !hasSelection },
+    editable && { label: '粘贴', kbd: 'Ctrl+V', action: 'paste', disabled: false },
+    { sep: true },
+    { label: '全选', kbd: 'Ctrl+A', action: 'select-all', disabled: false },
+  ].filter(Boolean);
+  menu.innerHTML = '';
+  items.forEach((item) => {
+    if (item.sep) {
+      const sep = document.createElement('div');
+      sep.className = 'context-menu-sep';
+      menu.appendChild(sep);
+      return;
+    }
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'context-menu-item';
+    btn.disabled = !!item.disabled;
+    const label = document.createElement('span');
+    label.textContent = item.label;
+    const kbd = document.createElement('span');
+    kbd.className = 'context-menu-kbd';
+    kbd.textContent = item.kbd || '';
+    btn.append(label, kbd);
+    btn.addEventListener('mousedown', (ev) => ev.preventDefault());
+    btn.addEventListener('click', async () => {
+      hideContextMenu();
+      await runContextAction(item.action, target);
+    });
+    menu.appendChild(btn);
+  });
+  menu.hidden = false;
+  const rect = menu.getBoundingClientRect();
+  const x = Math.min(event.clientX, window.innerWidth - rect.width - 8);
+  const y = Math.min(event.clientY, window.innerHeight - rect.height - 8);
+  menu.style.left = `${Math.max(8, x)}px`;
+  menu.style.top = `${Math.max(8, y)}px`;
 }
 
 /* ---------- Global events and backend bootstrap ---------- */
@@ -2138,6 +2888,10 @@ function bindEvents() {
 
   $('#btn-new-chat')?.addEventListener('click', () => createNewChat());
   $('#btn-new-chat-top')?.addEventListener('click', () => createNewChat());
+  $('#session-search')?.addEventListener('input', (event) => {
+    state.sessionSearchQuery = event.target.value || '';
+    renderSessions();
+  });
   // image new session handled by ImageMode.bindUi
   $('#btn-save-agent')?.addEventListener('click', () => saveAgentSettings());
   $('#btn-save-image-settings')?.addEventListener('click', () => saveImageSettings());
@@ -2168,7 +2922,21 @@ function bindEvents() {
     if (!key) return;
     setToolPermission(key, btn.dataset.mode);
   });
-  document.addEventListener('click', () => closeSessionMenus());
+  document.addEventListener('click', () => {
+    closeSessionMenus();
+    closeModelPicker();
+    hideContextMenu();
+  });
+  document.addEventListener('contextmenu', showContextMenu);
+  document.addEventListener('scroll', hideContextMenu, true);
+  document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') {
+      closeModelPicker();
+      hideContextMenu();
+    }
+  });
+  $('#model-picker-popover')?.addEventListener('click', (event) => event.stopPropagation());
+  $('#context-menu')?.addEventListener('click', (event) => event.stopPropagation());
 
   $('#btn-add-provider')?.addEventListener('click', () => openProviderDialog());
   $('#btn-close-provider')?.addEventListener('click', closeProviderDialog);
@@ -2208,51 +2976,56 @@ function bindEvents() {
 
   $('#model-select')?.addEventListener('change', async (event) => {
     const [providerId, model] = event.target.value.split('\n');
-    if (!providerId || !model) return;
-    if (state.session) {
-      const changed = state.session.model && (state.session.providerId !== providerId || state.session.model !== model);
-      if (changed && state.session.messages?.length && !state.session.contextModel) {
-        ensureSessionContext(
-          state.session,
-          state.providers.find((item) => item.id === state.session.providerId),
-          state.session.model
-        );
-      }
-      const hasImages = (state.session.messages || []).some((message) => {
-        const attachments = message.attachments || message.referenceFiles || [];
-        return (Array.isArray(attachments) && attachments.length > 0)
-          || (Array.isArray(message.images) && message.images.length > 0);
-      });
-      if (changed && state.session.messages?.length) {
-        UIDialog.toast('当前会话中途切换模型可能导致上下文风格和工具能力不一致', 4200);
-      }
-      const targetMeta = modelMetaOf(state.providers.find((item) => item.id === providerId), model);
-      if (changed && hasImages && targetMeta.capabilities?.vision === false) {
-        UIDialog.toast('切换的目标模型无视觉能力，上下文内的图片将会被忽略。', 4500);
-      }
-      state.session.providerId = providerId;
-      state.session.model = model;
-      if (!state.session.messages.length) {
-        state.session.contextModel = '';
-        state.session.contextProviderId = '';
-        state.session.contextWindow = 0;
-      }
-      if (!state.session.contextModel) {
-        ensureSessionContext(state.session, state.providers.find((item) => item.id === providerId), model);
-      }
-    }
-    await persistSession();
-    renderModelSelect();
-    renderComposerState();
+    await selectChatModel(providerId, model);
+  });
+  $('#model-picker-btn')?.addEventListener('click', (event) => {
+    event.stopPropagation();
+    toggleModelPicker();
   });
 
   $('#btn-send')?.addEventListener('click', sendMessage);
-  $('#composer-input')?.addEventListener('input', renderComposerState);
+  $('#btn-attach')?.addEventListener('click', () => pickFilesForWorkspace({ attach: true }));
+  $('#composer-input')?.addEventListener('input', () => {
+    resizeChatComposer();
+    renderComposerState();
+  });
   $('#composer-input')?.addEventListener('keydown', (event) => {
     if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
       event.preventDefault();
       sendMessage();
     }
+  });
+  $('#composer-input')?.addEventListener('paste', async (event) => {
+    const files = filesFromTransfer(event.clipboardData);
+    if (!files.length) return;
+    event.preventDefault();
+    await importFilesToWorkspace(files, { attach: true });
+  });
+  const composer = $('.composer');
+  composer?.addEventListener('dragenter', (event) => {
+    if (!dragHasChatAttachment(event.dataTransfer)) return;
+    event.preventDefault();
+    setComposerDragOver(true);
+  });
+  composer?.addEventListener('dragover', (event) => {
+    if (!dragHasChatAttachment(event.dataTransfer)) return;
+    event.preventDefault();
+    if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy';
+    setComposerDragOver(true);
+  });
+  composer?.addEventListener('dragleave', (event) => {
+    if (!composer.contains(event.relatedTarget)) setComposerDragOver(false);
+  });
+  composer?.addEventListener('drop', handleComposerDrop);
+  document.addEventListener('dragend', () => {
+    draggingWorkspacePath = '';
+    setComposerDragOver(false);
+  });
+  document.addEventListener('drop', () => {
+    setTimeout(() => {
+      draggingWorkspacePath = '';
+      setComposerDragOver(false);
+    }, 0);
   });
   $('#chat-scroll')?.addEventListener('click', async (event) => {
     const button = event.target.closest('.code-btn');
@@ -2414,7 +3187,7 @@ async function loadBackend() {
     const initialSession = state.sessions.find((session) => session.id === remembered) || state.sessions[0];
     if (initialSession) {
       try {
-        state.session = normalizeSession(await invoke('load_session', { id: initialSession.id }));
+        state.session = await loadChatSessionInitial(initialSession.id);
       } catch (err) {
         // 索引项不含消息，加载失败时新建会话，避免把有内容的会话当空会话覆盖
         console.warn('load first session failed:', err);
@@ -2563,9 +3336,17 @@ function renderRightContent() {
     content = `
       <div class="rp-files-path">
         <span class="rp-path-label" id="file-path-label">${U.escapeHtml(state.session?.workspacePath || '/')}</span>
-        <button type="button" class="rp-icon" data-act="refresh-files" title="刷新">
-          <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M17.65 6.35A7.96 7.96 0 0 0 12 4a8 8 0 1 0 8 8h-2a6 6 0 1 1-1.76-4.24L14 10h6V4l-2.35 2.35z"/></svg>
-        </button>
+        <span class="rp-files-actions">
+          <button type="button" class="rp-icon" data-act="upload-files" title="上传到工作区">
+            <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M5 20h14v-2H5v2zM13 16h-2V7.83l-3.59 3.58L6 10l6-6 6 6-1.41 1.41L13 7.83V16z"/></svg>
+          </button>
+          <button type="button" class="rp-icon" data-act="open-workspace" title="在资源管理器中打开/定位">
+            <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M10 4l2 2h8c1.1 0 2 .9 2 2v1H2V6c0-1.1.9-2 2-2h6zm12 7v7c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2v-7h20z"/></svg>
+          </button>
+          <button type="button" class="rp-icon" data-act="refresh-files" title="刷新">
+            <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M17.65 6.35A7.96 7.96 0 0 0 12 4a8 8 0 1 0 8 8h-2a6 6 0 1 1-1.76-4.24L14 10h6V4l-2.35 2.35z"/></svg>
+          </button>
+        </span>
       </div>
       <div class="rp-files-split">
         <div class="rp-file-viewer">
@@ -3168,7 +3949,8 @@ function paintFilesTree() {
         const li = document.createElement('li');
         li.className = 'rp-tree-item is-folder';
         li.style.paddingLeft = (8 + depth * 12) + 'px';
-        li.textContent = '📁 ' + (node.name || path);
+        li.innerHTML = `<span class="rp-tree-icon">DIR</span><span class="rp-tree-name"></span>`;
+        li.querySelector('.rp-tree-name').textContent = node.name || path;
         parentUl.appendChild(li);
       }
       children.forEach((child) => addNode(child, parentUl, depth + (path ? 1 : 0)));
@@ -3179,8 +3961,27 @@ function paintFilesTree() {
       const li = document.createElement('li');
       li.className = 'rp-tree-item is-file' + (state.filesSelectedPath === node.path ? ' is-active' : '');
       li.style.paddingLeft = (8 + depth * 12) + 'px';
-      li.textContent = '📄 ' + (node.name || node.path);
+      li.draggable = true;
+      li.dataset.path = node.path || '';
       li.title = node.path || '';
+      const icon = document.createElement('span');
+      icon.className = 'rp-tree-icon ' + treeIconClass(node.name || node.path, node.mime || '');
+      icon.textContent = fileIconLabel(node.name || node.path, node.mime || '');
+      const name = document.createElement('span');
+      name.className = 'rp-tree-name';
+      name.textContent = node.name || node.path;
+      li.append(icon, name);
+      li.addEventListener('dragstart', (event) => {
+        draggingWorkspacePath = node.path || '';
+        event.dataTransfer?.setData(WORKSPACE_DRAG_MIME, node.path || '');
+        event.dataTransfer?.setData('text/x-wepchat-workspace-path', node.path || '');
+        event.dataTransfer?.setData('text/plain', node.path || '');
+        if (event.dataTransfer) event.dataTransfer.effectAllowed = 'copy';
+      });
+      li.addEventListener('dragend', () => {
+        setTimeout(() => { draggingWorkspacePath = ''; }, 0);
+        setComposerDragOver(false);
+      });
       li.addEventListener('click', () => openFileInViewer(node.path));
       parentUl.appendChild(li);
     }
@@ -3216,7 +4017,7 @@ async function loadFileContent(path) {
   const viewer = $('.rp-file-viewer');
   viewer?.querySelector('.rp-binary-viewer')?.remove();
   try {
-    if (/\.(?:png|jpe?g|gif|webp|bmp|svg)$/i.test(path)) {
+    if (/\.(?:png|jpe?g|gif|webp|bmp|svg|avif|ico|tiff?|heic|heif)$/i.test(path)) {
       const res = await invoke('ws_read_bytes', { args: { sessionId: state.session.id, path } });
       if (!res?.contentBase64) throw new Error('图片内容为空');
       if (empty) empty.hidden = true;
@@ -3253,10 +4054,40 @@ async function loadFileContent(path) {
 
 function bindFilesTab() {
   hostAct('refresh-files', () => refreshFilesTree());
+  hostAct('upload-files', () => pickFilesForWorkspace({ attach: false }));
+  hostAct('open-workspace', async () => {
+    if (!state.session?.id) return;
+    try {
+      if (state.filesSelectedPath) {
+        await invoke('ws_reveal_path', { args: { sessionId: state.session.id, path: state.filesSelectedPath } });
+      } else {
+        await invoke('ws_open_workspace', { args: { sessionId: state.session.id } });
+      }
+    } catch (err) {
+      UIDialog.toast('无法打开资源管理器：' + (err?.message || err), 3600);
+    }
+  });
   const filter = $('#file-tree-filter');
   filter?.addEventListener('input', () => {
     state.fileFilter = filter.value || '';
     paintFilesTree();
+  });
+  const pane = $('.rp-file-tree-pane');
+  pane?.addEventListener('dragover', (event) => {
+    if (!event.dataTransfer?.types || !Array.from(event.dataTransfer.types).includes('Files')) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = 'copy';
+    pane.classList.add('is-drag-over');
+  });
+  pane?.addEventListener('dragleave', (event) => {
+    if (!pane.contains(event.relatedTarget)) pane.classList.remove('is-drag-over');
+  });
+  pane?.addEventListener('drop', async (event) => {
+    const files = filesFromTransfer(event.dataTransfer);
+    if (!files.length) return;
+    event.preventDefault();
+    pane.classList.remove('is-drag-over');
+    await importFilesToWorkspace(files, { attach: false });
   });
   refreshFilesTree().then(() => {
     paintFilesTree();
@@ -3447,6 +4278,7 @@ async function boot() {
           const loaded = await invoke('load_session', { id });
           if (navigationSeq !== state.sessionNavigationSeq) return;
           state.session = normalizeSession(loaded);
+          markSessionHistoryComplete(state.session);
           rememberActiveSession(state.session);
         } catch (err) {
           if (navigationSeq !== state.sessionNavigationSeq) return;

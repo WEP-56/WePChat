@@ -74,6 +74,18 @@ pub fn with_conn<T>(
     f(&mut handle.conn)
 }
 
+/// 应用退出时压缩 WAL；失败不影响下次 SQLite 自动恢复。
+pub fn checkpoint_truncate() -> Result<(), String> {
+    let mut guard = cell().lock().map_err(|e| e.to_string())?;
+    if let Some(handle) = guard.as_mut() {
+        handle
+            .conn
+            .execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
 fn open_or_recover(root: &Path) -> Result<Connection, String> {
     fs::create_dir_all(root).map_err(|e| e.to_string())?;
     let path = root.join(DB_FILE);

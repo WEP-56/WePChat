@@ -11,8 +11,8 @@ use serde_json::Value;
 use settings::{AppSettings, SettingsStore};
 use tauri::Manager;
 use workspace_fs::{
-    ws_delete, ws_edit, ws_exists, ws_list, ws_mkdir, ws_move, ws_read, ws_read_bytes, ws_stat_tree,
-    ws_write,
+    ws_delete, ws_edit, ws_exists, ws_list, ws_mkdir, ws_move, ws_open_workspace, ws_read,
+    ws_read_bytes, ws_reveal_path, ws_stat_tree, ws_write,
 };
 
 #[tauri::command]
@@ -75,6 +75,14 @@ fn session_upsert_message(
 }
 
 #[tauri::command]
+fn session_messages_page(
+    app: tauri::AppHandle,
+    args: sessions::MessagesPageArgs,
+) -> Result<Value, String> {
+    sessions::messages_page(app, args)
+}
+
+#[tauri::command]
 fn delete_session(app: tauri::AppHandle, id: String) -> Result<(), String> {
     sessions::delete_session(app, id)
 }
@@ -106,6 +114,11 @@ pub fn run() {
             }
             Ok(())
         })
+        .on_window_event(|_, event| {
+            if matches!(event, tauri::WindowEvent::CloseRequested { .. }) {
+                let _ = db::checkpoint_truncate();
+            }
+        })
         .invoke_handler(tauri::generate_handler![
             get_app_meta,
             get_default_workspace_root,
@@ -117,6 +130,7 @@ pub fn run() {
             load_session,
             save_session,
             session_upsert_message,
+            session_messages_page,
             delete_session,
             copy_session,
             get_session_workspace,
@@ -133,6 +147,8 @@ pub fn run() {
             ws_move,
             ws_exists,
             ws_stat_tree,
+            ws_open_workspace,
+            ws_reveal_path,
             preview_ensure,
             preview_stage,
             preview_unstage,

@@ -13,9 +13,11 @@
 
 const NEAR_BOTTOM = 64;   // 向下滚回距底该值内 → 恢复跟随
 const SHOW_BUTTON = 220;  // 距底大于该值 → 显示回到底部按钮
+const NEAR_TOP = 96;      // 靠近顶部时加载更早消息
 
 let host = null;
 let jumpBtn = null;
+let onNearTop = null;
 let follow = true;
 let lastTop = 0;
 let resizeObserver = null;
@@ -42,6 +44,7 @@ function onScroll() {
   if (goingUp && dist > 1) follow = false;
   else if (dist <= 1) follow = true;
   else if (goingDown && dist < NEAR_BOTTOM) follow = true;
+  if (top <= NEAR_TOP) onNearTop?.();
   updateButton();
 }
 
@@ -57,6 +60,7 @@ function observeInner() {
 export function initChatScroll(options) {
   host = options.host;
   jumpBtn = options.jumpButton || null;
+  onNearTop = typeof options.onNearTop === 'function' ? options.onNearTop : null;
   if (!host) return;
   host.addEventListener('scroll', onScroll, { passive: true });
   if (typeof ResizeObserver === 'function') {
@@ -95,6 +99,20 @@ export function resetToBottom() {
   observeInner();
   host.scrollTop = host.scrollHeight;
   updateButton();
+}
+
+export async function preserveAnchor(task) {
+  if (!host || typeof task !== 'function') return task?.();
+  const beforeHeight = host.scrollHeight;
+  const beforeTop = host.scrollTop;
+  const result = await task();
+  requestAnimationFrame(() => {
+    if (!host) return;
+    host.scrollTop = beforeTop + (host.scrollHeight - beforeHeight);
+    lastTop = host.scrollTop;
+    updateButton();
+  });
+  return result;
 }
 
 /** 定位到某条消息（rail 点击）：居中显示；若目标接近底部则自然恢复跟随 */

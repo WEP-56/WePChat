@@ -175,7 +175,7 @@ function createMessageNode(message) {
 }
 
 /** 部位在 article 内的固定顺序 */
-const PART_ORDER = ['reasoning', 'tools', 'body', 'images', 'errRow', 'actions'];
+const PART_ORDER = ['reasoning', 'tools', 'attachments', 'body', 'images', 'errRow', 'actions'];
 
 function partAnchor(rec, key) {
   const idx = PART_ORDER.indexOf(key);
@@ -212,6 +212,8 @@ function updateMessage(rec, m, index) {
   if (isAssistant) {
     updateReasoning(rec, m);
     updateTools(rec, m);
+  } else {
+    updateAttachments(rec, m);
   }
   updateBody(rec, m);
   if (isAssistant) {
@@ -529,6 +531,85 @@ function renderStreamingBlocks(rec, body, m) {
       streaming: true,
     });
   }
+}
+
+/* ---------- 用户附件 ---------- */
+
+const ATTACH_IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg', 'avif', 'ico', 'tif', 'tiff', 'heic', 'heif']);
+
+function attachExt(name = '') {
+  const m = /\.([^.\/\\]+)$/.exec(String(name || '').toLowerCase());
+  return m ? m[1] : '';
+}
+
+function attachIconLabel(att) {
+  const name = att?.name || att?.path || '';
+  const mime = String(att?.mime || '');
+  const ext = attachExt(name);
+  if (att?.kind === 'image' || mime.startsWith('image/') || ATTACH_IMAGE_EXTS.has(ext)) return 'IMG';
+  return ({
+    js: 'JS', mjs: 'JS', cjs: 'JS', ts: 'TS', tsx: 'TSX', jsx: 'JSX',
+    py: 'PY', rs: 'RS', go: 'GO', java: 'JAVA', c: 'C', cc: 'C++', cpp: 'C++',
+    h: 'H', hpp: 'H++', cs: 'CS', php: 'PHP', rb: 'RB', swift: 'SW', kt: 'KT',
+    md: 'MD', markdown: 'MD', json: 'JSON', jsonl: 'JSON', html: 'HTML', htm: 'HTML',
+    css: 'CSS', toml: 'TOML', yaml: 'YAML', yml: 'YAML', xml: 'XML', csv: 'CSV',
+    sql: 'SQL', sh: 'SH', ps1: 'PS1', bat: 'BAT', cmd: 'CMD', txt: 'TXT', log: 'LOG',
+  })[ext] || 'FILE';
+}
+
+function updateAttachments(rec, m) {
+  const list = (Array.isArray(m.attachments) ? m.attachments : []).filter((att) => att && (att.path || att.name));
+  const fp = list.map((att) => [
+    att.id || '', att.kind || '', att.name || '', att.path || '', att.mime || '', att.size || '',
+    (att.dataUrl || '').length,
+  ].join('|')).join('\n');
+  if (rec.sig.attachmentsFp === fp) return;
+  rec.sig.attachmentsFp = fp;
+  if (!list.length) {
+    if (rec.refs.attachments) removePart(rec, 'attachments');
+    return;
+  }
+
+  let root = rec.refs.attachments;
+  if (!root) {
+    root = document.createElement('div');
+    root.className = 'chat-attachments';
+    rec.refs.attachments = root;
+    mountPart(rec, 'attachments', root);
+  }
+  root.innerHTML = '';
+  list.forEach((att) => {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'chat-attachment-chip' + (att.kind === 'image' ? ' is-image' : '');
+    btn.title = [att.name || att.path || 'file', att.path || ''].filter(Boolean).join('\n');
+    btn.disabled = !att.path;
+    btn.addEventListener('click', () => {
+      if (att.path) ctx.callbacks.openAttachment?.(att);
+    });
+    const preview = document.createElement('span');
+    preview.className = 'chat-attachment-preview';
+    if (att.kind === 'image' && att.dataUrl) {
+      const img = document.createElement('img');
+      img.src = att.dataUrl;
+      img.alt = att.name || att.path || 'image';
+      img.loading = 'lazy';
+      preview.appendChild(img);
+    } else {
+      preview.textContent = attachIconLabel(att);
+    }
+    const meta = document.createElement('span');
+    meta.className = 'chat-attachment-meta';
+    const name = document.createElement('span');
+    name.className = 'chat-attachment-name';
+    name.textContent = att.name || att.path || 'file';
+    const path = document.createElement('span');
+    path.className = 'chat-attachment-path';
+    path.textContent = att.path || '';
+    meta.append(name, path);
+    btn.append(preview, meta);
+    root.appendChild(btn);
+  });
 }
 
 /* ---------- 图片 ---------- */

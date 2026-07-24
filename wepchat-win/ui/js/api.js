@@ -394,9 +394,12 @@ const API = (() => {
     let text = msg.content || '';
     (msg.attachments || []).forEach(a => {
       if (a.kind === 'text') {
-        text += '\n\n[附件文件 ' + a.name + (a.path ? '，工作区路径 ' + a.path : '') + ']\n```\n' + a.content + '\n```';
+        text += '\n\n[附件文件 ' + a.name + (a.path ? '，工作区路径 ' + a.path : '') + ']';
+        if (a.content) text += '\n```\n' + a.content + '\n```';
       } else if (a.kind === 'image' && a.path) {
         text += '\n\n[附件图片 ' + (a.name || 'image') + '，工作区路径 ' + a.path + ']';
+      } else if (a.path) {
+        text += '\n\n[附件文件 ' + (a.name || 'file') + '，工作区路径 ' + a.path + ']';
       }
     });
     return text;

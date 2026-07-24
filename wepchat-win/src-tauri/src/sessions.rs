@@ -290,6 +290,94 @@ pub fn load_session_at(root: &Path, id: &str) -> Result<Value, String> {
     db::with_conn(root, |conn| load_session_with(conn, root, id))
 }
 
+fn assemble_message(
+    mid: String,
+    role: String,
+    content: String,
+    payload_json: String,
+    created_at: String,
+) -> Value {
+    let mut m = parse_object(&payload_json);
+    m.insert("id".into(), json!(mid));
+    m.insert("role".into(), json!(role));
+    m.insert("content".into(), json!(content));
+    if !created_at.is_empty() {
+        m.insert("createdAt".into(), json!(created_at));
+    }
+    Value::Object(m)
+}
+
+pub fn messages_page_at(
+    root: &Path,
+    session_id: &str,
+    before_seq: Option<i64>,
+    limit: Option<i64>,
+) -> Result<Value, String> {
+    if !valid_session_id(session_id) {
+        return Err("会话 ID 无效".into());
+    }
+    let limit = limit.unwrap_or(50).clamp(1, 200);
+    db::with_conn(root, |conn| {
+        let exists = conn
+            .query_row(
+                "SELECT 1 FROM sessions WHERE id = ?1",
+                params![session_id],
+                |_| Ok(()),
+            )
+            .optional()
+            .map_err(|e| e.to_string())?
+            .is_some();
+        if !exists {
+            return Err("会话不存在".into());
+        }
+
+        let mut stmt = conn
+            .prepare(
+                "SELECT seq, id, role, content, payload_json, created_at
+                 FROM messages
+                 WHERE session_id = ?1 AND (?2 IS NULL OR seq < ?2)
+                 ORDER BY seq DESC
+                 LIMIT ?3",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(params![session_id, before_seq, limit + 1], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                ))
+            })
+            .map_err(|e| e.to_string())?;
+
+        let mut fetched = Vec::new();
+        for row in rows {
+            fetched.push(row.map_err(|e| e.to_string())?);
+        }
+        let has_more = fetched.len() as i64 > limit;
+        fetched.truncate(limit as usize);
+        fetched.reverse();
+
+        let next_before_seq = fetched.first().map(|row| row.0);
+        let messages: Vec<Value> = fetched
+            .into_iter()
+            .map(|(_, mid, role, content, payload_json, created_at)| {
+                assemble_message(mid, role, content, payload_json, created_at)
+            })
+            .collect();
+
+        Ok(json!({
+            "sessionId": session_id,
+            "messages": messages,
+            "nextBeforeSeq": next_before_seq,
+            "hasMore": has_more,
+        }))
+    })
+}
+
 pub fn save_session_at(root: &Path, mut session: Value) -> Result<Value, String> {
     let obj = session
         .as_object()
@@ -542,6 +630,21 @@ pub fn upsert_message(app: AppHandle, args: UpsertMessageArgs) -> Result<(), Str
     )
 }
 
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MessagesPageArgs {
+    pub session_id: String,
+    #[serde(default)]
+    pub before_seq: Option<i64>,
+    #[serde(default)]
+    pub limit: Option<i64>,
+}
+
+pub fn messages_page(app: AppHandle, args: MessagesPageArgs) -> Result<Value, String> {
+    let root = workspace_root(&app)?;
+    messages_page_at(&root, &args.session_id, args.before_seq, args.limit)
+}
+
 pub fn delete_session(app: AppHandle, id: String) -> Result<(), String> {
     let root = workspace_root(&app)?;
     delete_session_at(&root, &id)
@@ -753,6 +856,45 @@ mod tests {
         let loaded = load_session_at(&root, "session_long").unwrap();
         assert_eq!(loaded["messages"].as_array().unwrap().len(), 250);
         assert_eq!(loaded["messages"][249]["content"], "changed");
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn messages_page_returns_latest_then_older_chunks() {
+        let root = temp_root("page");
+        let mut session = sample_session("session_page");
+        let messages = session["messages"].as_array_mut().unwrap();
+        for index in 2..7 {
+            messages.push(json!({
+                "id": format!("m{index}"),
+                "role": if index % 2 == 0 { "user" } else { "assistant" },
+                "content": format!("message {index}"),
+                "createdAt": "2026-07-23T10:00:00.000Z"
+            }));
+        }
+        save_session_at(&root, session).expect("save page session");
+
+        let latest = messages_page_at(&root, "session_page", None, Some(3)).expect("latest page");
+        let latest_messages = latest["messages"].as_array().unwrap();
+        assert_eq!(latest_messages.len(), 3);
+        assert_eq!(latest_messages[0]["content"], "message 4");
+        assert_eq!(latest_messages[2]["content"], "message 6");
+        assert_eq!(latest["nextBeforeSeq"], 4);
+        assert_eq!(latest["hasMore"], true);
+
+        let older = messages_page_at(
+            &root,
+            "session_page",
+            latest["nextBeforeSeq"].as_i64(),
+            Some(4),
+        )
+        .expect("older page");
+        let older_messages = older["messages"].as_array().unwrap();
+        assert_eq!(older_messages.len(), 4);
+        assert_eq!(older_messages[0]["content"], "你好\n第二行");
+        assert_eq!(older_messages[3]["content"], "message 3");
+        assert_eq!(older["hasMore"], false);
 
         let _ = fs::remove_dir_all(&root);
     }
